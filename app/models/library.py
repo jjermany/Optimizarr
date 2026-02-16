@@ -1,0 +1,79 @@
+from datetime import datetime
+from enum import Enum
+
+from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.core.database import Base
+
+
+class CodecEnum(str, Enum):
+    h264 = 'h264'
+    hevc = 'hevc'
+    av1 = 'av1'
+
+
+class ContainerEnum(str, Enum):
+    mkv = 'mkv'
+    mp4 = 'mp4'
+
+
+class AudioModeEnum(str, Enum):
+    copy = 'copy'
+    aac = 'aac'
+    ac3 = 'ac3'
+    eac3 = 'eac3'
+
+
+class BitrateModeEnum(str, Enum):
+    cbr = 'cbr'
+    vbr_crf = 'vbr_crf'
+
+
+class SpeedPresetEnum(str, Enum):
+    slow = 'slow'
+    medium = 'medium'
+    fast = 'fast'
+
+
+class Library(Base):
+    __tablename__ = 'libraries'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    path: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    profile: Mapped['LibraryProfile | None'] = relationship(
+        'LibraryProfile',
+        back_populates='library',
+        uselist=False,
+        cascade='all, delete-orphan',
+    )
+
+
+class LibraryProfile(Base):
+    __tablename__ = 'library_profiles'
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    library_id: Mapped[int] = mapped_column(ForeignKey('libraries.id'), unique=True, nullable=False)
+    target_resolution: Mapped[int] = mapped_column(Integer, default=1080, nullable=False)
+    codec: Mapped[CodecEnum] = mapped_column(SqlEnum(CodecEnum), default=CodecEnum.hevc, nullable=False)
+    container: Mapped[ContainerEnum] = mapped_column(SqlEnum(ContainerEnum), default=ContainerEnum.mkv, nullable=False)
+    audio_mode: Mapped[AudioModeEnum] = mapped_column(SqlEnum(AudioModeEnum), default=AudioModeEnum.copy, nullable=False)
+    bitrate_mode: Mapped[BitrateModeEnum] = mapped_column(SqlEnum(BitrateModeEnum), default=BitrateModeEnum.vbr_crf, nullable=False)
+    bitrate_mbps: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    crf: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    speed_preset: Mapped[SpeedPresetEnum] = mapped_column(SqlEnum(SpeedPresetEnum), default=SpeedPresetEnum.medium, nullable=False)
+    hdr_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    max_workers: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    schedule_start_hour: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    schedule_end_hour: Mapped[int] = mapped_column(Integer, default=9, nullable=False)
+    output_suffix: Mapped[str] = mapped_column(String(64), default='-1080p', nullable=False)
+    av1_fallback_codec: Mapped[CodecEnum] = mapped_column(SqlEnum(CodecEnum), default=CodecEnum.hevc, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    library: Mapped[Library] = relationship('Library', back_populates='profile')

@@ -21,16 +21,35 @@ def get_db():
         db.close()
 
 
+def _table_columns(connection, table_name: str) -> set[str]:
+    rows = connection.execute(text(f'PRAGMA table_info({table_name})')).fetchall()
+    return {row[1] for row in rows}
+
+
+def _add_column_if_missing(connection, table_name: str, column_name: str, column_ddl: str) -> None:
+    existing_columns = _table_columns(connection, table_name)
+    if column_name not in existing_columns:
+        connection.execute(text(f'ALTER TABLE {table_name} ADD COLUMN {column_ddl}'))
+
+
 def init_db() -> None:
     import app.models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
 
     with engine.begin() as connection:
-        settings_columns = {
-            row[1] for row in connection.execute(text('PRAGMA table_info(settings)')).fetchall()
-        }
-        if 'history_retention_days' not in settings_columns:
-            connection.execute(
-                text('ALTER TABLE settings ADD COLUMN history_retention_days INTEGER NOT NULL DEFAULT 30')
-            )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'history_retention_days',
+            'history_retention_days INTEGER NOT NULL DEFAULT 30',
+        )
+
+        _add_column_if_missing(connection, 'jobs', 'library_id', 'library_id INTEGER')
+        _add_column_if_missing(connection, 'jobs', 'profile_snapshot_json', 'profile_snapshot_json TEXT')
+        _add_column_if_missing(connection, 'jobs', 'encoder_used', 'encoder_used VARCHAR(64)')
+        _add_column_if_missing(connection, 'jobs', 'codec_used', 'codec_used VARCHAR(32)')
+        _add_column_if_missing(connection, 'jobs', 'hwaccel_used', 'hwaccel_used BOOLEAN')
+        _add_column_if_missing(connection, 'jobs', 'used_fallback', 'used_fallback BOOLEAN')
+        _add_column_if_missing(connection, 'jobs', 'fallback_reason', 'fallback_reason TEXT')
+        _add_column_if_missing(connection, 'jobs', 'error_message', 'error_message TEXT')
