@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models.settings import Settings
 from app.services.job_service import cancel_job, create_job, get_job, list_jobs, retry_job
+from app.services.monitoring_service import get_system_metrics
 from app.services.optimization_service import is_hdr_video
 
 router = APIRouter()
@@ -41,6 +42,14 @@ class ScanResponse(BaseModel):
     created_jobs: list[JobResponse]
 
 
+class MetricsResponse(BaseModel):
+    gpu_video_percent: float
+    gpu_render_percent: float
+    cpu_percent: float
+    ram_percent: float
+    active_jobs: int
+
+
 def _get_settings(db: Session) -> Settings:
     settings = db.query(Settings).first()
     if not settings:
@@ -58,6 +67,11 @@ def _output_path_for(source_path: Path) -> Path:
 @router.get('/health')
 def health() -> dict[str, str]:
     return {'status': 'ok'}
+
+
+@router.get('/metrics', response_model=MetricsResponse)
+def metrics(db: Session = Depends(get_db)) -> MetricsResponse:
+    return MetricsResponse(**get_system_metrics(db))
 
 
 @router.post('/jobs', response_model=JobResponse, status_code=201)
