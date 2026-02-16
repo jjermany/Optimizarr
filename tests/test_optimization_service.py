@@ -80,6 +80,8 @@ def test_optimize_video_runs_and_reports_progress(monkeypatch, tmp_path):
 
 
 def test_is_hdr_video_detects_hdr_transfer(monkeypatch):
+    monkeypatch.setattr(optimization_service, '_run_ffprobe_stream_json', lambda _: None)
+
     def fake_probe(_input, entry):
         if entry == 'stream=color_transfer':
             return 'smpte2084'
@@ -93,6 +95,8 @@ def test_is_hdr_video_detects_hdr_transfer(monkeypatch):
 
 
 def test_is_hdr_video_detects_sdr(monkeypatch):
+    monkeypatch.setattr(optimization_service, '_run_ffprobe_stream_json', lambda _: None)
+
     def fake_probe(_input, entry):
         if entry == 'stream=color_transfer':
             return 'bt709'
@@ -103,6 +107,25 @@ def test_is_hdr_video_detects_sdr(monkeypatch):
     monkeypatch.setattr(optimization_service, '_run_ffprobe_value', fake_probe)
 
     assert optimization_service.is_hdr_video('/media/movie.mkv') is False
+
+
+def test_is_hdr_video_detects_side_data_metadata(monkeypatch):
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffprobe_stream_json',
+        lambda _: {
+            'streams': [
+                {
+                    'color_transfer': 'bt709',
+                    'color_primaries': 'bt709',
+                    'color_space': 'bt709',
+                    'side_data_list': [{'side_data_type': 'Mastering display metadata'}],
+                },
+            ],
+        },
+    )
+
+    assert optimization_service.is_hdr_video('/media/movie.mkv') is True
 
 
 def test_build_encoder_command_prefers_qsv_and_scales(monkeypatch):

@@ -240,6 +240,8 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
         profile_response = client.get(f'/libraries/{library_id}/profile')
         assert profile_response.status_code == 200
         assert profile_response.json()['output_suffix'] == '-1080p'
+        assert profile_response.json()['hdr_only'] is True
+        assert profile_response.json()['minimum_source_resolution'] == 2160
         assert profile_response.json()['schedule_policy'] == 'finish_current'
         assert profile_response.json()['output_conflict_policy'] == 'skip'
 
@@ -247,6 +249,7 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
             f'/libraries/{library_id}/profile',
             json={
                 'hdr_only': True,
+                'minimum_source_resolution': 3000,
                 'codec': 'av1',
                 'av1_fallback_codec': 'h264',
                 'max_workers': 2,
@@ -259,6 +262,7 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
         assert update_profile_response.status_code == 200
         updated_profile = update_profile_response.json()
         assert updated_profile['hdr_only'] is True
+        assert updated_profile['minimum_source_resolution'] == 3000
         assert updated_profile['codec'] == 'av1'
         assert updated_profile['av1_fallback_codec'] == 'h264'
         assert updated_profile['schedule_start_hour'] == 3
@@ -406,7 +410,10 @@ def test_scan_library_endpoint_honors_hdr_height_and_idempotency(monkeypatch, tm
         assert create_library.status_code == 201
         library_id = create_library.json()['id']
 
-        profile_update = client.put(f'/libraries/{library_id}/profile', json={'hdr_only': True})
+        profile_update = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'hdr_only': True, 'minimum_source_resolution': 2000, 'target_resolution': 1080},
+        )
         assert profile_update.status_code == 200
 
         first_scan_response = client.post(f'/libraries/{library_id}/scan')
@@ -433,6 +440,26 @@ def test_scan_library_endpoint_honors_hdr_height_and_idempotency(monkeypatch, tm
             job = session.query(Job).filter(Job.id == first_created_jobs[0]['id']).first()
             assert job is not None
             assert job.profile_snapshot_json == first_snapshot
+
+
+def test_profile_update_rejects_min_resolution_equal_or_lower_than_target(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'library'
+    library_path.mkdir()
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+
+    with TestClient(app) as client:
+        create_library = client.post('/libraries', json={'name': 'Validation', 'path': str(library_path), 'enabled': True})
+        assert create_library.status_code == 201
+        library_id = create_library.json()['id']
+
+        invalid_update = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'target_resolution': 1080, 'minimum_source_resolution': 1080},
+        )
+        assert invalid_update.status_code == 422
 
 
 def test_pause_resume_abort_and_queue_controls(monkeypatch, tmp_path):

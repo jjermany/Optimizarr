@@ -50,11 +50,50 @@ def test_scan_library_queues_4k_when_hdr_not_required(monkeypatch, tmp_path):
         assert create_response.status_code == 201
         library_id = create_response.json()['id']
 
+        profile_response = client.put(f'/libraries/{library_id}/profile', json={'hdr_only': False})
+        assert profile_response.status_code == 200
+
         scan_response = client.post(f'/libraries/{library_id}/scan')
         assert scan_response.status_code == 200
         created_jobs = scan_response.json()['created_jobs']
         assert len(created_jobs) == 1
         assert created_jobs[0]['source_path'] == str(source_file)
+
+
+def test_scan_library_respects_minimum_source_and_target_resolution(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'custom'
+    library_path.mkdir()
+
+    larger_file = library_path / 'big.mkv'
+    larger_file.write_text('big')
+    equal_file = library_path / 'equal.mkv'
+    equal_file.write_text('equal')
+
+    def fake_probe(path: str) -> int:
+        return 1400 if path.endswith('big.mkv') else 1337
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', fake_probe)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: True)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'Custom', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        profile_response = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'hdr_only': False, 'target_resolution': 1337, 'minimum_source_resolution': 1400},
+        )
+        assert profile_response.status_code == 200
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+        created_jobs = scan_response.json()['created_jobs']
+        assert len(created_jobs) == 1
+        assert created_jobs[0]['source_path'] == str(larger_file)
 
 
 def test_scan_library_publishes_discovery_job_queued_event(monkeypatch, tmp_path):
@@ -76,6 +115,9 @@ def test_scan_library_publishes_discovery_job_queued_event(monkeypatch, tmp_path
         create_response = client.post('/libraries', json={'name': 'Docs', 'path': str(library_path), 'enabled': True})
         assert create_response.status_code == 201
         library_id = create_response.json()['id']
+
+        profile_response = client.put(f'/libraries/{library_id}/profile', json={'hdr_only': False})
+        assert profile_response.status_code == 200
 
         scan_response = client.post(f'/libraries/{library_id}/scan')
         assert scan_response.status_code == 200

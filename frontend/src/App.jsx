@@ -133,6 +133,12 @@ function validateLibraryDraft(draft, libraryEnabled) {
     errors.target_resolution = 'Target resolution must be a positive integer.';
   }
 
+  if (!Number.isInteger(draft.minimum_source_resolution) || draft.minimum_source_resolution < 1) {
+    errors.minimum_source_resolution = 'Minimum source resolution must be a positive integer.';
+  } else if (Number.isInteger(draft.target_resolution) && draft.minimum_source_resolution <= draft.target_resolution) {
+    errors.minimum_source_resolution = 'Minimum source resolution must be higher than target resolution.';
+  }
+
   if (draft.bitrate_mode === 'vbr_crf') {
     if (!Number.isInteger(draft.crf) || draft.crf < 1) {
       errors.crf = 'CRF must be a positive integer.';
@@ -382,7 +388,13 @@ export default function App() {
       setProfileErrors({});
       return;
     }
-    setProfileDraft({ schedule_enabled: true, preferred_video_encoder: 'auto', ...selectedLibraryProfile });
+    setProfileDraft({
+      schedule_enabled: true,
+      preferred_video_encoder: 'auto',
+      hdr_only: true,
+      minimum_source_resolution: 2160,
+      ...selectedLibraryProfile,
+    });
     setProfileErrors({});
   }, [selectedLibraryId, selectedLibraryProfile]);
 
@@ -1033,7 +1045,7 @@ export default function App() {
                       <p className="text-xs text-slate-400">Output height. 1080p is a good default for mixed libraries.</p>
                       <select
                         className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={profileDraft.target_resolution === 1080 || profileDraft.target_resolution === 720 ? String(profileDraft.target_resolution) : 'custom'}
+                        value={[2160, 1440, 1080, 720].includes(profileDraft.target_resolution) ? String(profileDraft.target_resolution) : 'custom'}
                         onChange={(event) => {
                           const value = event.target.value;
                           setProfileDraft((prev) => ({
@@ -1042,11 +1054,13 @@ export default function App() {
                           }));
                         }}
                       >
+                        <option value="2160">2160p (4K)</option>
+                        <option value="1440">1440p</option>
                         <option value="1080">1080p</option>
                         <option value="720">720p</option>
                         <option value="custom">Custom</option>
                       </select>
-                      {profileDraft.target_resolution !== 1080 && profileDraft.target_resolution !== 720 && (
+                      {!([2160, 1440, 1080, 720].includes(profileDraft.target_resolution)) && (
                         <input
                           type="number"
                           min={1}
@@ -1056,6 +1070,37 @@ export default function App() {
                         />
                       )}
                       {profileErrors.target_resolution && <p className="text-xs text-red-300">{profileErrors.target_resolution}</p>}
+                    </label>
+
+                    <label className="space-y-2 md:col-span-2">
+                      <span className="text-sm font-medium">Minimum source resolution filter</span>
+                      <p className="text-xs text-slate-400">Only queue sources at or above this height during scans.</p>
+                      <select
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={[2160, 1440, 1080].includes(profileDraft.minimum_source_resolution) ? String(profileDraft.minimum_source_resolution) : 'custom'}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setProfileDraft((prev) => ({
+                            ...prev,
+                            minimum_source_resolution: value === 'custom' ? prev.minimum_source_resolution : Number(value),
+                          }));
+                        }}
+                      >
+                        <option value="2160">2160p (4K)</option>
+                        <option value="1440">1440p</option>
+                        <option value="1080">1080p</option>
+                        <option value="custom">Custom</option>
+                      </select>
+                      {!([2160, 1440, 1080].includes(profileDraft.minimum_source_resolution)) && (
+                        <input
+                          type="number"
+                          min={1}
+                          className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                          value={profileDraft.minimum_source_resolution}
+                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, minimum_source_resolution: Number(event.target.value) }))}
+                        />
+                      )}
+                      {profileErrors.minimum_source_resolution && <p className="text-xs text-red-300">{profileErrors.minimum_source_resolution}</p>}
                     </label>
 
                     <label className="space-y-2">

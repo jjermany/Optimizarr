@@ -27,6 +27,7 @@ def test_create_job_stores_profile_snapshot():
         assert job.profile_snapshot_json is not None
         assert '"codec": "av1"' in job.profile_snapshot_json
         assert '"output_suffix": "-opt"' in job.profile_snapshot_json
+        assert '"minimum_source_resolution"' in job.profile_snapshot_json
 
 
 def test_prune_job_history_removes_stale_terminal_jobs():
