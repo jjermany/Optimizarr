@@ -132,7 +132,13 @@ def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
                 'smtp_tls': True,
                 'from_email': 'optimizarr@example.com',
                 'to_emails': ['ops@example.com', 'alerts@example.com'],
-                'notify_on': {'job_failed': True, 'job_complete': False, 'batch_complete': True},
+                'notify_on': {
+                    'job_failed': True,
+                    'job_interrupted': True,
+                    'low_disk_pause': True,
+                    'recovery_ran': True,
+                    'batch_complete': True,
+                },
             },
         )
         assert update_response.status_code == 200
@@ -141,6 +147,9 @@ def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
         assert updated['smtp_port'] == 2525
         assert updated['to_emails'] == ['ops@example.com', 'alerts@example.com']
         assert updated['notify_on']['job_failed'] is True
+        assert updated['notify_on']['job_interrupted'] is True
+        assert updated['notify_on']['low_disk_pause'] is True
+        assert updated['notify_on']['recovery_ran'] is True
 
         test_response = client.post('/notifications/test')
         assert test_response.status_code == 202

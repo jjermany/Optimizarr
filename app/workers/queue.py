@@ -118,7 +118,7 @@ def _required_cache_free_bytes(settings: Settings) -> int:
     return min_free_gb * BYTES_PER_GB
 
 
-def _pause_queue_for_low_disk_space(settings: Settings, free_bytes: int) -> None:
+def _pause_queue_for_low_disk_space(settings: Settings, free_bytes: int, job: Job | None = None) -> None:
     global _disk_space_alert_active
     pause_queue(reason='low_disk')
 
@@ -130,7 +130,17 @@ def _pause_queue_for_low_disk_space(settings: Settings, free_bytes: int) -> None
     min_free_gb = max(1, int(getattr(settings, 'min_free_gb', 25) or 25))
     free_gb = free_bytes / BYTES_PER_GB
     logger.warning('Queue paused due to low cache space: %.2f GB free < %s GB required', free_gb, min_free_gb)
-    enqueue_low_disk_space_alert(min_free_gb=min_free_gb, free_gb=free_gb)
+    library_name = None
+    file_name = None
+    if job:
+        file_name = Path(job.source_path).name
+
+    enqueue_low_disk_space_alert(
+        min_free_gb=min_free_gb,
+        free_gb=free_gb,
+        library_name=library_name,
+        file_name=file_name,
+    )
     broker.publish_notification('queue_paused_low_disk')
 
 
@@ -196,7 +206,7 @@ def preflight_job(job: Job, settings: Settings) -> bool:
 
     free_bytes = _cache_free_bytes()
     if free_bytes < _required_cache_free_bytes(settings):
-        _pause_queue_for_low_disk_space(settings, free_bytes)
+        _pause_queue_for_low_disk_space(settings, free_bytes, job)
         job.status = 'failed'
         job.error_message = 'Insufficient cache space'
         return False

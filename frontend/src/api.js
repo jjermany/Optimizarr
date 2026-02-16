@@ -89,6 +89,22 @@ export function updateSettings(payload) {
   });
 }
 
+
+export function fetchNotificationSettings() {
+  return request('/notifications/settings');
+}
+
+export function updateNotificationSettings(payload) {
+  return request('/notifications/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function sendTestNotification() {
+  return request('/notifications/test', { method: 'POST' });
+}
+
 export async function fetchWsToken() {
   try {
     return await request('/auth/ws-token');

@@ -6,6 +6,7 @@ import {
   fetchLibraryProfile,
   fetchJobs,
   fetchMetrics,
+  fetchNotificationSettings,
   fetchSettings,
   fetchWsToken,
   pauseJob,
@@ -15,8 +16,10 @@ import {
   retryJob,
   runRecovery,
   scanLibrary,
+  sendTestNotification,
   updateLibrary,
   updateLibraryProfile,
+  updateNotificationSettings,
   updateSettings,
 } from './api';
 import StatCard from './components/StatCard';
@@ -157,6 +160,7 @@ export default function App() {
   const [libraries, setLibraries] = useState([]);
   const [libraryProfiles, setLibraryProfiles] = useState({});
   const [settings, setSettings] = useState();
+  const [notificationSettings, setNotificationSettings] = useState();
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
   const [profileErrors, setProfileErrors] = useState({});
@@ -214,14 +218,16 @@ export default function App() {
 
   async function refreshAll() {
     try {
-      const [nextMetrics, nextJobs, nextSettings] = await Promise.all([
+      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings] = await Promise.all([
         fetchMetrics(),
         fetchJobs(),
         fetchSettings(),
+        fetchNotificationSettings(),
       ]);
       setMetrics(nextMetrics);
       setJobs(nextJobs);
       setSettings(nextSettings);
+      setNotificationSettings(nextNotificationSettings);
       setError('');
     } catch (refreshError) {
       setError(refreshError.message || 'Could not refresh data.');
@@ -547,6 +553,32 @@ export default function App() {
       setError(saveError.message || 'Failed to save settings.');
     } finally {
       setSavingSettings(false);
+    }
+  }
+
+  async function saveNotificationSettings() {
+    if (!notificationSettings) return;
+
+    try {
+      setSavingSettings(true);
+      const updated = await updateNotificationSettings(notificationSettings);
+      setNotificationSettings(updated);
+      setMessage('Notification settings saved.');
+      setError('');
+    } catch (saveError) {
+      setError(saveError.message || 'Could not save notification settings.');
+    } finally {
+      setSavingSettings(false);
+    }
+  }
+
+  async function sendNotificationTest() {
+    try {
+      await sendTestNotification();
+      setMessage('Queued a test notification email.');
+      setError('');
+    } catch (saveError) {
+      setError(saveError.message || 'Could not queue test email.');
     }
   }
 
@@ -1034,7 +1066,7 @@ export default function App() {
           </section>
         )}
 
-        {activePage === 'settings' && settings && (
+        {activePage === 'settings' && settings && notificationSettings && (
           <section className="space-y-5 rounded-lg border border-slate-800 bg-slate-900 p-6">
             <label className="flex items-center justify-between">
               <span>Toggle optimizer</span>
@@ -1121,6 +1153,82 @@ export default function App() {
             >
               Run recovery now
             </button>
+
+            <div className="space-y-3 rounded-lg border border-slate-700 bg-slate-800/60 p-4">
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Email notifications</h3>
+              <label className="flex items-center justify-between">
+                <span>Job failed</span>
+                <input
+                  type="checkbox"
+                  checked={notificationSettings.notify_on.job_failed}
+                  onChange={(event) => setNotificationSettings((prev) => ({
+                    ...prev,
+                    notify_on: { ...prev.notify_on, job_failed: event.target.checked },
+                  }))}
+                />
+              </label>
+              <label className="flex items-center justify-between">
+                <span>Job interrupted</span>
+                <input
+                  type="checkbox"
+                  checked={notificationSettings.notify_on.job_interrupted}
+                  onChange={(event) => setNotificationSettings((prev) => ({
+                    ...prev,
+                    notify_on: { ...prev.notify_on, job_interrupted: event.target.checked },
+                  }))}
+                />
+              </label>
+              <label className="flex items-center justify-between">
+                <span>Low disk pause</span>
+                <input
+                  type="checkbox"
+                  checked={notificationSettings.notify_on.low_disk_pause}
+                  onChange={(event) => setNotificationSettings((prev) => ({
+                    ...prev,
+                    notify_on: { ...prev.notify_on, low_disk_pause: event.target.checked },
+                  }))}
+                />
+              </label>
+              <label className="flex items-center justify-between">
+                <span>Recovery ran</span>
+                <input
+                  type="checkbox"
+                  checked={notificationSettings.notify_on.recovery_ran}
+                  onChange={(event) => setNotificationSettings((prev) => ({
+                    ...prev,
+                    notify_on: { ...prev.notify_on, recovery_ran: event.target.checked },
+                  }))}
+                />
+              </label>
+              <label className="flex items-center justify-between">
+                <span>Batch complete</span>
+                <input
+                  type="checkbox"
+                  checked={notificationSettings.notify_on.batch_complete}
+                  onChange={(event) => setNotificationSettings((prev) => ({
+                    ...prev,
+                    notify_on: { ...prev.notify_on, batch_complete: event.target.checked },
+                  }))}
+                />
+              </label>
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  className="rounded bg-violet-500 px-4 py-2 font-semibold text-slate-950 hover:bg-violet-400 disabled:opacity-70"
+                  disabled={savingSettings}
+                  onClick={saveNotificationSettings}
+                >
+                  Save notification settings
+                </button>
+                <button
+                  type="button"
+                  className="rounded bg-slate-600 px-4 py-2 font-semibold text-white hover:bg-slate-500"
+                  onClick={sendNotificationTest}
+                >
+                  Send test email
+                </button>
+              </div>
+            </div>
 
             <button
               type="button"
