@@ -1,12 +1,13 @@
 from datetime import datetime
 from queue import Empty, Queue
 from threading import Event, Thread
-import time
 
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.job import Job
+from app.models.settings import Settings
+from app.services.optimization_service import optimize_video
 
 job_queue: Queue[int] = Queue()
 stop_event = Event()
@@ -21,16 +22,33 @@ def _process(job_id: int, db: Session) -> None:
     if not job:
         return
 
+    settings = db.query(Settings).first()
+    if not settings:
+        settings = Settings()
+        db.add(settings)
+        db.commit()
+
     job.status = 'running'
-    job.progress_percent = 10
+    job.progress_percent = 0
     db.commit()
 
-    # Placeholder for optimization pipeline.
-    time.sleep(0.1)
+    def on_progress(update: dict[str, float | int | None]) -> None:
+        job.progress_percent = int(update.get('progress_percent') or 0)
+        job.fps = update.get('fps') if isinstance(update.get('fps'), float) else None
+        eta_seconds = update.get('eta_seconds')
+        job.eta_seconds = int(eta_seconds) if isinstance(eta_seconds, int) else None
+        db.commit()
 
-    job.status = 'complete'
-    job.progress_percent = 100
-    job.completed_at = datetime.utcnow()
+    metrics = optimize_video(job.input_path, settings, progress_callback=on_progress)
+
+    job.status = metrics.status
+    job.output_path = metrics.output_path
+    job.fps = metrics.fps
+    if metrics.status in {'complete', 'skipped', 'failed'}:
+        job.completed_at = datetime.utcnow()
+    if metrics.status == 'complete':
+        job.progress_percent = 100
+        job.eta_seconds = 0
     db.commit()
 
 
