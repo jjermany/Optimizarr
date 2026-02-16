@@ -31,6 +31,42 @@ def test_version_endpoint():
     assert 'version' in response.json()
 
 
+
+
+def test_branding_asset_endpoint_returns_logo(monkeypatch, tmp_path):
+    logo_dir = tmp_path / 'Logo'
+    logo_dir.mkdir(parents=True)
+    (logo_dir / 'logo.png').write_bytes(b'logo-bytes')
+    monkeypatch.setattr(routes, 'BRANDING_ROOTS', (logo_dir,))
+
+    with TestClient(app) as client:
+        response = client.get('/branding/logo')
+
+    assert response.status_code == 200
+    assert response.content == b'logo-bytes'
+
+
+def test_branding_asset_endpoint_prefers_dynamic_icon(monkeypatch, tmp_path):
+    logo_dir = tmp_path / 'Logo'
+    logo_dir.mkdir(parents=True)
+    (logo_dir / 'icon.png').write_bytes(b'static-icon')
+    (logo_dir / 'dynamic-icon.svg').write_text('<svg></svg>', encoding='utf-8')
+    monkeypatch.setattr(routes, 'BRANDING_ROOTS', (logo_dir,))
+
+    with TestClient(app) as client:
+        response = client.get('/branding/icon')
+
+    assert response.status_code == 200
+    assert response.text == '<svg></svg>'
+
+
+def test_branding_asset_endpoint_returns_404_for_unknown_asset():
+    with TestClient(app) as client:
+        response = client.get('/branding/not-real')
+
+    assert response.status_code == 404
+
+
 def test_metrics_endpoint(monkeypatch):
     monkeypatch.setattr(
         routes,

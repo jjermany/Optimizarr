@@ -769,7 +769,10 @@ export default function App() {
     <main className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 p-6 text-slate-100">
       <div className="mx-auto max-w-7xl space-y-6">
         <header className="rounded-xl border border-slate-800 bg-slate-900/70 p-4 shadow-lg shadow-slate-950/40 backdrop-blur flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <h1 className="text-3xl font-bold text-cyan-200">Optimizarr</h1>
+          <div className="flex items-center gap-3">
+            <img src="/api/branding/logo" alt="Optimizarr" className="h-10 w-auto" />
+            <h1 className="text-3xl font-bold text-cyan-200 sr-only">Optimizarr</h1>
+          </div>
           <p className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300">
             WS: {connectionStatus}
             {fallbackPollingEnabled ? ' (polling fallback active)' : ''}

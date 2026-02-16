@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from email.message import EmailMessage
+from html import escape
 import logging
 from pathlib import Path
 from queue import Empty, Queue
@@ -38,6 +39,11 @@ _email_queue: Queue[EmailEvent] = Queue()
 _worker_thread: Thread | None = None
 _batch_lock = Lock()
 _batches: list[BatchTracker] = []
+_LOGO_CID = 'optimizarr-logo'
+_LOGO_CANDIDATE_PATHS = (
+    Path('/media/Logo/logo.png'),
+    Path(__file__).resolve().parents[2] / 'media' / 'Logo' / 'logo.png',
+)
 
 
 def _emails_to_csv(emails: Iterable[str]) -> str:
@@ -54,6 +60,66 @@ def _format_notification_body(*, library_name: str | None, file_name: str | None
         f'File: {file_name or "n/a"}\n'
         f'Reason: {reason}\n'
         f'Suggested action: {suggested_action}\n'
+    )
+
+
+def _resolve_logo_path() -> Path | None:
+    for path in _LOGO_CANDIDATE_PATHS:
+        if path.exists():
+            return path
+    return None
+
+
+def _notification_rows(body: str) -> str:
+    rows: list[str] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if ':' in line:
+            label, value = line.split(':', 1)
+            rows.append(
+                '<tr>'
+                f'<td style="padding:10px 12px;border-bottom:1px solid #27344d;color:#93c5fd;font-weight:600;">{escape(label.strip())}</td>'
+                f'<td style="padding:10px 12px;border-bottom:1px solid #27344d;color:#e2e8f0;">{escape(value.strip())}</td>'
+                '</tr>'
+            )
+        else:
+            rows.append(
+                '<tr><td colspan="2" style="padding:10px 12px;border-bottom:1px solid #27344d;color:#e2e8f0;">'
+                f'{escape(line)}</td></tr>'
+            )
+    return ''.join(rows)
+
+
+def _format_notification_html(*, subject: str, body: str, include_logo: bool) -> str:
+    logo_html = (
+        f'<img src="cid:{_LOGO_CID}" alt="Optimizarr" width="220" '
+        'style="display:block;height:auto;max-width:100%;margin:0 auto 18px auto;" />'
+        if include_logo
+        else '<h1 style="margin:0 0 18px 0;text-align:center;font-size:30px;color:#67e8f9;">Optimizarr</h1>'
+    )
+
+    return (
+        '<!doctype html>'
+        '<html><body style="margin:0;padding:24px;background:#020617;font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;">'
+        '<table role="presentation" style="width:100%;max-width:680px;margin:0 auto;background:#0f172a;'
+        'border:1px solid #1e293b;border-radius:16px;overflow:hidden;box-shadow:0 12px 30px rgba(2,6,23,0.5);">'
+        '<tr><td style="padding:28px 26px 18px 26px;background:linear-gradient(135deg,#082f49,#164e63 55%,#0f172a);">'
+        f'{logo_html}'
+        f'<h2 style="margin:0;text-align:center;font-size:22px;color:#e0f2fe;">{escape(subject)}</h2>'
+        '</td></tr>'
+        '<tr><td style="padding:22px 26px;color:#cbd5e1;line-height:1.6;">'
+        '<p style="margin:0 0 14px 0;color:#94a3b8;font-size:14px;">Automated notification from Optimizarr.</p>'
+        '<table role="presentation" style="width:100%;border-collapse:collapse;background:#0b1220;border:1px solid #27344d;'
+        'border-radius:10px;overflow:hidden;">'
+        f'{_notification_rows(body)}'
+        '</table>'
+        '</td></tr>'
+        '<tr><td style="padding:16px 26px 24px 26px;color:#64748b;font-size:12px;text-align:center;">'
+        'Sent by Optimizarr • This mailbox may be unattended.'
+        '</td></tr>'
+        '</table></body></html>'
     )
 
 
@@ -124,6 +190,15 @@ def _send_via_smtp(event: EmailEvent, settings: NotificationSettings) -> None:
     message['From'] = settings.from_email
     message['To'] = ', '.join(recipients)
     message.set_content(event.body)
+
+    logo_path = _resolve_logo_path()
+    html_body = _format_notification_html(subject=event.subject, body=event.body, include_logo=bool(logo_path))
+    message.add_alternative(html_body, subtype='html')
+
+    if logo_path:
+        logo_bytes = logo_path.read_bytes()
+        html_part = message.get_payload()[-1]
+        html_part.add_related(logo_bytes, maintype='image', subtype='png', cid=f'<{_LOGO_CID}>', filename=logo_path.name)
 
     with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
         if settings.smtp_tls:
