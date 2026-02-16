@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 import logging
+from pathlib import Path
+import shutil
 from threading import Event, Lock, Thread
 import time
 
@@ -13,7 +16,7 @@ from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
 from app.services.job_service import prune_job_history
 from app.services.notification_service import enqueue_job_failed, handle_job_terminal_state
-from app.services.optimization_service import optimize_video
+from app.services.optimization_service import is_hdr_video, optimize_video, probe_video_height
 from app.services.realtime_service import broker
 
 stop_event = Event()
@@ -27,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
+MIN_SOURCE_HEIGHT = 2000
+MIN_CACHE_FREE_BYTES = 15 * 1024 * 1024 * 1024
 
 
 def _get_settings(db: Session) -> Settings:
@@ -74,6 +79,67 @@ def _publish_job(job: Job, *, throttle_progress: bool = True) -> None:
     )
 
 
+def _profile_snapshot(job: Job) -> dict:
+    if not job.profile_snapshot_json:
+        return {}
+    try:
+        parsed = json.loads(job.profile_snapshot_json)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _preflight_output_path(job: Job, snapshot: dict) -> str:
+    source = Path(job.input_path)
+    output_suffix = str(snapshot.get('output_suffix') or '-1080p')
+    container = str(snapshot.get('container') or '').strip().lstrip('.')
+    extension = container or source.suffix.lstrip('.') or 'mkv'
+    return str(source.with_name(f'{source.stem}{output_suffix}.{extension}'))
+
+
+def _cache_free_bytes() -> int:
+    cache_path = '/cache' if Path('/cache').exists() else '/'
+    return shutil.disk_usage(cache_path).free
+
+
+def preflight_job(job: Job) -> bool:
+    snapshot = _profile_snapshot(job)
+
+    if not Path(job.input_path).exists():
+        job.status = 'skipped'
+        job.error_message = 'Input missing'
+        return False
+
+    height = probe_video_height(job.input_path)
+    if height is None:
+        job.status = 'failed'
+        job.error_message = 'Unable to probe input'
+        return False
+
+    if height < MIN_SOURCE_HEIGHT:
+        job.status = 'skipped'
+        job.error_message = 'No longer matches criteria'
+        return False
+
+    if bool(snapshot.get('hdr_only')) and not is_hdr_video(job.input_path):
+        job.status = 'skipped'
+        job.error_message = 'No longer matches criteria'
+        return False
+
+    job.output_path = _preflight_output_path(job, snapshot)
+    if Path(job.output_path).exists():
+        job.status = 'skipped'
+        job.error_message = 'Output exists'
+        return False
+
+    if _cache_free_bytes() < MIN_CACHE_FREE_BYTES:
+        job.status = 'failed'
+        job.error_message = 'Insufficient cache space'
+        return False
+
+    return True
+
+
 def _process_job(job_id: int) -> None:
     db = SessionLocal()
     try:
@@ -89,7 +155,7 @@ def _process_job(job_id: int) -> None:
             return
 
         settings = _get_settings(db)
-        job.status = 'running'
+        job.status = 'preflight'
         job.progress_percent = 0
         job.error_message = None
         job.encoder_used = None
@@ -97,6 +163,19 @@ def _process_job(job_id: int) -> None:
         job.hwaccel_used = None
         job.used_fallback = None
         job.fallback_reason = None
+        db.commit()
+        _publish_job(job, throttle_progress=False)
+
+        if not preflight_job(job):
+            _mark_finished(job)
+            db.commit()
+            _publish_job(job, throttle_progress=False)
+            if job.status == 'failed':
+                enqueue_job_failed(job)
+            handle_job_terminal_state(job.id, job.status)
+            return
+
+        job.status = 'running'
         db.commit()
         _publish_job(job, throttle_progress=False)
 
