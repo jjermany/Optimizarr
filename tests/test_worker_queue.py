@@ -86,10 +86,13 @@ def test_should_workers_run_honors_manual_pause_state():
 def test_library_job_can_start_honors_library_schedule_and_enablement():
     settings = queue.Settings(enable_optimizer=True, global_quiet_enabled=False)
     library = queue.Library(enabled=True)
-    profile = queue.LibraryProfile(schedule_start_hour=22, schedule_end_hour=6)
+    profile = queue.LibraryProfile(schedule_enabled=True, schedule_start_hour=22, schedule_end_hour=6)
 
     assert queue._library_job_can_start(settings, datetime(2024, 1, 1, 23, 0, 0), library, profile) is True
     assert queue._library_job_can_start(settings, datetime(2024, 1, 1, 12, 0, 0), library, profile) is False
+
+    profile.schedule_enabled = False
+    assert queue._library_job_can_start(settings, datetime(2024, 1, 1, 12, 0, 0), library, profile) is True
 
     library.enabled = False
     assert queue._library_job_can_start(settings, datetime(2024, 1, 1, 23, 0, 0), library, profile) is False

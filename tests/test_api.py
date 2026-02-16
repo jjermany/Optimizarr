@@ -46,6 +46,19 @@ def test_branding_asset_endpoint_returns_logo(monkeypatch, tmp_path):
     assert response.content == b'logo-bytes'
 
 
+def test_branding_asset_endpoint_supports_svg_logo_variant(monkeypatch, tmp_path):
+    logo_dir = tmp_path / 'Logo'
+    logo_dir.mkdir(parents=True)
+    (logo_dir / 'logo.svg').write_text('<svg>logo</svg>', encoding='utf-8')
+    monkeypatch.setattr(routes, 'BRANDING_ROOTS', (logo_dir,))
+
+    with TestClient(app) as client:
+        response = client.get('/branding/logo')
+
+    assert response.status_code == 200
+    assert response.text == '<svg>logo</svg>'
+
+
 def test_branding_asset_endpoint_prefers_dynamic_icon(monkeypatch, tmp_path):
     logo_dir = tmp_path / 'Logo'
     logo_dir.mkdir(parents=True)

@@ -87,13 +87,18 @@ const QUALITY_PRESETS = {
   },
 };
 
-function progressFromStatus(status) {
-  const normalized = status?.toLowerCase();
-  if (normalized === 'completed') return 100;
-  if (normalized === 'running' || normalized === 'processing') return 65;
+function progressFromJob(job) {
+  const normalized = job.status?.toLowerCase();
+  const reported = Number(job.progress_percent);
+  if (Number.isFinite(reported) && reported >= 0) {
+    return Math.max(0, Math.min(100, Math.round(reported)));
+  }
+
+  if (normalized === 'complete' || normalized === 'completed') return 100;
+  if (normalized === 'running' || normalized === 'processing') return 0;
   if (normalized === 'failed') return 100;
   if (normalized === 'canceled' || normalized === 'cancelled') return 100;
-  return 20;
+  return 0;
 }
 
 function isAbortedJob(job) {
@@ -794,7 +799,7 @@ export default function App() {
       <div className="mx-auto max-w-7xl space-y-6">
         <header className="rounded-xl border border-slate-800 bg-slate-900/70 p-4 shadow-lg shadow-slate-950/40 backdrop-blur flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
-            <img src="/api/branding/logo" alt="Optimizarr" className="h-10 w-auto" />
+            <img src="/api/branding/logo" alt="Optimizarr" className="h-14 w-auto" />
             <h1 className="text-3xl font-bold text-cyan-200 sr-only">Optimizarr</h1>
           </div>
           <p className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300">
@@ -1379,7 +1384,7 @@ export default function App() {
               </thead>
               <tbody className="divide-y divide-slate-800">
                 {pagedJobs.map((job) => {
-                  const progress = progressFromStatus(job.status);
+                  const progress = progressFromJob(job);
                   return (
                     <tr key={job.id}>
                       <td className="px-4 py-3">{job.id}</td>

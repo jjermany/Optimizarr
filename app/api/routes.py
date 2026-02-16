@@ -87,7 +87,7 @@ def _ws_token_or_unauthorized(token: str | None) -> None:
 @router.get('/branding/{asset_name}')
 def get_branding_asset(asset_name: str) -> FileResponse:
     asset_variants = {
-        'logo': ['logo.png'],
+        'logo': ['logo.png', 'logo.svg', 'logo.webp', 'logo.jpg', 'logo.jpeg', 'Logo.png', 'Logo.svg'],
         'icon': ['dynamic-icon.png', 'dynamic-icon.svg', 'icon.png', 'icon.svg'],
         'dynamic-icon': ['dynamic-icon.png', 'dynamic-icon.svg'],
     }
