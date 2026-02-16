@@ -50,6 +50,44 @@ class MetricsResponse(BaseModel):
     active_jobs: int
 
 
+class SettingsResponse(BaseModel):
+    enable_optimizer: bool
+    target_resolution: int
+    bitrate_mbps: int
+    keep_original: bool
+    max_workers: int
+    scan_interval_minutes: int
+    schedule_start_hour: int
+    schedule_end_hour: int
+    process_hdr_only: bool
+
+    @classmethod
+    def from_orm_settings(cls, settings: Settings):
+        return cls(
+            enable_optimizer=settings.enable_optimizer,
+            target_resolution=settings.target_resolution,
+            bitrate_mbps=settings.bitrate_mbps,
+            keep_original=settings.keep_original,
+            max_workers=settings.max_workers,
+            scan_interval_minutes=settings.scan_interval_minutes,
+            schedule_start_hour=settings.schedule_start_hour,
+            schedule_end_hour=settings.schedule_end_hour,
+            process_hdr_only=settings.process_hdr_only,
+        )
+
+
+class SettingsUpdateRequest(BaseModel):
+    enable_optimizer: bool | None = None
+    target_resolution: int | None = Field(default=None, ge=1)
+    bitrate_mbps: int | None = Field(default=None, ge=1)
+    keep_original: bool | None = None
+    max_workers: int | None = Field(default=None, ge=1)
+    scan_interval_minutes: int | None = Field(default=None, ge=1)
+    schedule_start_hour: int | None = Field(default=None, ge=0, le=23)
+    schedule_end_hour: int | None = Field(default=None, ge=0, le=23)
+    process_hdr_only: bool | None = None
+
+
 def _get_settings(db: Session) -> Settings:
     settings = db.query(Settings).first()
     if not settings:
@@ -67,6 +105,25 @@ def _output_path_for(source_path: Path) -> Path:
 @router.get('/health')
 def health() -> dict[str, str]:
     return {'status': 'ok'}
+
+
+@router.get('/settings', response_model=SettingsResponse)
+def get_settings(db: Session = Depends(get_db)) -> SettingsResponse:
+    settings = _get_settings(db)
+    return SettingsResponse.from_orm_settings(settings)
+
+
+@router.post('/settings', response_model=SettingsResponse)
+def update_settings(payload: SettingsUpdateRequest, db: Session = Depends(get_db)) -> SettingsResponse:
+    settings = _get_settings(db)
+
+    updates = payload.model_dump(exclude_none=True)
+    for field_name, value in updates.items():
+        setattr(settings, field_name, value)
+
+    db.commit()
+    db.refresh(settings)
+    return SettingsResponse.from_orm_settings(settings)
 
 
 @router.get('/metrics', response_model=MetricsResponse)
