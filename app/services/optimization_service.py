@@ -65,6 +65,10 @@ def _probe_height(input_path: str) -> int | None:
         return None
 
 
+def probe_video_height(input_path: str) -> int | None:
+    return _probe_height(input_path)
+
+
 def _probe_duration_seconds(input_path: str) -> float | None:
     value = _run_ffprobe_value(input_path, 'format=duration')
     if not value:

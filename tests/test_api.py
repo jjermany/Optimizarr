@@ -160,25 +160,31 @@ def test_create_and_fetch_job():
 
 def test_scan_cancel_and_retry_endpoints(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
-    (media_root / 'nested').mkdir(parents=True)
+    media_root.mkdir()
+    library_path = media_root / 'lib'
+    (library_path / 'nested').mkdir(parents=True)
 
-    source_a = media_root / 'a.mkv'
+    source_a = library_path / 'a.mkv'
     source_a.write_text('a')
 
-    source_d = media_root / 'nested' / 'd.mkv'
+    source_d = library_path / 'nested' / 'd.mp4'
     source_d.write_text('d')
 
-    (media_root / 'b-1080p.mkv').write_text('already_optimized_name')
+    (library_path / 'b-1080p.mkv').write_text('already_optimized_name')
 
-    source_c = media_root / 'c.mkv'
+    source_c = library_path / 'c.mkv'
     source_c.write_text('c')
-    (media_root / 'c-1080p.mkv').write_text('output_exists')
+    (library_path / 'c-1080p.mkv').write_text('output_exists')
 
     monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(routes, 'probe_video_height', lambda _: 2160)
     monkeypatch.setattr(routes, 'is_hdr_video', lambda _: True)
 
     with TestClient(app) as client:
-        scan_response = client.post('/jobs/scan')
+        create_library = client.post('/libraries', json={'name': 'Shows', 'path': str(library_path), 'enabled': True})
+        assert create_library.status_code == 201
+
+        scan_response = client.post('/scan')
         assert scan_response.status_code == 200
         created_jobs = scan_response.json()['created_jobs']
 
@@ -198,32 +204,39 @@ def test_scan_cancel_and_retry_endpoints(monkeypatch, tmp_path):
         assert retried['status'] in {'queued', 'cancelled', 'running'}
 
 
-
-
 def test_scan_uses_enabled_libraries(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()
-    library_path = media_root / 'shows'
-    library_path.mkdir()
-    source_file = library_path / 'episode.mkv'
-    source_file.write_text('video')
+    enabled_library_path = media_root / 'shows'
+    enabled_library_path.mkdir()
+    disabled_library_path = media_root / 'movies'
+    disabled_library_path.mkdir()
+
+    source_enabled = enabled_library_path / 'episode.mkv'
+    source_enabled.write_text('video')
+    source_disabled = disabled_library_path / 'movie.mkv'
+    source_disabled.write_text('video')
 
     monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(routes, 'probe_video_height', lambda _: 2160)
     monkeypatch.setattr(routes, 'is_hdr_video', lambda _: True)
 
     with TestClient(app) as client:
-        create_library = client.post('/libraries', json={'name': 'Shows', 'path': str(library_path), 'enabled': True})
-        assert create_library.status_code == 201
-        library_id = create_library.json()['id']
+        enabled_library = client.post('/libraries', json={'name': 'Shows', 'path': str(enabled_library_path), 'enabled': True})
+        assert enabled_library.status_code == 201
+        enabled_library_id = enabled_library.json()['id']
 
-        profile_update = client.put(f'/libraries/{library_id}/profile', json={'output_suffix': '-opt'})
+        disabled_library = client.post('/libraries', json={'name': 'Movies', 'path': str(disabled_library_path), 'enabled': False})
+        assert disabled_library.status_code == 201
+
+        profile_update = client.put(f'/libraries/{enabled_library_id}/profile', json={'output_suffix': '-opt'})
         assert profile_update.status_code == 200
 
-        scan_response = client.post('/jobs/scan')
+        scan_response = client.post('/scan')
         assert scan_response.status_code == 200
         created_jobs = scan_response.json()['created_jobs']
         assert len(created_jobs) == 1
-        assert created_jobs[0]['source_path'] == str(source_file)
+        assert created_jobs[0]['source_path'] == str(source_enabled)
 
         from app.core.database import SessionLocal
         from app.models.job import Job
@@ -231,40 +244,57 @@ def test_scan_uses_enabled_libraries(monkeypatch, tmp_path):
         with SessionLocal() as session:
             job = session.query(Job).filter(Job.id == created_jobs[0]['id']).first()
             assert job is not None
-            assert job.library_id == library_id
+            assert job.library_id == enabled_library_id
             assert job.profile_snapshot_json is not None
-def test_scan_honors_process_hdr_only(monkeypatch, tmp_path):
+
+
+
+def test_scan_library_endpoint_honors_hdr_height_and_idempotency(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()
+    library_path = media_root / 'library'
+    library_path.mkdir()
 
-    hdr_file = media_root / 'hdr.mkv'
+    hdr_file = library_path / 'hdr.mkv'
     hdr_file.write_text('hdr')
-    sdr_file = media_root / 'sdr.mkv'
+    low_res_file = library_path / 'low.mp4'
+    low_res_file.write_text('low')
+    sdr_file = library_path / 'sdr.mkv'
     sdr_file.write_text('sdr')
 
     monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(routes, 'probe_video_height', lambda path: 1080 if path.endswith('low.mp4') else 2160)
     monkeypatch.setattr(routes, 'is_hdr_video', lambda path: path.endswith('hdr.mkv'))
 
     with TestClient(app) as client:
-        client.post('/jobs/scan')
+        create_library = client.post('/libraries', json={'name': 'HDR', 'path': str(library_path), 'enabled': True})
+        assert create_library.status_code == 201
+        library_id = create_library.json()['id']
 
-        # Enable HDR-only mode and ensure a new scan only queues HDR inputs.
+        profile_update = client.put(f'/libraries/{library_id}/profile', json={'hdr_only': True})
+        assert profile_update.status_code == 200
+
+        first_scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert first_scan_response.status_code == 200
+        first_created_jobs = first_scan_response.json()['created_jobs']
+        assert {job['source_path'] for job in first_created_jobs} == {str(hdr_file)}
+
+        second_scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert second_scan_response.status_code == 200
+        assert second_scan_response.json()['created_jobs'] == []
+
         from app.core.database import SessionLocal
-        from app.models.library import Library, LibraryProfile
-        from app.models.settings import Settings
+        from app.models.job import Job
 
         with SessionLocal() as session:
-            session.query(LibraryProfile).delete()
-            session.query(Library).delete()
-            settings = session.query(Settings).first()
-            if settings is None:
-                settings = Settings(process_hdr_only=True)
-                session.add(settings)
-            else:
-                settings.process_hdr_only = True
-            session.commit()
+            job = session.query(Job).filter(Job.id == first_created_jobs[0]['id']).first()
+            assert job is not None
+            first_snapshot = job.profile_snapshot_json
 
-        scan_response = client.post('/jobs/scan')
-        assert scan_response.status_code == 200
-        created_jobs = scan_response.json()['created_jobs']
-        assert {job['source_path'] for job in created_jobs} == {str(hdr_file)}
+        post_edit_scan = client.put(f'/libraries/{library_id}/profile', json={'codec': 'av1'})
+        assert post_edit_scan.status_code == 200
+
+        with SessionLocal() as session:
+            job = session.query(Job).filter(Job.id == first_created_jobs[0]['id']).first()
+            assert job is not None
+            assert job.profile_snapshot_json == first_snapshot
