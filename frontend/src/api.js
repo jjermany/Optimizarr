@@ -58,6 +58,26 @@ export function retryJob(jobId) {
   return request(`/jobs/${jobId}/retry`, { method: 'POST' });
 }
 
+export function pauseJob(jobId) {
+  return request(`/jobs/${jobId}/pause`, { method: 'POST' });
+}
+
+export function resumeJob(jobId) {
+  return request(`/jobs/${jobId}/resume`, { method: 'POST' });
+}
+
+export function abortJob(jobId) {
+  return request(`/jobs/${jobId}/abort`, { method: 'POST' });
+}
+
+export function pauseQueue() {
+  return request('/queue/pause', { method: 'POST' });
+}
+
+export function resumeQueue() {
+  return request('/queue/resume', { method: 'POST' });
+}
+
 export function fetchSettings() {
   return request('/settings');
 }

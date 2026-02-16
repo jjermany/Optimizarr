@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from threading import Lock
 import time
 from typing import Any, Callable
 
@@ -15,6 +16,8 @@ FPS_REGEX = re.compile(r"fps\s*=\s*(?P<fps>[0-9]*\.?[0-9]+)")
 _ENCODER_CACHE: dict[str, bool] = {}
 _SUPPORTED_ENCODERS = {'h264_qsv', 'hevc_qsv', 'av1_qsv', 'libsvtav1', 'libx264', 'libx265'}
 _QSV_ERROR_PATTERN = re.compile(r'(qsv|mfx).*(init|error|failed|device)', re.IGNORECASE)
+_ACTIVE_FFMPEG_LOCK = Lock()
+_ACTIVE_FFMPEG_PROCESSES: dict[int, subprocess.Popen] = {}
 
 
 @dataclass
@@ -76,6 +79,28 @@ def _output_paths(input_path: str, profile: dict[str, Any], workspace_path: Path
     final_output_path = source.with_name(f'{source.stem}-1080p.{container}')
     partial_output_path = workspace_path / f'output.partial.{container}'
     return final_output_path, partial_output_path
+
+
+def delete_workspace(settings: Any, job_id: int) -> None:
+    workspace_path = _job_workspace_path(settings, job_id)
+    shutil.rmtree(workspace_path, ignore_errors=True)
+
+
+def delete_partial_output(settings: Any, job_id: int) -> None:
+    workspace_path = _job_workspace_path(settings, job_id)
+    if not workspace_path.exists():
+        return
+    for partial in workspace_path.glob('output.partial.*'):
+        partial.unlink(missing_ok=True)
+
+
+def stop_active_ffmpeg(job_id: int) -> bool:
+    with _ACTIVE_FFMPEG_LOCK:
+        process = _ACTIVE_FFMPEG_PROCESSES.get(job_id)
+    if process is None:
+        return False
+    process.terminate()
+    return True
 
 
 
@@ -284,6 +309,7 @@ def _has_qsv_error(output_lines: list[str]) -> bool:
 
 
 def _run_ffmpeg(
+    job_id: int | None,
     ffmpeg_command: list[str],
     duration: float | None,
     progress_callback: Callable[[dict[str, float | int | None]], None] | None,
@@ -299,6 +325,10 @@ def _run_ffmpeg(
         )
     except OSError:
         return None, 0.0, None, False, []
+
+    if job_id is not None:
+        with _ACTIVE_FFMPEG_LOCK:
+            _ACTIVE_FFMPEG_PROCESSES[job_id] = process
 
     current_fps: float | None = None
     processed_seconds = 0.0
@@ -348,6 +378,9 @@ def _run_ffmpeg(
             progress_callback({'progress_percent': progress_percent, 'fps': current_fps, 'eta_seconds': eta_seconds})
 
     process.wait()
+    if job_id is not None:
+        with _ACTIVE_FFMPEG_LOCK:
+            _ACTIVE_FFMPEG_PROCESSES.pop(job_id, None)
     return process.returncode, processed_seconds, current_fps, was_cancelled, output_lines
 
 
@@ -503,6 +536,7 @@ def optimize_video(
 
     ffmpeg_command = _build_command_with_selection(input_path, str(partial_output_path), profile, selection)
     return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+        job_id,
         ffmpeg_command,
         duration,
         progress_callback,
@@ -526,6 +560,7 @@ def optimize_video(
         fallback_selection = EncoderSelection(codec=selection.codec, encoder=software_encoder, use_qsv=False)
         fallback_command = _build_command_with_selection(input_path, str(partial_output_path), profile, fallback_selection)
         return_code, processed_seconds, current_fps, was_cancelled, _ = _run_ffmpeg(
+            job_id,
             fallback_command,
             duration,
             progress_callback,
@@ -547,6 +582,7 @@ def optimize_video(
             fallback_selection = EncoderSelection(codec=av1_fallback_codec, encoder=fallback_encoder, use_qsv=False)
             fallback_command = _build_command_with_selection(input_path, str(partial_output_path), profile, fallback_selection)
             return_code, processed_seconds, current_fps, was_cancelled, _ = _run_ffmpeg(
+                job_id,
                 fallback_command,
                 duration,
                 progress_callback,

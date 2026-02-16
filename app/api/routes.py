@@ -19,10 +19,11 @@ from app.models.library import (
 )
 from app.models.settings import DiscoveryMethodEnum, Settings
 from app.services import notification_service
-from app.services.job_service import cancel_job, create_job, get_job, list_jobs, retry_job
+from app.services.job_service import abort_job, cancel_job, create_job, get_job, list_jobs, pause_job, resume_job, retry_job
 from app.services.monitoring_service import get_system_metrics
 from app.services.realtime_service import broker, expected_ws_token, next_message
 from app.services.discovery_service import scan_enabled_libraries, scan_library
+from app.workers import queue as worker_queue
 
 router = APIRouter()
 MEDIA_ROOT = Path('/media')
@@ -578,6 +579,50 @@ def retry_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
     return response
+
+
+@router.post('/jobs/{job_id}/pause', response_model=JobResponse)
+def pause_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
+    job = pause_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Job not found')
+    response = JobResponse.from_orm_job(job)
+    broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    return response
+
+
+@router.post('/jobs/{job_id}/resume', response_model=JobResponse)
+def resume_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
+    job = resume_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Job not found')
+    response = JobResponse.from_orm_job(job)
+    broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    return response
+
+
+@router.post('/jobs/{job_id}/abort', response_model=JobResponse)
+def abort_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
+    job = abort_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Job not found')
+    response = JobResponse.from_orm_job(job)
+    broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    return response
+
+
+@router.post('/queue/pause')
+def pause_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
+    worker_queue.pause_queue()
+    broker.publish_notification('queue_paused')
+    return {'status': 'paused'}
+
+
+@router.post('/queue/resume')
+def resume_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
+    worker_queue.resume_queue()
+    broker.publish_notification('queue_resumed')
+    return {'status': 'running'}
 
 
 @router.get('/auth/ws-token')

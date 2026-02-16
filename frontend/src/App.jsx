@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  abortJob,
   cancelJob,
   fetchLibraries,
   fetchLibraryProfile,
@@ -7,6 +8,10 @@ import {
   fetchMetrics,
   fetchSettings,
   fetchWsToken,
+  pauseJob,
+  pauseQueue,
+  resumeJob,
+  resumeQueue,
   retryJob,
   scanLibrary,
   updateLibrary,
@@ -161,6 +166,7 @@ export default function App() {
   const [savingSettings, setSavingSettings] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [fallbackPollingEnabled, setFallbackPollingEnabled] = useState(false);
+  const [queuePaused, setQueuePaused] = useState(false);
 
   const wsRef = useRef();
   const reconnectAttemptsRef = useRef(0);
@@ -404,12 +410,33 @@ export default function App() {
     try {
       if (action === 'cancel') {
         await cancelJob(jobId);
-      } else {
+      } else if (action === 'retry') {
         await retryJob(jobId);
+      } else if (action === 'pause') {
+        await pauseJob(jobId);
+      } else if (action === 'resume') {
+        await resumeJob(jobId);
+      } else if (action === 'abort') {
+        await abortJob(jobId);
       }
       await refreshAll();
     } catch (actionError) {
       setError(actionError.message || 'Job action failed.');
+    }
+  }
+
+  async function handleQueueAction(action) {
+    try {
+      if (action === 'pause') {
+        await pauseQueue();
+        setQueuePaused(true);
+      } else {
+        await resumeQueue();
+        setQueuePaused(false);
+      }
+      await refreshAll();
+    } catch (actionError) {
+      setError(actionError.message || 'Queue action failed.');
     }
   }
 
@@ -834,6 +861,16 @@ export default function App() {
 
         {activePage === 'jobs' && (
           <section className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
+            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+              <p className="text-sm text-slate-300">Queue controls</p>
+              <button
+                type="button"
+                onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}
+                className="rounded bg-amber-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-amber-400"
+              >
+                {queuePaused ? 'Resume Queue' : 'Pause Queue'}
+              </button>
+            </div>
             <table className="min-w-full divide-y divide-slate-800">
               <thead className="bg-slate-800/70">
                 <tr>
@@ -863,20 +900,42 @@ export default function App() {
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleJobAction('cancel', job.id)}
-                            className="rounded bg-rose-500 px-3 py-1 text-xs font-medium text-white hover:bg-rose-400"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleJobAction('retry', job.id)}
-                            className="rounded bg-cyan-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-cyan-400"
-                          >
-                            Retry
-                          </button>
+                          {job.status === 'running' && (
+                            <button
+                              type="button"
+                              onClick={() => handleJobAction('pause', job.id)}
+                              className="rounded bg-amber-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-amber-400"
+                            >
+                              Pause
+                            </button>
+                          )}
+                          {job.status === 'paused' && (
+                            <button
+                              type="button"
+                              onClick={() => handleJobAction('resume', job.id)}
+                              className="rounded bg-emerald-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-emerald-400"
+                            >
+                              Resume
+                            </button>
+                          )}
+                          {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
+                            <button
+                              type="button"
+                              onClick={() => handleJobAction('abort', job.id)}
+                              className="rounded bg-rose-500 px-3 py-1 text-xs font-medium text-white hover:bg-rose-400"
+                            >
+                              Abort
+                            </button>
+                          )}
+                          {['failed', 'cancelled'].includes(job.status) && (
+                            <button
+                              type="button"
+                              onClick={() => handleJobAction('retry', job.id)}
+                              className="rounded bg-cyan-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-cyan-400"
+                            >
+                              Retry
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
