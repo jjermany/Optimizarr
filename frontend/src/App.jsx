@@ -1,15 +1,22 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   cancelJob,
+  fetchLibraries,
+  fetchLibraryProfile,
   fetchJobs,
   fetchMetrics,
   fetchSettings,
+  fetchWsToken,
   retryJob,
   updateSettings,
 } from './api';
 import StatCard from './components/StatCard';
 
-const POLL_MS = 5000;
+const WS_PATH = '/ws';
+const FALLBACK_AFTER_MS = 30000;
+const FALLBACK_POLL_MS = 10000;
+const RECONNECT_BASE_DELAY_MS = 1000;
+const RECONNECT_MAX_DELAY_MS = 30000;
 
 const PAGE_KEYS = {
   dashboard: 'Dashboard',
@@ -39,9 +46,19 @@ export default function App() {
   const [activePage, setActivePage] = useState('dashboard');
   const [metrics, setMetrics] = useState();
   const [jobs, setJobs] = useState([]);
+  const [libraries, setLibraries] = useState([]);
+  const [libraryProfiles, setLibraryProfiles] = useState({});
   const [settings, setSettings] = useState();
   const [error, setError] = useState('');
   const [savingSettings, setSavingSettings] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState('connecting');
+  const [fallbackPollingEnabled, setFallbackPollingEnabled] = useState(false);
+
+  const wsRef = useRef();
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef();
+  const fallbackTimerRef = useRef();
+  const intentionallyClosedRef = useRef(false);
 
   const queueCount = useMemo(
     () => jobs.filter((job) => ['pending', 'queued', 'created'].includes(job.status?.toLowerCase())).length,
@@ -64,10 +81,172 @@ export default function App() {
     }
   }
 
+  async function refreshLibrariesAndProfiles() {
+    try {
+      const nextLibraries = await fetchLibraries();
+      setLibraries(nextLibraries);
+
+      const profileEntries = await Promise.all(
+        nextLibraries.map(async (library) => {
+          const profile = await fetchLibraryProfile(library.id);
+          return [library.id, profile];
+        }),
+      );
+
+      setLibraryProfiles(Object.fromEntries(profileEntries));
+      setError('');
+    } catch (refreshError) {
+      setError(refreshError.message || 'Could not refresh libraries.');
+    }
+  }
+
+  function mergeJobUpdate(nextJob) {
+    setJobs((prevJobs) => {
+      const existingIndex = prevJobs.findIndex((job) => job.id === nextJob.id);
+      if (existingIndex === -1) {
+        return [nextJob, ...prevJobs];
+      }
+
+      const updatedJobs = [...prevJobs];
+      updatedJobs[existingIndex] = { ...updatedJobs[existingIndex], ...nextJob };
+      return updatedJobs;
+    });
+  }
+
+  function wsUrlWithToken(token) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const base = import.meta.env.VITE_API_BASE ?? '';
+
+    if (base) {
+      const normalizedBase = base.startsWith('http') ? base : `${window.location.origin}${base}`;
+      const url = new URL(`${normalizedBase}${WS_PATH}`);
+      if (token) {
+        url.searchParams.set('token', token);
+      }
+      return url.toString().replace(/^http/, 'ws');
+    }
+
+    const url = new URL(`${protocol}//${window.location.host}${WS_PATH}`);
+    if (token) {
+      url.searchParams.set('token', token);
+    }
+    return url.toString();
+  }
+
   useEffect(() => {
     refreshAll();
-    const timer = setInterval(refreshAll, POLL_MS);
+    refreshLibrariesAndProfiles();
+  }, []);
+
+  useEffect(() => {
+    if (!fallbackPollingEnabled) {
+      return undefined;
+    }
+
+    const timer = setInterval(refreshAll, FALLBACK_POLL_MS);
     return () => clearInterval(timer);
+  }, [fallbackPollingEnabled]);
+
+  useEffect(() => {
+    intentionallyClosedRef.current = false;
+
+    function clearTimers() {
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = undefined;
+      }
+      if (fallbackTimerRef.current) {
+        clearTimeout(fallbackTimerRef.current);
+        fallbackTimerRef.current = undefined;
+      }
+    }
+
+    function scheduleFallbackPolling() {
+      if (fallbackTimerRef.current) {
+        return;
+      }
+
+      fallbackTimerRef.current = setTimeout(() => {
+        setFallbackPollingEnabled(true);
+        setConnectionStatus('offline');
+      }, FALLBACK_AFTER_MS);
+    }
+
+    function scheduleReconnect(connectFn) {
+      if (intentionallyClosedRef.current) {
+        return;
+      }
+
+      reconnectAttemptsRef.current += 1;
+      const delay = Math.min(
+        RECONNECT_BASE_DELAY_MS * (2 ** (reconnectAttemptsRef.current - 1)),
+        RECONNECT_MAX_DELAY_MS,
+      );
+      setConnectionStatus('reconnecting');
+      reconnectTimerRef.current = setTimeout(connectFn, delay);
+    }
+
+    async function connectWebSocket() {
+      try {
+        const tokenResponse = await fetchWsToken();
+        const websocket = new WebSocket(wsUrlWithToken(tokenResponse?.token));
+        wsRef.current = websocket;
+
+        websocket.onopen = () => {
+          reconnectAttemptsRef.current = 0;
+          setConnectionStatus('online');
+          setFallbackPollingEnabled(false);
+          if (fallbackTimerRef.current) {
+            clearTimeout(fallbackTimerRef.current);
+            fallbackTimerRef.current = undefined;
+          }
+        };
+
+        websocket.onmessage = (event) => {
+          const payload = JSON.parse(event.data);
+          if (payload.type === 'job_update') {
+            mergeJobUpdate(payload.data);
+            return;
+          }
+
+          if (payload.type === 'metrics_update') {
+            setMetrics(payload.data);
+            return;
+          }
+
+          if (payload.type === 'library_update') {
+            refreshLibrariesAndProfiles();
+          }
+        };
+
+        websocket.onerror = () => {
+          websocket.close();
+        };
+
+        websocket.onclose = () => {
+          if (intentionallyClosedRef.current) {
+            return;
+          }
+
+          scheduleFallbackPolling();
+          scheduleReconnect(connectWebSocket);
+        };
+      } catch {
+        scheduleFallbackPolling();
+        scheduleReconnect(connectWebSocket);
+      }
+    }
+
+    connectWebSocket();
+
+    return () => {
+      intentionallyClosedRef.current = true;
+      clearTimers();
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = undefined;
+      }
+    };
   }, []);
 
   async function handleJobAction(action, jobId) {
@@ -102,6 +281,10 @@ export default function App() {
       <div className="mx-auto max-w-6xl space-y-6">
         <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <h1 className="text-3xl font-bold text-cyan-200">Optimizarr</h1>
+          <p className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300">
+            WS: {connectionStatus}
+            {fallbackPollingEnabled ? ' (polling fallback active)' : ''}
+          </p>
           <nav className="flex gap-2 rounded-lg border border-slate-800 bg-slate-900 p-1">
             {Object.entries(PAGE_KEYS).map(([key, label]) => (
               <button
@@ -121,11 +304,13 @@ export default function App() {
         {error && <p className="rounded bg-red-900/50 p-3 text-red-200">{error}</p>}
 
         {activePage === 'dashboard' && (
-          <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
             <StatCard label="GPU %" value={`${metrics?.gpu_video_percent ?? 0}%`} />
             <StatCard label="CPU %" value={`${metrics?.cpu_percent ?? 0}%`} />
             <StatCard label="Active jobs" value={metrics?.active_jobs ?? 0} />
             <StatCard label="Queue count" value={queueCount} />
+            <StatCard label="Libraries" value={libraries.length} />
+            <StatCard label="Profiles" value={Object.keys(libraryProfiles).length} />
             <StatCard label="Enable toggle" value={settings?.enable_optimizer ? 'ON' : 'OFF'} />
           </section>
         )}

@@ -8,7 +8,9 @@ async function request(path, options) {
 
   if (!response.ok) {
     const detail = await response.text();
-    throw new Error(detail || `Request failed: ${response.status}`);
+    const error = new Error(detail || `Request failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
 
   return response.json();
@@ -20,6 +22,14 @@ export function fetchMetrics() {
 
 export function fetchJobs() {
   return request('/jobs');
+}
+
+export function fetchLibraries() {
+  return request('/libraries');
+}
+
+export function fetchLibraryProfile(libraryId) {
+  return request(`/libraries/${libraryId}/profile`);
 }
 
 export function cancelJob(jobId) {
@@ -39,4 +49,15 @@ export function updateSettings(payload) {
     method: 'POST',
     body: JSON.stringify(payload),
   });
+}
+
+export async function fetchWsToken() {
+  try {
+    return await request('/auth/ws-token');
+  } catch (error) {
+    if (error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
 }
