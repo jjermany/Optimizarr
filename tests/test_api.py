@@ -82,6 +82,44 @@ def test_get_and_update_settings():
         assert final_payload['schedule_end_hour'] == 17
 
 
+def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
+    queued = []
+    monkeypatch.setattr(routes.notification_service, 'enqueue_test_email', lambda: queued.append('sent'))
+
+    with TestClient(app) as client:
+        get_response = client.get('/notifications/settings')
+        assert get_response.status_code == 200
+        payload = get_response.json()
+        assert 'smtp_host' in payload
+        assert 'notify_on' in payload
+
+        update_response = client.put(
+            '/notifications/settings',
+            json={
+                'smtp_host': 'smtp.example.com',
+                'smtp_port': 2525,
+                'smtp_user': 'user',
+                'smtp_password': 'pass',
+                'smtp_tls': True,
+                'from_email': 'optimizarr@example.com',
+                'to_emails': ['ops@example.com', 'alerts@example.com'],
+                'notify_on': {'job_failed': True, 'job_complete': False, 'batch_complete': True},
+            },
+        )
+        assert update_response.status_code == 200
+        updated = update_response.json()
+        assert updated['smtp_host'] == 'smtp.example.com'
+        assert updated['smtp_port'] == 2525
+        assert updated['to_emails'] == ['ops@example.com', 'alerts@example.com']
+        assert updated['notify_on']['job_failed'] is True
+
+        test_response = client.post('/notifications/test')
+        assert test_response.status_code == 202
+        assert test_response.json() == {'status': 'queued'}
+
+    assert queued == ['sent']
+
+
 def test_ui_basic_auth(monkeypatch):
     monkeypatch.setenv('OPTIMIZARR_UI_USERNAME', 'admin')
     monkeypatch.setenv('OPTIMIZARR_UI_PASSWORD', 'secret')

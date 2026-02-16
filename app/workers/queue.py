@@ -11,6 +11,7 @@ from app.core.database import SessionLocal
 from app.models.job import Job
 from app.models.settings import Settings
 from app.services.job_service import prune_job_history
+from app.services.notification_service import enqueue_job_failed, handle_job_terminal_state
 from app.services.optimization_service import optimize_video
 from app.services.realtime_service import broker
 
@@ -143,6 +144,9 @@ def _process_job(job_id: int) -> None:
             _mark_finished(job)
         db.commit()
         _publish_job(job, throttle_progress=False)
+        if job.status == 'failed':
+            enqueue_job_failed(job)
+        handle_job_terminal_state(job.id, job.status)
     finally:
         db.close()
         with _pool_lock:

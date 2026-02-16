@@ -18,6 +18,7 @@ from app.models.library import (
     SpeedPresetEnum,
 )
 from app.models.settings import Settings
+from app.services import notification_service
 from app.services.job_service import cancel_job, create_job, get_job, job_exists_for_source, list_jobs, retry_job
 from app.services.monitoring_service import get_system_metrics
 from app.services.optimization_service import is_hdr_video, probe_video_height
@@ -155,6 +156,34 @@ class SettingsUpdateRequest(BaseModel):
     schedule_end_hour: int | None = Field(default=None, ge=0, le=23)
     process_hdr_only: bool | None = None
     history_retention_days: int | None = Field(default=None, ge=1)
+
+
+class NotificationTriggerSettings(BaseModel):
+    job_failed: bool = True
+    job_complete: bool = False
+    batch_complete: bool = True
+
+
+class NotificationSettingsResponse(BaseModel):
+    smtp_host: str
+    smtp_port: int
+    smtp_user: str
+    smtp_password: str
+    smtp_tls: bool
+    from_email: str
+    to_emails: list[str]
+    notify_on: NotificationTriggerSettings
+
+
+class NotificationSettingsUpdateRequest(BaseModel):
+    smtp_host: str | None = None
+    smtp_port: int | None = Field(default=None, ge=1, le=65535)
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_tls: bool | None = None
+    from_email: str | None = None
+    to_emails: list[str] | None = None
+    notify_on: NotificationTriggerSettings | None = None
 
 
 class LibraryBaseRequest(BaseModel):
@@ -335,6 +364,28 @@ def update_settings(
     return SettingsResponse.from_orm_settings(settings)
 
 
+@router.get('/notifications/settings', response_model=NotificationSettingsResponse)
+def get_notification_settings(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> NotificationSettingsResponse:
+    settings = notification_service.get_or_create_notification_settings(db)
+    return NotificationSettingsResponse(**notification_service.settings_to_payload(settings))
+
+
+@router.put('/notifications/settings', response_model=NotificationSettingsResponse)
+def update_notification_settings(
+    payload: NotificationSettingsUpdateRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> NotificationSettingsResponse:
+    settings = notification_service.update_settings(db, payload.model_dump(exclude_none=True))
+    return NotificationSettingsResponse(**notification_service.settings_to_payload(settings))
+
+
+@router.post('/notifications/test', status_code=202)
+def send_test_notification(_: None = Depends(require_ui_auth)) -> dict[str, str]:
+    notification_service.enqueue_test_email()
+    return {'status': 'queued'}
+
+
 @router.get('/libraries', response_model=list[LibraryResponse])
 def get_libraries(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> list[LibraryResponse]:
     libraries = db.query(Library).order_by(Library.name.asc()).all()
@@ -502,6 +553,7 @@ def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: S
     library = _get_library_or_404(db, library_id)
     jobs = _scan_library(db, library)
     payload = [JobResponse.from_orm_job(job) for job in jobs]
+    notification_service.register_scan_batch([job.id for job in jobs])
     for item in payload:
         broker.publish_job_update(item.model_dump(), throttle_progress=False)
     return ScanResponse(created_jobs=payload)
@@ -515,6 +567,7 @@ def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db))
         created_jobs.extend(_scan_library(db, library))
 
     payload = [JobResponse.from_orm_job(job) for job in created_jobs]
+    notification_service.register_scan_batch([job.id for job in created_jobs])
     for item in payload:
         broker.publish_job_update(item.model_dump(), throttle_progress=False)
     return ScanResponse(created_jobs=payload)

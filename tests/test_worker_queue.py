@@ -7,6 +7,7 @@ from app.core.database import SessionLocal
 from app.main import app
 from app.models.job import Job
 from app.services.optimization_service import OptimizationMetrics
+from app.services import notification_service
 from app.workers import queue
 
 
@@ -36,6 +37,10 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
         )
 
     monkeypatch.setattr(queue, 'optimize_video', always_fail)
+    failure_notifications = []
+    terminal_updates = []
+    monkeypatch.setattr(queue, 'enqueue_job_failed', lambda job: failure_notifications.append(job.id))
+    monkeypatch.setattr(queue, 'handle_job_terminal_state', lambda job_id, status: terminal_updates.append((job_id, status)))
 
     with SessionLocal() as session:
         session.query(Job).delete()
@@ -54,6 +59,8 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
     assert payload['status'] == 'failed'
     assert payload['retry_count'] == 1
     assert call_count['count'] == 2
+    assert failure_notifications == [job_id]
+    assert terminal_updates[-1] == (job_id, 'failed')
 
 
 def test_should_workers_run_honors_enable_and_schedule():
@@ -81,3 +88,23 @@ def test_should_cancel_when_shutdown_requested():
             assert queue._should_cancel(db, 999999) is True
     finally:
         queue.stop_event.clear()
+
+
+def test_batch_tracking_enqueues_completion_email(monkeypatch):
+    sent = []
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: sent.append((subject, body)))
+
+    with SessionLocal() as db:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_batch_complete = True
+        db.commit()
+
+    notification_service.register_scan_batch([301, 302])
+    notification_service.handle_job_terminal_state(301, 'complete')
+    assert sent == []
+
+    notification_service.handle_job_terminal_state(302, 'failed')
+    assert len(sent) == 1
+    assert sent[0][0] == 'Optimizarr batch complete'
+    assert 'Processed: 2' in sent[0][1]
+    assert 'Failed: 1' in sent[0][1]
