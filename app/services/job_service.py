@@ -6,6 +6,8 @@ from sqlalchemy.orm import Session
 
 from app.models.job import Job
 from app.models.library import LibraryProfile
+from app.models.settings import Settings
+from app.services import optimization_service
 
 TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
 
@@ -64,6 +66,18 @@ def list_jobs(db: Session) -> list[Job]:
     return db.query(Job).order_by(Job.created_at.desc()).all()
 
 
+def _get_settings(db: Session) -> Settings:
+    settings = db.query(Settings).first()
+    if settings:
+        return settings
+
+    settings = Settings()
+    db.add(settings)
+    db.commit()
+    db.refresh(settings)
+    return settings
+
+
 def cancel_job(db: Session, job_id: int) -> Job | None:
     job = get_job(db, job_id)
     if not job:
@@ -100,6 +114,63 @@ def retry_job(db: Session, job_id: int) -> Job | None:
     job.error_message = None
     job.cancel_requested = False
     job.completed_at = None
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def pause_job(db: Session, job_id: int) -> Job | None:
+    job = get_job(db, job_id)
+    if not job:
+        return None
+
+    if job.status != 'running':
+        return job
+
+    optimization_service.stop_active_ffmpeg(job_id)
+    job.status = 'paused'
+    job.cancel_requested = False
+    job.eta_seconds = None
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def resume_job(db: Session, job_id: int) -> Job | None:
+    job = get_job(db, job_id)
+    if not job:
+        return None
+
+    if job.status != 'paused':
+        return job
+
+    settings = _get_settings(db)
+    optimization_service.delete_partial_output(settings, job_id)
+    job.status = 'queued'
+    job.progress_percent = 0
+    job.fps = None
+    job.eta_seconds = None
+    job.output_path = None
+    job.error_message = None
+    job.cancel_requested = False
+    job.completed_at = None
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+def abort_job(db: Session, job_id: int) -> Job | None:
+    job = get_job(db, job_id)
+    if not job:
+        return None
+
+    settings = _get_settings(db)
+    optimization_service.stop_active_ffmpeg(job_id)
+    optimization_service.delete_workspace(settings, job_id)
+    job.status = 'failed'
+    job.error_message = 'Aborted by user'
+    job.cancel_requested = False
+    job.completed_at = datetime.utcnow()
     db.commit()
     db.refresh(job)
     return job

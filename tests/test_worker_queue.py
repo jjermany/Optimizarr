@@ -167,3 +167,15 @@ def test_preflight_job_sets_output_from_snapshot_and_checks_cache(monkeypatch, t
     assert job.output_path.endswith('-opt.mp4')
     assert job.status == 'failed'
     assert job.error_message == 'Insufficient cache space'
+
+
+def test_should_workers_run_honors_manual_pause():
+    settings = queue.Settings(enable_optimizer=True, global_quiet_enabled=False)
+
+    queue.pause_queue()
+    try:
+        assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is False
+    finally:
+        queue.resume_queue()
+
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is True

@@ -24,6 +24,7 @@ _pool_lock = Lock()
 _active_workers: dict[int, Thread] = {}
 _manager_thread: Thread | None = None
 _workers_allowed = True
+_queue_paused = False
 _last_prune_at = 0.0
 
 logger = logging.getLogger(__name__)
@@ -199,6 +200,15 @@ def _process_job(job_id: int) -> None:
         )
 
         db.refresh(job)
+        if job.status == 'paused':
+            db.commit()
+            _publish_job(job, throttle_progress=False)
+            return
+        if job.status == 'failed' and job.error_message == 'Aborted by user':
+            _publish_job(job, throttle_progress=False)
+            handle_job_terminal_state(job.id, job.status)
+            return
+
         job.status = metrics.status
         job.output_path = metrics.output_path
         job.fps = metrics.fps
@@ -286,7 +296,23 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
     return None
 
 
+def pause_queue() -> None:
+    global _queue_paused
+    _queue_paused = True
+
+
+def resume_queue() -> None:
+    global _queue_paused
+    _queue_paused = False
+
+
+def is_queue_paused() -> bool:
+    return _queue_paused
+
+
 def _should_workers_run(settings: Settings, now: datetime) -> bool:
+    if _queue_paused:
+        return False
     if not settings.enable_optimizer:
         return False
     return not _is_within_global_quiet_hours(settings, now)

@@ -294,7 +294,8 @@ def test_optimize_video_writes_partial_in_workspace(monkeypatch, tmp_path):
 
     captured = {}
 
-    def fake_run_ffmpeg(command, *args, **kwargs):
+    def fake_run_ffmpeg(job_id, command, *args, **kwargs):
+        captured['job_id'] = job_id
         captured['command'] = command
         return 0, 10.0, 24.0, False, []
 
@@ -304,6 +305,7 @@ def test_optimize_video_writes_partial_in_workspace(monkeypatch, tmp_path):
     metrics = optimization_service.optimize_video(str(input_path), LocalSettings(), job_id=22)
 
     assert metrics.status == 'complete'
+    assert captured['job_id'] == 22
     assert str(workspace_root / '22' / 'output.partial.mkv') in captured['command']
     assert not (media_dir / 'output.partial.mkv').exists()
     assert not (workspace_root / '22').exists()

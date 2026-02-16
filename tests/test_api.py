@@ -365,3 +365,60 @@ def test_scan_library_endpoint_honors_hdr_height_and_idempotency(monkeypatch, tm
             job = session.query(Job).filter(Job.id == first_created_jobs[0]['id']).first()
             assert job is not None
             assert job.profile_snapshot_json == first_snapshot
+
+
+def test_pause_resume_abort_and_queue_controls(monkeypatch, tmp_path):
+    from app.core.database import SessionLocal
+    from app.models.job import Job
+
+    workspace_root = tmp_path / 'workspaces'
+
+    with TestClient(app) as client:
+        settings_response = client.post('/settings', json={'workspace_root': str(workspace_root)})
+        assert settings_response.status_code == 200
+
+        create_response = client.post('/jobs', json={'source_path': '/media/demo.mkv'})
+        assert create_response.status_code == 201
+        job_id = create_response.json()['id']
+
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            assert job is not None
+            job.status = 'running'
+            db.commit()
+
+        pause_response = client.post(f'/jobs/{job_id}/pause')
+        assert pause_response.status_code == 200
+
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            assert job is not None
+            job.status = 'paused'
+            db.commit()
+
+        workspace = workspace_root / str(job_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        partial = workspace / 'output.partial.mkv'
+        partial.write_text('partial')
+
+        resume_response = client.post(f'/jobs/{job_id}/resume')
+        assert resume_response.status_code == 200
+        assert resume_response.json()['status'] == 'queued'
+        assert not partial.exists()
+
+        workspace.mkdir(parents=True, exist_ok=True)
+        partial.write_text('partial')
+
+        abort_response = client.post(f'/jobs/{job_id}/abort')
+        assert abort_response.status_code == 200
+        assert abort_response.json()['status'] == 'failed'
+        assert abort_response.json()['error_message'] == 'Aborted by user'
+        assert not workspace.exists()
+
+        pause_queue_response = client.post('/queue/pause')
+        assert pause_queue_response.status_code == 200
+        assert pause_queue_response.json() == {'status': 'paused'}
+
+        resume_queue_response = client.post('/queue/resume')
+        assert resume_queue_response.status_code == 200
+        assert resume_queue_response.json() == {'status': 'running'}
