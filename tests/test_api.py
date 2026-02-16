@@ -14,6 +14,32 @@ def test_health_endpoint():
     assert response.json() == {'status': 'ok'}
 
 
+def test_metrics_endpoint(monkeypatch):
+    monkeypatch.setattr(
+        routes,
+        'get_system_metrics',
+        lambda db: {
+            'gpu_video_percent': 11.0,
+            'gpu_render_percent': 22.0,
+            'cpu_percent': 33.0,
+            'ram_percent': 44.0,
+            'active_jobs': 2,
+        },
+    )
+
+    with TestClient(app) as client:
+        response = client.get('/metrics')
+
+    assert response.status_code == 200
+    assert response.json() == {
+        'gpu_video_percent': 11.0,
+        'gpu_render_percent': 22.0,
+        'cpu_percent': 33.0,
+        'ram_percent': 44.0,
+        'active_jobs': 2,
+    }
+
+
 def test_create_and_fetch_job():
     with TestClient(app) as client:
         create_response = client.post('/jobs', json={'source_path': '/media/demo.mkv'})
