@@ -326,3 +326,18 @@ def test_commit_output_file_cross_filesystem_path(monkeypatch, tmp_path):
     assert final.exists()
     assert not partial.exists()
     assert all('partial' not in p.name and 'temp' not in p.name for p in destination_dir.iterdir())
+
+
+def test_select_encoder_uses_preferred_when_available(monkeypatch):
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name in {'libx264', 'h264_qsv'})
+    selection = optimization_service._select_encoder({'codec': 'h264', 'preferred_video_encoder': 'libx264'})
+    assert selection is not None
+    assert selection.encoder == 'libx264'
+    assert selection.use_qsv is False
+
+
+def test_select_encoder_falls_back_when_preferred_unavailable(monkeypatch):
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_qsv')
+    selection = optimization_service._select_encoder({'codec': 'h264', 'preferred_video_encoder': 'libx264'})
+    assert selection is not None
+    assert selection.encoder == 'h264_qsv'

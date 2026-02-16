@@ -47,6 +47,16 @@ class OutputConflictPolicyEnum(str, Enum):
     rename = 'rename'
 
 
+class PreferredEncoderEnum(str, Enum):
+    auto = 'auto'
+    h264_qsv = 'h264_qsv'
+    libx264 = 'libx264'
+    hevc_qsv = 'hevc_qsv'
+    libx265 = 'libx265'
+    av1_qsv = 'av1_qsv'
+    libsvtav1 = 'libsvtav1'
+
+
 class Library(Base):
     __tablename__ = 'libraries'
 
@@ -80,6 +90,7 @@ class LibraryProfile(Base):
     speed_preset: Mapped[SpeedPresetEnum] = mapped_column(SqlEnum(SpeedPresetEnum), default=SpeedPresetEnum.medium, nullable=False)
     hdr_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     max_workers: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    schedule_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     schedule_start_hour: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     schedule_end_hour: Mapped[int] = mapped_column(Integer, default=9, nullable=False)
     schedule_policy: Mapped[SchedulePolicyEnum] = mapped_column(
@@ -94,6 +105,11 @@ class LibraryProfile(Base):
         nullable=False,
     )
     av1_fallback_codec: Mapped[CodecEnum] = mapped_column(SqlEnum(CodecEnum), default=CodecEnum.hevc, nullable=False)
+    preferred_video_encoder: Mapped[PreferredEncoderEnum] = mapped_column(
+        SqlEnum(PreferredEncoderEnum),
+        default=PreferredEncoderEnum.auto,
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

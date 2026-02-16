@@ -3,5 +3,13 @@
 @tailwind utilities;
 
 body {
-  @apply bg-slate-950 text-slate-100;
+  @apply bg-slate-950 text-slate-100 antialiased;
+}
+
+input[type='checkbox'] {
+  @apply h-4 w-4 accent-cyan-400;
+}
+
+input[type='range'] {
+  @apply accent-cyan-400;
 }

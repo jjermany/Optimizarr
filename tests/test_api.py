@@ -552,3 +552,33 @@ def test_recovery_endpoint_can_keep_workspace_and_not_requeue(tmp_path):
             assert job.status == 'interrupted'
 
         assert marker.exists()
+
+
+def test_abort_all_jobs_endpoint():
+    with TestClient(app) as client:
+        first = client.post('/jobs', json={'source_path': '/media/a.mkv'})
+        second = client.post('/jobs', json={'source_path': '/media/b.mkv'})
+        assert first.status_code == 201
+        assert second.status_code == 201
+
+        response = client.post('/jobs/abort-all')
+        assert response.status_code == 200
+        payload = response.json()
+        assert len(payload['aborted_job_ids']) >= 2
+
+
+def test_get_encoders_endpoint(monkeypatch):
+    monkeypatch.setattr(routes, 'require_ui_auth', lambda credentials=None: None)
+    monkeypatch.setattr('app.services.optimization_service.available_encoders_by_codec', lambda: {
+        'h264': ['h264_qsv', 'libx264'],
+        'hevc': ['hevc_qsv'],
+        'av1': ['libsvtav1'],
+    })
+
+    with TestClient(app) as client:
+        response = client.get('/encoders')
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data['encoders']) == 3
+        h264 = next(item for item in data['encoders'] if item['codec'] == 'h264')
+        assert h264['available_encoders'] == ['h264_qsv', 'libx264']

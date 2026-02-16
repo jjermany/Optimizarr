@@ -139,10 +139,17 @@ def init_db() -> None:
         _add_column_if_missing(connection, 'jobs', 'fallback_reason', 'fallback_reason TEXT')
         _add_column_if_missing(connection, 'jobs', 'error_message', 'error_message TEXT')
         _add_column_if_missing(connection, 'library_profiles', 'schedule_policy', "schedule_policy VARCHAR(14) NOT NULL DEFAULT 'finish_current'")
+        _add_column_if_missing(connection, 'library_profiles', 'schedule_enabled', 'schedule_enabled BOOLEAN NOT NULL DEFAULT 1')
 
         _add_column_if_missing(
             connection,
             'library_profiles',
             'output_conflict_policy',
             "output_conflict_policy VARCHAR(9) NOT NULL DEFAULT 'skip'",
+        )
+        _add_column_if_missing(
+            connection,
+            'library_profiles',
+            'preferred_video_encoder',
+            "preferred_video_encoder VARCHAR(8) NOT NULL DEFAULT 'auto'",
         )

@@ -354,6 +354,8 @@ def _library_job_can_start(settings: Settings, now: datetime, library: Library |
 def _library_is_in_schedule_window(now: datetime, profile: LibraryProfile | None) -> bool:
     if profile is None:
         return True
+    if not profile.schedule_enabled:
+        return True
     return _is_within_schedule_window(now.hour, profile.schedule_start_hour, profile.schedule_end_hour)
 
 

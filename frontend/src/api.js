@@ -63,6 +63,10 @@ export function fetchLibraryProfile(libraryId) {
   return request(`/libraries/${libraryId}/profile`);
 }
 
+export function fetchEncoders() {
+  return request('/encoders');
+}
+
 export function updateLibraryProfile(libraryId, payload) {
   return request(`/libraries/${libraryId}/profile`, {
     method: 'PUT',
@@ -88,6 +92,10 @@ export function resumeJob(jobId) {
 
 export function abortJob(jobId) {
   return request(`/jobs/${jobId}/abort`, { method: 'POST' });
+}
+
+export function abortAllJobs() {
+  return request('/jobs/abort-all', { method: 'POST' });
 }
 
 export function pauseQueue() {
