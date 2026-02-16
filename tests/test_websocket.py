@@ -74,3 +74,31 @@ def test_job_progress_throttle_limits_to_one_event_per_second():
     assert subscription.queue.qsize() == 1
 
     broker.unsubscribe(subscription.client_id)
+
+
+def test_ws_stream_receives_queue_pause_system_event():
+    with TestClient(app) as client:
+        with client.websocket_connect('/ws') as websocket:
+            pause_response = client.post('/queue/pause')
+            assert pause_response.status_code == 200
+
+            event = _receive_event_of_type(websocket, 'system_event')
+            while event['data'].get('event') != 'queue_paused':
+                event = _receive_event_of_type(websocket, 'system_event')
+            assert event['data']['reason'] == 'manual'
+
+            client.post('/queue/resume')
+
+
+def test_realtime_broker_publish_system_event():
+    broker = RealtimeBroker()
+    subscription = broker.subscribe()
+
+    broker.publish_system_event('job_aborted', job_id=77)
+    event = subscription.queue.get(timeout=1)
+
+    assert event['type'] == 'system_event'
+    assert event['data']['event'] == 'job_aborted'
+    assert event['data']['job_id'] == 77
+
+    broker.unsubscribe(subscription.client_id)

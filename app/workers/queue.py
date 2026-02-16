@@ -33,6 +33,7 @@ _workers_allowed = True
 _queue_paused = False
 _last_prune_at = 0.0
 _last_schedule_check_at = 0.0
+_last_workers_allowed: bool | None = None
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,7 @@ def _required_cache_free_bytes(settings: Settings) -> int:
 
 def _pause_queue_for_low_disk_space(settings: Settings, free_bytes: int) -> None:
     global _disk_space_alert_active
-    pause_queue()
+    pause_queue(reason='low_disk')
 
     with _pool_lock:
         if _disk_space_alert_active:
@@ -370,6 +371,12 @@ def _restart_paused_schedule_jobs(db: Session, settings: Settings, now: datetime
         job.completed_at = None
         db.commit()
         _publish_job(job, throttle_progress=False)
+        broker.publish_system_event(
+            'schedule_policy_state_changed',
+            state='resumed_from_schedule',
+            job_id=job.id,
+            library_id=job.library_id,
+        )
 
 
 def _enforce_library_schedule_policies(db: Session, settings: Settings, now: datetime) -> None:
@@ -396,6 +403,12 @@ def _enforce_library_schedule_policies(db: Session, settings: Settings, now: dat
         job.eta_seconds = None
         db.commit()
         _publish_job(job, throttle_progress=False)
+        broker.publish_system_event(
+            'schedule_policy_state_changed',
+            state='paused_schedule',
+            job_id=job.id,
+            library_id=job.library_id,
+        )
 
 
 def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> int | None:
@@ -419,14 +432,20 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
     return None
 
 
-def pause_queue() -> None:
+def pause_queue(reason: str = 'manual') -> None:
     global _queue_paused
+    if _queue_paused:
+        return
     _queue_paused = True
+    broker.publish_system_event('queue_paused', reason=reason)
 
 
-def resume_queue() -> None:
+def resume_queue(reason: str = 'manual') -> None:
     global _queue_paused
+    if not _queue_paused:
+        return
     _queue_paused = False
+    broker.publish_system_event('queue_resumed', reason=reason)
 
 
 def is_queue_paused() -> bool:
@@ -445,11 +464,20 @@ def _manager_loop() -> None:
     global _workers_allowed
     global _last_prune_at
     global _last_schedule_check_at
+    global _last_workers_allowed
     while not stop_event.is_set():
         db = SessionLocal()
         try:
             settings = _get_settings(db)
             _workers_allowed = _should_workers_run(settings, datetime.now())
+            if _last_workers_allowed is None:
+                _last_workers_allowed = _workers_allowed
+            elif _workers_allowed != _last_workers_allowed:
+                if _workers_allowed:
+                    broker.publish_system_event('queue_resumed', reason='schedule')
+                else:
+                    broker.publish_system_event('queue_paused', reason='schedule')
+                _last_workers_allowed = _workers_allowed
 
             now_monotonic = time.monotonic()
             if now_monotonic - _last_prune_at >= 60:
@@ -498,6 +526,7 @@ def start_worker() -> Thread:
 
 def stop_worker() -> None:
     global _manager_thread
+    global _last_workers_allowed
     stop_event.set()
 
     db = SessionLocal()
@@ -520,3 +549,4 @@ def stop_worker() -> None:
             worker.join(timeout=5)
 
     _manager_thread = None
+    _last_workers_allowed = None

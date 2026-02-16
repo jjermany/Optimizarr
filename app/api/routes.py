@@ -612,6 +612,7 @@ def pause_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
         raise HTTPException(status_code=404, detail='Job not found')
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    broker.publish_system_event('job_paused', job_id=response.id)
     return response
 
 
@@ -622,6 +623,7 @@ def resume_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
         raise HTTPException(status_code=404, detail='Job not found')
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    broker.publish_system_event('job_resumed', job_id=response.id)
     return response
 
 
@@ -632,6 +634,7 @@ def abort_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
         raise HTTPException(status_code=404, detail='Job not found')
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    broker.publish_system_event('job_aborted', job_id=response.id)
     return response
 
 
@@ -639,18 +642,27 @@ def abort_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
 @router.post('/recovery/run', response_model=RecoveryResponse)
 def run_recovery_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> RecoveryResponse:
     summary = run_startup_recovery(db)
-    return RecoveryResponse(**summary)
+    for job_id in summary.get('interrupted_job_ids', []):
+        broker.publish_system_event('job_interrupted', job_id=job_id)
+    broker.publish_system_event(
+        'recovery_summary',
+        trigger='manual',
+        recovered_jobs=summary.get('recovered_jobs', 0),
+        requeued_jobs=summary.get('requeued_jobs', 0),
+        cleaned_workspaces=summary.get('cleaned_workspaces', 0),
+    )
+    return RecoveryResponse(recovered_jobs=summary.get('recovered_jobs', 0), requeued_jobs=summary.get('requeued_jobs', 0), cleaned_workspaces=summary.get('cleaned_workspaces', 0))
 
 @router.post('/queue/pause')
 def pause_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
-    worker_queue.pause_queue()
+    worker_queue.pause_queue(reason='manual')
     broker.publish_notification('queue_paused')
     return {'status': 'paused'}
 
 
 @router.post('/queue/resume')
 def resume_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
-    worker_queue.resume_queue()
+    worker_queue.resume_queue(reason='manual')
     broker.publish_notification('queue_resumed')
     return {'status': 'running'}
 

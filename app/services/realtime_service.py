@@ -79,6 +79,11 @@ class RealtimeBroker:
     def publish_metrics_update(self, payload: dict[str, Any]) -> None:
         self.publish('metrics_update', payload)
 
+    def publish_system_event(self, event: str, **data: Any) -> None:
+        payload = {'event': event}
+        payload.update(data)
+        self.publish('system_event', payload)
+
     def publish_job_update(self, job_payload: dict[str, Any], *, throttle_progress: bool = True) -> None:
         job_id = int(job_payload['id'])
         status = str(job_payload.get('status') or '')

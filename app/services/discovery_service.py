@@ -14,6 +14,7 @@ from app.models.library import Library, LibraryProfile
 from app.models.settings import DiscoveryMethodEnum, Settings
 from app.services.job_service import create_job, job_exists_for_source
 from app.services.optimization_service import is_hdr_video, probe_video_height
+from app.services.realtime_service import broker
 
 try:
     from watchdog.events import FileSystemEventHandler
@@ -289,7 +290,15 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
     if profile.hdr_only and not is_hdr_video(source_path):
         return None
 
-    return create_job(db, source_path, library_id=library.id, profile=profile)
+    job = create_job(db, source_path, library_id=library.id, profile=profile)
+    broker.publish_system_event(
+        'discovery_job_queued',
+        job_id=job.id,
+        source_path=source_path,
+        library_id=library.id,
+        library_name=library.name,
+    )
+    return job
 
 
 _manager = DiscoveryManager()

@@ -22,9 +22,18 @@ async def lifespan(_: FastAPI):
     logger.info('Starting Optimizarr application')
     init_db()
     with SessionLocal() as db:
-        run_startup_recovery(db)
+        summary = run_startup_recovery(db)
     refresh_encoder_cache()
     broker.start()
+    for job_id in summary.get('interrupted_job_ids', []):
+        broker.publish_system_event('job_interrupted', job_id=job_id)
+    broker.publish_system_event(
+        'recovery_summary',
+        trigger='startup',
+        recovered_jobs=summary.get('recovered_jobs', 0),
+        requeued_jobs=summary.get('requeued_jobs', 0),
+        cleaned_workspaces=summary.get('cleaned_workspaces', 0),
+    )
     notification_thread = start_notification_worker()
     worker_thread = start_worker()
     discovery_thread = start_discovery_worker()
