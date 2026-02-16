@@ -18,7 +18,7 @@ def test_create_and_fetch_job():
         create_response = client.post('/api/jobs', json={'source_path': '/media/demo.mkv'})
         assert create_response.status_code == 201
         job = create_response.json()
-        assert job['status'] in {'queued', 'processing', 'completed'}
+        assert job['status'] in {'queued', 'running', 'complete'}
 
         time.sleep(0.3)
 
@@ -26,4 +26,4 @@ def test_create_and_fetch_job():
         assert get_response.status_code == 200
         fetched = get_response.json()
         assert fetched['source_path'] == '/media/demo.mkv'
-        assert fetched['status'] in {'queued', 'processing', 'completed'}
+        assert fetched['status'] in {'queued', 'running', 'complete'}

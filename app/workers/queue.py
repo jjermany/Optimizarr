@@ -1,3 +1,4 @@
+from datetime import datetime
 from queue import Empty, Queue
 from threading import Event, Thread
 import time
@@ -5,7 +6,7 @@ import time
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
-from app.models.job import OptimizationJob
+from app.models.job import Job
 
 job_queue: Queue[int] = Queue()
 stop_event = Event()
@@ -16,17 +17,20 @@ def enqueue_job(job_id: int) -> None:
 
 
 def _process(job_id: int, db: Session) -> None:
-    job = db.query(OptimizationJob).filter(OptimizationJob.id == job_id).first()
+    job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
         return
 
-    job.status = 'processing'
+    job.status = 'running'
+    job.progress_percent = 10
     db.commit()
 
     # Placeholder for optimization pipeline.
     time.sleep(0.1)
 
-    job.status = 'completed'
+    job.status = 'complete'
+    job.progress_percent = 100
+    job.completed_at = datetime.utcnow()
     db.commit()
 
 
