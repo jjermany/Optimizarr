@@ -323,6 +323,19 @@ def test_create_and_fetch_job():
         assert fetched['status'] in {'queued', 'starting', 'running', 'complete', 'failed', 'skipped', 'cancelled'}
 
 
+def test_delete_job_endpoint():
+    with TestClient(app) as client:
+        create_response = client.post('/jobs', json={'source_path': '/media/delete-me.mkv'})
+        assert create_response.status_code == 201
+        job_id = create_response.json()['id']
+
+        delete_response = client.delete(f'/jobs/{job_id}')
+        assert delete_response.status_code == 204
+
+        get_response = client.get(f'/jobs/{job_id}')
+        assert get_response.status_code == 404
+
+
 def test_scan_cancel_and_retry_endpoints(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()
