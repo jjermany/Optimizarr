@@ -72,3 +72,12 @@ def test_should_workers_run_handles_overnight_windows():
     assert queue._should_workers_run(settings, datetime(2024, 1, 1, 23, 0, 0)) is True
     assert queue._should_workers_run(settings, datetime(2024, 1, 1, 3, 0, 0)) is True
     assert queue._should_workers_run(settings, datetime(2024, 1, 1, 12, 0, 0)) is False
+
+
+def test_should_cancel_when_shutdown_requested():
+    queue.stop_event.set()
+    try:
+        with SessionLocal() as db:
+            assert queue._should_cancel(db, 999999) is True
+    finally:
+        queue.stop_event.clear()

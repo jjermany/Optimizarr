@@ -17,3 +17,4 @@ class Settings(Base):
     schedule_start_hour: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     schedule_end_hour: Mapped[int] = mapped_column(Integer, default=23, nullable=False)
     process_hdr_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    history_retention_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)

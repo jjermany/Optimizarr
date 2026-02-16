@@ -1,6 +1,9 @@
+import os
 from pathlib import Path
+import secrets
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -12,6 +15,32 @@ from app.services.optimization_service import is_hdr_video
 
 router = APIRouter()
 MEDIA_ROOT = Path('/media')
+APP_VERSION = os.getenv('OPTIMIZARR_VERSION', '0.1.0')
+security = HTTPBasic(auto_error=False)
+
+
+def require_ui_auth(credentials: HTTPBasicCredentials | None = Depends(security)) -> None:
+    username = os.getenv('OPTIMIZARR_UI_USERNAME')
+    password = os.getenv('OPTIMIZARR_UI_PASSWORD')
+
+    if not username and not password:
+        return
+
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Authentication required',
+            headers={'WWW-Authenticate': 'Basic'},
+        )
+
+    username_ok = secrets.compare_digest(credentials.username, username or '')
+    password_ok = secrets.compare_digest(credentials.password, password or '')
+    if not (username_ok and password_ok):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid credentials',
+            headers={'WWW-Authenticate': 'Basic'},
+        )
 
 
 class JobCreateRequest(BaseModel):
@@ -60,6 +89,7 @@ class SettingsResponse(BaseModel):
     schedule_start_hour: int
     schedule_end_hour: int
     process_hdr_only: bool
+    history_retention_days: int
 
     @classmethod
     def from_orm_settings(cls, settings: Settings):
@@ -73,6 +103,7 @@ class SettingsResponse(BaseModel):
             schedule_start_hour=settings.schedule_start_hour,
             schedule_end_hour=settings.schedule_end_hour,
             process_hdr_only=settings.process_hdr_only,
+            history_retention_days=settings.history_retention_days,
         )
 
 
@@ -86,6 +117,7 @@ class SettingsUpdateRequest(BaseModel):
     schedule_start_hour: int | None = Field(default=None, ge=0, le=23)
     schedule_end_hour: int | None = Field(default=None, ge=0, le=23)
     process_hdr_only: bool | None = None
+    history_retention_days: int | None = Field(default=None, ge=1)
 
 
 def _get_settings(db: Session) -> Settings:
@@ -107,14 +139,23 @@ def health() -> dict[str, str]:
     return {'status': 'ok'}
 
 
+@router.get('/version')
+def version() -> dict[str, str]:
+    return {'version': APP_VERSION}
+
+
 @router.get('/settings', response_model=SettingsResponse)
-def get_settings(db: Session = Depends(get_db)) -> SettingsResponse:
+def get_settings(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> SettingsResponse:
     settings = _get_settings(db)
     return SettingsResponse.from_orm_settings(settings)
 
 
 @router.post('/settings', response_model=SettingsResponse)
-def update_settings(payload: SettingsUpdateRequest, db: Session = Depends(get_db)) -> SettingsResponse:
+def update_settings(
+    payload: SettingsUpdateRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> SettingsResponse:
     settings = _get_settings(db)
 
     updates = payload.model_dump(exclude_none=True)
@@ -127,26 +168,30 @@ def update_settings(payload: SettingsUpdateRequest, db: Session = Depends(get_db
 
 
 @router.get('/metrics', response_model=MetricsResponse)
-def metrics(db: Session = Depends(get_db)) -> MetricsResponse:
+def metrics(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> MetricsResponse:
     return MetricsResponse(**get_system_metrics(db))
 
 
 @router.post('/jobs', response_model=JobResponse, status_code=201)
 @router.post('/api/jobs', response_model=JobResponse, status_code=201, include_in_schema=False)
-def create_optimization_job(payload: JobCreateRequest, db: Session = Depends(get_db)) -> JobResponse:
+def create_optimization_job(
+    payload: JobCreateRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> JobResponse:
     job = create_job(db, payload.source_path)
     return JobResponse.from_orm_job(job)
 
 
 @router.get('/jobs', response_model=list[JobResponse])
 @router.get('/api/jobs', response_model=list[JobResponse], include_in_schema=False)
-def get_jobs(db: Session = Depends(get_db)) -> list[JobResponse]:
+def get_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> list[JobResponse]:
     return [JobResponse.from_orm_job(job) for job in list_jobs(db)]
 
 
 @router.get('/jobs/{job_id}', response_model=JobResponse)
 @router.get('/api/jobs/{job_id}', response_model=JobResponse, include_in_schema=False)
-def get_job_by_id(job_id: int, db: Session = Depends(get_db)) -> JobResponse:
+def get_job_by_id(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
     job = get_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
@@ -154,7 +199,7 @@ def get_job_by_id(job_id: int, db: Session = Depends(get_db)) -> JobResponse:
 
 
 @router.post('/jobs/scan', response_model=ScanResponse)
-def scan_jobs(db: Session = Depends(get_db)) -> ScanResponse:
+def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
     settings = _get_settings(db)
     created_jobs = []
 
@@ -179,7 +224,7 @@ def scan_jobs(db: Session = Depends(get_db)) -> ScanResponse:
 
 
 @router.post('/jobs/{job_id}/cancel', response_model=JobResponse)
-def cancel_job_endpoint(job_id: int, db: Session = Depends(get_db)) -> JobResponse:
+def cancel_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
     job = cancel_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
@@ -187,7 +232,7 @@ def cancel_job_endpoint(job_id: int, db: Session = Depends(get_db)) -> JobRespon
 
 
 @router.post('/jobs/{job_id}/retry', response_model=JobResponse)
-def retry_job_endpoint(job_id: int, db: Session = Depends(get_db)) -> JobResponse:
+def retry_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
     job = retry_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')

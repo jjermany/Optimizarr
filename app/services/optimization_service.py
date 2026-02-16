@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import subprocess
+import time
 from typing import Callable
 
 
@@ -160,6 +161,7 @@ def optimize_video(
     current_fps: float | None = None
     processed_seconds = 0.0
     was_cancelled = False
+    started_at = time.monotonic()
 
     assert process.stdout is not None
     for raw_line in process.stdout:
@@ -195,7 +197,12 @@ def optimize_video(
             if duration and duration > 0:
                 progress_percent = max(0, min(99, int((processed_seconds / duration) * 100)))
                 remaining = max(0.0, duration - processed_seconds)
-                eta_seconds = int(remaining)
+                elapsed = max(0.1, time.monotonic() - started_at)
+                processing_rate = processed_seconds / elapsed
+                if processing_rate > 0:
+                    eta_seconds = int(remaining / processing_rate)
+                else:
+                    eta_seconds = int(remaining)
 
             progress_callback(
                 {

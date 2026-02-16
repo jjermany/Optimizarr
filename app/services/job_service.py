@@ -1,4 +1,5 @@
 from datetime import datetime
+from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
@@ -62,3 +63,24 @@ def retry_job(db: Session, job_id: int) -> Job | None:
     db.commit()
     db.refresh(job)
     return job
+
+
+def prune_job_history(db: Session, retention_days: int) -> int:
+    if retention_days <= 0:
+        return 0
+
+    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    stale_jobs = (
+        db.query(Job)
+        .filter(Job.status.in_(TERMINAL_STATUSES), Job.completed_at.is_not(None), Job.completed_at < cutoff)
+        .all()
+    )
+
+    deleted_count = len(stale_jobs)
+    for stale_job in stale_jobs:
+        db.delete(stale_job)
+
+    if deleted_count:
+        db.commit()
+
+    return deleted_count

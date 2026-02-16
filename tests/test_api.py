@@ -14,6 +14,14 @@ def test_health_endpoint():
     assert response.json() == {'status': 'ok'}
 
 
+def test_version_endpoint():
+    with TestClient(app) as client:
+        response = client.get('/version')
+
+    assert response.status_code == 200
+    assert 'version' in response.json()
+
+
 def test_metrics_endpoint(monkeypatch):
     monkeypatch.setattr(
         routes,
@@ -49,6 +57,7 @@ def test_get_and_update_settings():
         payload = get_response.json()
         assert 'enable_optimizer' in payload
         assert 'schedule_start_hour' in payload
+        assert 'history_retention_days' in payload
 
         update_response = client.post(
             '/settings',
@@ -72,6 +81,21 @@ def test_get_and_update_settings():
         assert final_payload['enable_optimizer'] is False
         assert final_payload['schedule_start_hour'] == 9
         assert final_payload['schedule_end_hour'] == 17
+
+
+def test_ui_basic_auth(monkeypatch):
+    monkeypatch.setenv('OPTIMIZARR_UI_USERNAME', 'admin')
+    monkeypatch.setenv('OPTIMIZARR_UI_PASSWORD', 'secret')
+
+    with TestClient(app) as client:
+        unauthorized = client.get('/settings')
+        assert unauthorized.status_code == 401
+
+        wrong = client.get('/settings', auth=('admin', 'wrong'))
+        assert wrong.status_code == 401
+
+        ok = client.get('/settings', auth=('admin', 'secret'))
+        assert ok.status_code == 200
 
 
 def test_create_and_fetch_job():
