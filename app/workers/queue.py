@@ -12,6 +12,7 @@ from app.models.job import Job
 from app.models.settings import Settings
 from app.services.job_service import prune_job_history
 from app.services.optimization_service import optimize_video
+from app.services.realtime_service import broker
 
 stop_event = Event()
 _pool_lock = Lock()
@@ -48,6 +49,29 @@ def _mark_finished(job: Job) -> None:
         job.completed_at = datetime.utcnow()
 
 
+def _publish_job(job: Job, *, throttle_progress: bool = True) -> None:
+    broker.publish_job_update(
+        {
+            'id': job.id,
+            'status': job.status,
+            'source_path': job.source_path,
+            'output_path': job.output_path,
+            'retry_count': job.retry_count,
+            'cancel_requested': job.cancel_requested,
+            'progress_percent': job.progress_percent,
+            'fps': job.fps,
+            'eta_seconds': job.eta_seconds,
+            'encoder_used': job.encoder_used,
+            'codec_used': job.codec_used,
+            'hwaccel_used': job.hwaccel_used,
+            'used_fallback': job.used_fallback,
+            'fallback_reason': job.fallback_reason,
+            'error_message': job.error_message,
+        },
+        throttle_progress=throttle_progress,
+    )
+
+
 def _process_job(job_id: int) -> None:
     db = SessionLocal()
     try:
@@ -59,6 +83,7 @@ def _process_job(job_id: int) -> None:
             job.status = 'cancelled'
             _mark_finished(job)
             db.commit()
+            _publish_job(job, throttle_progress=False)
             return
 
         settings = _get_settings(db)
@@ -71,6 +96,7 @@ def _process_job(job_id: int) -> None:
         job.used_fallback = None
         job.fallback_reason = None
         db.commit()
+        _publish_job(job, throttle_progress=False)
 
         def on_progress(update: dict[str, float | int | None]) -> None:
             db.refresh(job)
@@ -81,6 +107,7 @@ def _process_job(job_id: int) -> None:
             eta_seconds = update.get('eta_seconds')
             job.eta_seconds = int(eta_seconds) if isinstance(eta_seconds, int) else None
             db.commit()
+            _publish_job(job, throttle_progress=True)
 
         metrics = optimize_video(
             job.input_path,
@@ -115,6 +142,7 @@ def _process_job(job_id: int) -> None:
         else:
             _mark_finished(job)
         db.commit()
+        _publish_job(job, throttle_progress=False)
     finally:
         db.close()
         with _pool_lock:
@@ -133,6 +161,7 @@ def _claim_next_queued_job(db: Session) -> int | None:
 
     job.status = 'starting'
     db.commit()
+    _publish_job(job, throttle_progress=False)
     return job.id
 
 

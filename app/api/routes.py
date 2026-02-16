@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ from app.models.settings import Settings
 from app.services.job_service import cancel_job, create_job, get_job, job_exists_for_source, list_jobs, retry_job
 from app.services.monitoring_service import get_system_metrics
 from app.services.optimization_service import is_hdr_video, probe_video_height
+from app.services.realtime_service import broker, expected_ws_token, next_message
 
 router = APIRouter()
 MEDIA_ROOT = Path('/media')
@@ -52,6 +53,15 @@ def require_ui_auth(credentials: HTTPBasicCredentials | None = Depends(security)
         )
 
 
+def _ws_token_or_unauthorized(token: str | None) -> None:
+    required_token = expected_ws_token()
+    if required_token is None:
+        return
+
+    if not token or not secrets.compare_digest(token, required_token):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid websocket token')
+
+
 class JobCreateRequest(BaseModel):
     source_path: str = Field(..., examples=['/media/in/movie.mkv'])
 
@@ -63,6 +73,9 @@ class JobResponse(BaseModel):
     output_path: str | None = None
     retry_count: int
     cancel_requested: bool
+    progress_percent: int
+    fps: float | None = None
+    eta_seconds: int | None = None
     encoder_used: str | None = None
     codec_used: str | None = None
     hwaccel_used: bool | None = None
@@ -79,6 +92,9 @@ class JobResponse(BaseModel):
             output_path=job.output_path,
             retry_count=job.retry_count,
             cancel_requested=job.cancel_requested,
+            progress_percent=job.progress_percent,
+            fps=job.fps,
+            eta_seconds=job.eta_seconds,
             encoder_used=job.encoder_used,
             codec_used=job.codec_used,
             hwaccel_used=job.hwaccel_used,
@@ -315,6 +331,7 @@ def update_settings(
 
     db.commit()
     db.refresh(settings)
+    broker.publish_notification('settings_updated')
     return SettingsResponse.from_orm_settings(settings)
 
 
@@ -338,6 +355,7 @@ def create_library(
     db.add(library)
     db.commit()
     db.refresh(library)
+    broker.publish_library_update('created', LibraryResponse.from_orm_library(library).model_dump())
 
     profile = LibraryProfile(library_id=library.id)
     db.add(profile)
@@ -367,14 +385,18 @@ def update_library(
 
     db.commit()
     db.refresh(library)
-    return LibraryResponse.from_orm_library(library)
+    payload = LibraryResponse.from_orm_library(library)
+    broker.publish_library_update('updated', payload.model_dump())
+    return payload
 
 
 @router.delete('/libraries/{library_id}', status_code=204)
 def delete_library(library_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> None:
     library = _get_library_or_404(db, library_id)
+    payload = LibraryResponse.from_orm_library(library).model_dump()
     db.delete(library)
     db.commit()
+    broker.publish_library_update('deleted', payload)
 
 
 @router.get('/libraries/{library_id}/profile', response_model=LibraryProfileResponse)
@@ -404,6 +426,7 @@ def update_library_profile(
 
     db.commit()
     db.refresh(profile)
+    broker.publish_library_update('profile_updated', {'library_id': library_id})
     return LibraryProfileResponse.from_orm_profile(profile)
 
 
@@ -420,13 +443,16 @@ def create_optimization_job(
     db: Session = Depends(get_db),
 ) -> JobResponse:
     job = create_job(db, payload.source_path)
-    return JobResponse.from_orm_job(job)
+    response = JobResponse.from_orm_job(job)
+    broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    return response
 
 
 @router.get('/jobs', response_model=list[JobResponse])
 @router.get('/api/jobs', response_model=list[JobResponse], include_in_schema=False)
 def get_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> list[JobResponse]:
-    return [JobResponse.from_orm_job(job) for job in list_jobs(db)]
+    jobs = [JobResponse.from_orm_job(job) for job in list_jobs(db)]
+    return jobs
 
 
 @router.get('/jobs/{job_id}', response_model=JobResponse)
@@ -435,7 +461,9 @@ def get_job_by_id(job_id: int, _: None = Depends(require_ui_auth), db: Session =
     job = get_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
-    return JobResponse.from_orm_job(job)
+    response = JobResponse.from_orm_job(job)
+    broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    return response
 
 
 def _scan_library(db: Session, library: Library) -> list:
@@ -473,7 +501,10 @@ def _scan_library(db: Session, library: Library) -> list:
 def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
     library = _get_library_or_404(db, library_id)
     jobs = _scan_library(db, library)
-    return ScanResponse(created_jobs=[JobResponse.from_orm_job(job) for job in jobs])
+    payload = [JobResponse.from_orm_job(job) for job in jobs]
+    for item in payload:
+        broker.publish_job_update(item.model_dump(), throttle_progress=False)
+    return ScanResponse(created_jobs=payload)
 
 
 @router.post('/scan', response_model=ScanResponse)
@@ -483,7 +514,10 @@ def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db))
     for library in libraries:
         created_jobs.extend(_scan_library(db, library))
 
-    return ScanResponse(created_jobs=[JobResponse.from_orm_job(job) for job in created_jobs])
+    payload = [JobResponse.from_orm_job(job) for job in created_jobs]
+    for item in payload:
+        broker.publish_job_update(item.model_dump(), throttle_progress=False)
+    return ScanResponse(created_jobs=payload)
 
 
 @router.post('/jobs/{job_id}/cancel', response_model=JobResponse)
@@ -491,7 +525,9 @@ def cancel_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     job = cancel_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
-    return JobResponse.from_orm_job(job)
+    response = JobResponse.from_orm_job(job)
+    broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    return response
 
 
 @router.post('/jobs/{job_id}/retry', response_model=JobResponse)
@@ -499,4 +535,39 @@ def retry_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     job = retry_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
-    return JobResponse.from_orm_job(job)
+    response = JobResponse.from_orm_job(job)
+    broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    return response
+
+
+@router.get('/auth/ws-token')
+def get_ws_token(_: None = Depends(require_ui_auth)) -> dict[str, str]:
+    token = expected_ws_token()
+    if token is None:
+        raise HTTPException(status_code=404, detail='WebSocket token not required')
+    return {'token': token}
+
+
+@router.websocket('/ws')
+async def websocket_events(websocket: WebSocket) -> None:
+    try:
+        _ws_token_or_unauthorized(websocket.query_params.get('token'))
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+
+    await websocket.accept()
+    subscription = broker.subscribe()
+
+    try:
+        broker.publish_notification('websocket_client_connected')
+        while True:
+            event = await next_message(subscription)
+            if event is None:
+                await websocket.send_json({'type': 'notification', 'data': {'message': 'keepalive', 'level': 'debug'}})
+                continue
+            await websocket.send_json(event)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        broker.unsubscribe(subscription.client_id)
