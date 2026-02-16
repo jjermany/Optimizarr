@@ -196,7 +196,7 @@ export default function App() {
       } else if (!library.enabled) {
         state = 'Paused (library disabled)';
       } else if (profile && !isWithinWindow(nowHour, profile.schedule_start_hour, profile.schedule_end_hour)) {
-        state = 'Paused (schedule)';
+        state = 'Paused by schedule';
       } else if (
         settings?.global_quiet_enabled
         && isWithinWindow(nowHour, settings.global_quiet_start_hour, settings.global_quiet_end_hour)
@@ -842,6 +842,18 @@ export default function App() {
                         onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_end_hour: parseHour(event.target.value) }))}
                       />
                       {profileErrors.schedule_end_hour && <p className="text-xs text-red-300">{profileErrors.schedule_end_hour}</p>}
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">Schedule close behavior</span>
+                      <select
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={profileDraft.schedule_policy ?? 'finish_current'}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_policy: event.target.value }))}
+                      >
+                        <option value="finish_current">Finish current job</option>
+                        <option value="pause_current">Pause current job</option>
+                      </select>
                     </label>
                   </div>
 

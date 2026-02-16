@@ -99,3 +99,5 @@ def init_db() -> None:
         _add_column_if_missing(connection, 'jobs', 'used_fallback', 'used_fallback BOOLEAN')
         _add_column_if_missing(connection, 'jobs', 'fallback_reason', 'fallback_reason TEXT')
         _add_column_if_missing(connection, 'jobs', 'error_message', 'error_message TEXT')
+        _add_column_if_missing(connection, 'library_profiles', 'schedule_policy', "schedule_policy VARCHAR(14) NOT NULL DEFAULT 'finish_current'")
+

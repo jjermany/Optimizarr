@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 from app.core.database import SessionLocal
 from app.main import app
 from app.models.job import Job
+from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
+from app.models.settings import Settings
 from app.services.optimization_service import OptimizationMetrics
 from app.services import notification_service
 from app.workers import queue
@@ -179,3 +181,82 @@ def test_should_workers_run_honors_manual_pause():
         queue.resume_queue()
 
     assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is True
+
+
+def test_enforce_schedule_policy_pauses_running_job(monkeypatch):
+    stopped = []
+    monkeypatch.setattr(queue, 'stop_active_ffmpeg', lambda job_id: stopped.append(job_id))
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.commit()
+
+        settings = Settings(enable_optimizer=True, global_quiet_enabled=False)
+        db.add(settings)
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(
+            library_id=library.id,
+            schedule_start_hour=1,
+            schedule_end_hour=2,
+            schedule_policy=SchedulePolicyEnum.pause_current,
+        )
+        db.add(profile)
+        db.commit()
+
+        job = Job(input_path='/media/movies/a.mkv', status='running', library_id=library.id)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        queue._enforce_library_schedule_policies(db, settings, datetime(2024, 1, 1, 12, 0, 0))
+
+        db.refresh(job)
+        assert job.status == 'paused_schedule'
+        assert stopped == [job.id]
+
+
+def test_enforce_schedule_policy_requeues_paused_schedule_job_when_window_opens(monkeypatch):
+    deleted_partials = []
+    monkeypatch.setattr(queue, 'delete_partial_output', lambda settings, job_id: deleted_partials.append(job_id))
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.commit()
+
+        settings = Settings(enable_optimizer=True, global_quiet_enabled=False)
+        db.add(settings)
+        library = Library(name='Shows', path='/media/shows', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(
+            library_id=library.id,
+            schedule_start_hour=8,
+            schedule_end_hour=20,
+            schedule_policy=SchedulePolicyEnum.pause_current,
+        )
+        db.add(profile)
+        db.commit()
+
+        job = Job(input_path='/media/shows/e1.mkv', status='paused_schedule', library_id=library.id, progress_percent=37)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        queue._enforce_library_schedule_policies(db, settings, datetime(2024, 1, 1, 10, 0, 0))
+
+        db.refresh(job)
+        assert job.status == 'queued'
+        assert job.progress_percent == 0
+        assert deleted_partials == [job.id]

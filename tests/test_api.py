@@ -178,6 +178,7 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
         profile_response = client.get(f'/libraries/{library_id}/profile')
         assert profile_response.status_code == 200
         assert profile_response.json()['output_suffix'] == '-1080p'
+        assert profile_response.json()['schedule_policy'] == 'finish_current'
 
         update_profile_response = client.put(
             f'/libraries/{library_id}/profile',
@@ -188,6 +189,7 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
                 'max_workers': 2,
                 'schedule_start_hour': 3,
                 'schedule_end_hour': 11,
+                'schedule_policy': 'pause_current',
             },
         )
         assert update_profile_response.status_code == 200
@@ -197,6 +199,7 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
         assert updated_profile['av1_fallback_codec'] == 'h264'
         assert updated_profile['schedule_start_hour'] == 3
         assert updated_profile['schedule_end_hour'] == 11
+        assert updated_profile['schedule_policy'] == 'pause_current'
 
         invalid_path_response = client.post('/libraries', json={'name': 'Bad', 'path': '/tmp/not-allowed'})
         assert invalid_path_response.status_code == 422

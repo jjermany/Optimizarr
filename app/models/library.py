@@ -36,6 +36,11 @@ class SpeedPresetEnum(str, Enum):
     fast = 'fast'
 
 
+class SchedulePolicyEnum(str, Enum):
+    finish_current = 'finish_current'
+    pause_current = 'pause_current'
+
+
 class Library(Base):
     __tablename__ = 'libraries'
 
@@ -71,6 +76,11 @@ class LibraryProfile(Base):
     max_workers: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     schedule_start_hour: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     schedule_end_hour: Mapped[int] = mapped_column(Integer, default=9, nullable=False)
+    schedule_policy: Mapped[SchedulePolicyEnum] = mapped_column(
+        SqlEnum(SchedulePolicyEnum),
+        default=SchedulePolicyEnum.finish_current,
+        nullable=False,
+    )
     output_suffix: Mapped[str] = mapped_column(String(64), default='-1080p', nullable=False)
     av1_fallback_codec: Mapped[CodecEnum] = mapped_column(SqlEnum(CodecEnum), default=CodecEnum.hevc, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

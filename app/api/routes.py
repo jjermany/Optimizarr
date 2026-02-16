@@ -16,6 +16,7 @@ from app.models.library import (
     Library,
     LibraryProfile,
     SpeedPresetEnum,
+    SchedulePolicyEnum,
 )
 from app.models.settings import DiscoveryMethodEnum, Settings
 from app.services import notification_service
@@ -272,6 +273,7 @@ class LibraryProfileResponse(BaseModel):
     max_workers: int
     schedule_start_hour: int
     schedule_end_hour: int
+    schedule_policy: SchedulePolicyEnum
     output_suffix: str
     av1_fallback_codec: CodecEnum
 
@@ -290,6 +292,7 @@ class LibraryProfileResponse(BaseModel):
             max_workers=profile.max_workers,
             schedule_start_hour=profile.schedule_start_hour,
             schedule_end_hour=profile.schedule_end_hour,
+            schedule_policy=profile.schedule_policy,
             output_suffix=profile.output_suffix,
             av1_fallback_codec=profile.av1_fallback_codec,
         )
@@ -308,6 +311,7 @@ class LibraryProfileUpdateRequest(BaseModel):
     max_workers: int | None = Field(default=None, ge=1)
     schedule_start_hour: int | None = Field(default=None, ge=0, le=23)
     schedule_end_hour: int | None = Field(default=None, ge=0, le=23)
+    schedule_policy: SchedulePolicyEnum | None = None
     output_suffix: str | None = None
     av1_fallback_codec: CodecEnum | None = None
 

@@ -30,6 +30,7 @@ def _profile_snapshot(profile: LibraryProfile | None) -> str | None:
             'max_workers': profile.max_workers,
             'schedule_start_hour': profile.schedule_start_hour,
             'schedule_end_hour': profile.schedule_end_hour,
+            'schedule_policy': profile.schedule_policy.value,
             'output_suffix': profile.output_suffix,
             'av1_fallback_codec': profile.av1_fallback_codec.value,
         }
