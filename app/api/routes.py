@@ -200,7 +200,9 @@ class RecoveryResponse(BaseModel):
 
 class NotificationTriggerSettings(BaseModel):
     job_failed: bool = True
-    job_complete: bool = False
+    job_interrupted: bool = True
+    low_disk_pause: bool = True
+    recovery_ran: bool = True
     batch_complete: bool = True
 
 
@@ -568,7 +570,7 @@ def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: S
     library = _get_library_or_404(db, library_id)
     jobs = scan_library(db, library)
     payload = [JobResponse.from_orm_job(job) for job in jobs]
-    notification_service.register_scan_batch([job.id for job in jobs])
+    notification_service.register_scan_batch([job.id for job in jobs], library_name=library.name)
     for item in payload:
         broker.publish_job_update(item.model_dump(), throttle_progress=False)
     return ScanResponse(created_jobs=payload)
@@ -644,14 +646,24 @@ def run_recovery_endpoint(_: None = Depends(require_ui_auth), db: Session = Depe
     summary = run_startup_recovery(db)
     for job_id in summary.get('interrupted_job_ids', []):
         broker.publish_system_event('job_interrupted', job_id=job_id)
+        notification_service.enqueue_job_interrupted(job_id=job_id)
+    recovered_jobs = summary.get('recovered_jobs', 0)
+    requeued_jobs = summary.get('requeued_jobs', 0)
+    cleaned_workspaces = summary.get('cleaned_workspaces', 0)
     broker.publish_system_event(
         'recovery_summary',
         trigger='manual',
-        recovered_jobs=summary.get('recovered_jobs', 0),
-        requeued_jobs=summary.get('requeued_jobs', 0),
-        cleaned_workspaces=summary.get('cleaned_workspaces', 0),
+        recovered_jobs=recovered_jobs,
+        requeued_jobs=requeued_jobs,
+        cleaned_workspaces=cleaned_workspaces,
     )
-    return RecoveryResponse(recovered_jobs=summary.get('recovered_jobs', 0), requeued_jobs=summary.get('requeued_jobs', 0), cleaned_workspaces=summary.get('cleaned_workspaces', 0))
+    notification_service.enqueue_recovery_ran(
+        trigger='manual',
+        recovered_jobs=recovered_jobs,
+        requeued_jobs=requeued_jobs,
+        cleaned_workspaces=cleaned_workspaces,
+    )
+    return RecoveryResponse(recovered_jobs=recovered_jobs, requeued_jobs=requeued_jobs, cleaned_workspaces=cleaned_workspaces)
 
 @router.post('/queue/pause')
 def pause_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:

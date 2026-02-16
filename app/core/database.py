@@ -111,6 +111,25 @@ def init_db() -> None:
             'cleanup_workspaces_on_startup BOOLEAN NOT NULL DEFAULT 1',
         )
 
+        _add_column_if_missing(
+            connection,
+            'notification_settings',
+            'notify_on_job_interrupted',
+            'notify_on_job_interrupted BOOLEAN NOT NULL DEFAULT 1',
+        )
+        _add_column_if_missing(
+            connection,
+            'notification_settings',
+            'notify_on_low_disk_pause',
+            'notify_on_low_disk_pause BOOLEAN NOT NULL DEFAULT 1',
+        )
+        _add_column_if_missing(
+            connection,
+            'notification_settings',
+            'notify_on_recovery_ran',
+            'notify_on_recovery_ran BOOLEAN NOT NULL DEFAULT 1',
+        )
+
         _add_column_if_missing(connection, 'jobs', 'library_id', 'library_id INTEGER')
         _add_column_if_missing(connection, 'jobs', 'profile_snapshot_json', 'profile_snapshot_json TEXT')
         _add_column_if_missing(connection, 'jobs', 'encoder_used', 'encoder_used VARCHAR(64)')
@@ -127,4 +146,3 @@ def init_db() -> None:
             'output_conflict_policy',
             "output_conflict_policy VARCHAR(9) NOT NULL DEFAULT 'skip'",
         )
-
