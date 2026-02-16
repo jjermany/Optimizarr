@@ -33,7 +33,7 @@ Optimizarr is a FastAPI-based media optimization service designed to discover me
 docker compose up --build
 ```
 
-The service listens on `http://localhost:8080`.
+The frontend listens on `http://localhost:8085` and proxies API traffic to the backend container.
 
 Mounted volumes in `docker-compose.yml`:
 
@@ -75,44 +75,44 @@ If both UI auth variables are unset, API endpoints are open.
 
 ### Health and system
 
-- `GET /health`
-- `GET /version`
-- `GET /metrics`
+- `GET /api/health`
+- `GET /api/version`
+- `GET /api/metrics`
 
 ### Settings
 
-- `GET /settings`
-- `POST /settings`
+- `GET /api/settings`
+- `POST /api/settings`
 
 ### Notification settings
 
-- `GET /notifications/settings`
-- `PUT /notifications/settings`
-- `POST /notifications/test`
+- `GET /api/notifications/settings`
+- `PUT /api/notifications/settings`
+- `POST /api/notifications/test`
 
 ### Libraries and profiles
 
-- `GET /libraries`
-- `POST /libraries`
-- `PUT /libraries/{library_id}`
-- `DELETE /libraries/{library_id}`
-- `GET /libraries/{library_id}/profile`
-- `PUT /libraries/{library_id}/profile`
-- `POST /libraries/{library_id}/scan`
+- `GET /api/libraries`
+- `POST /api/libraries`
+- `PUT /api/libraries/{library_id}`
+- `DELETE /api/libraries/{library_id}`
+- `GET /api/libraries/{library_id}/profile`
+- `PUT /api/libraries/{library_id}/profile`
+- `POST /api/libraries/{library_id}/scan`
 
 ### Jobs and queue
 
-- `POST /jobs`
-- `GET /jobs`
-- `GET /jobs/{job_id}`
-- `POST /jobs/{job_id}/cancel`
-- `POST /jobs/{job_id}/retry`
-- `POST /jobs/{job_id}/pause`
-- `POST /jobs/{job_id}/resume`
-- `POST /jobs/{job_id}/abort`
-- `POST /scan` (scan all enabled libraries)
-- `POST /queue/pause`
-- `POST /queue/resume`
+- `POST /api/jobs`
+- `GET /api/jobs`
+- `GET /api/jobs/{job_id}`
+- `POST /api/jobs/{job_id}/cancel`
+- `POST /api/jobs/{job_id}/retry`
+- `POST /api/jobs/{job_id}/pause`
+- `POST /api/jobs/{job_id}/resume`
+- `POST /api/jobs/{job_id}/abort`
+- `POST /api/scan` (scan all enabled libraries)
+- `POST /api/queue/pause`
+- `POST /api/queue/resume`
 
 Backward-compatible aliases also exist for:
 
@@ -122,8 +122,8 @@ Backward-compatible aliases also exist for:
 
 ### Recovery and websocket
 
-- `POST /recovery/run`
-- `GET /auth/ws-token` (only when a websocket token is required)
+- `POST /api/recovery/run`
+- `GET /api/auth/ws-token` (only when a websocket token is required)
 - `WS /ws`
 
 ## Testing

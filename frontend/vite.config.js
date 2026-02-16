@@ -6,9 +6,18 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/metrics': 'http://localhost:8000',
-      '/jobs': 'http://localhost:8000',
-      '/settings': 'http://localhost:8000',
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api/, ''),
+      },
+      '/ws': {
+        target: 'ws://localhost:8080',
+        ws: true,
+      },
+      '/docs': 'http://localhost:8080',
+      '/redoc': 'http://localhost:8080',
+      '/openapi.json': 'http://localhost:8080',
     },
   },
 });

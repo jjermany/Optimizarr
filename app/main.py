@@ -64,3 +64,4 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title='plex-optimizer', lifespan=lifespan)
 app.include_router(router)
+app.include_router(router, prefix='/api')
