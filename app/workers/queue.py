@@ -15,6 +15,7 @@ stop_event = Event()
 _pool_lock = Lock()
 _active_workers: dict[int, Thread] = {}
 _manager_thread: Thread | None = None
+_workers_allowed = True
 
 
 TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
@@ -118,27 +119,43 @@ def _claim_next_queued_job(db: Session) -> int | None:
     return job.id
 
 
+def _is_within_schedule_window(current_hour: int, start_hour: int, end_hour: int) -> bool:
+    if start_hour <= end_hour:
+        return start_hour <= current_hour <= end_hour
+    return current_hour >= start_hour or current_hour <= end_hour
+
+
+def _should_workers_run(settings: Settings, now: datetime) -> bool:
+    if not settings.enable_optimizer:
+        return False
+    return _is_within_schedule_window(now.hour, settings.schedule_start_hour, settings.schedule_end_hour)
+
+
 def _manager_loop() -> None:
+    global _workers_allowed
     while not stop_event.is_set():
         db = SessionLocal()
         try:
             settings = _get_settings(db)
+            _workers_allowed = _should_workers_run(settings, datetime.now())
+
             max_workers = max(1, int(settings.max_workers))
 
-            while True:
-                with _pool_lock:
-                    active_count = len(_active_workers)
-                if active_count >= max_workers:
-                    break
+            if _workers_allowed:
+                while True:
+                    with _pool_lock:
+                        active_count = len(_active_workers)
+                    if active_count >= max_workers:
+                        break
 
-                next_job_id = _claim_next_queued_job(db)
-                if not next_job_id:
-                    break
+                    next_job_id = _claim_next_queued_job(db)
+                    if not next_job_id:
+                        break
 
-                worker = Thread(target=_process_job, args=(next_job_id,), daemon=True, name=f'optimizer-job-{next_job_id}')
-                with _pool_lock:
-                    _active_workers[next_job_id] = worker
-                worker.start()
+                    worker = Thread(target=_process_job, args=(next_job_id,), daemon=True, name=f'optimizer-job-{next_job_id}')
+                    worker.start()
+                    with _pool_lock:
+                        _active_workers[next_job_id] = worker
         finally:
             db.close()
 
@@ -161,4 +178,5 @@ def stop_worker() -> None:
     with _pool_lock:
         workers = list(_active_workers.values())
     for worker in workers:
-        worker.join(timeout=1)
+        if worker.is_alive():
+            worker.join(timeout=1)

@@ -1,8 +1,11 @@
+from datetime import datetime
 import time
 
 from fastapi.testclient import TestClient
 
+from app.core.database import SessionLocal
 from app.main import app
+from app.models.job import Job
 from app.services.optimization_service import OptimizationMetrics
 from app.workers import queue
 
@@ -34,7 +37,14 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
 
     monkeypatch.setattr(queue, 'optimize_video', always_fail)
 
+    with SessionLocal() as session:
+        session.query(Job).delete()
+        session.commit()
+
     with TestClient(app) as client:
+        settings_response = client.post('/settings', json={'enable_optimizer': True, 'schedule_start_hour': 0, 'schedule_end_hour': 23})
+        assert settings_response.status_code == 200
+
         create_response = client.post('/jobs', json={'source_path': target_input})
         assert create_response.status_code == 201
         job_id = create_response.json()['id']
@@ -44,3 +54,21 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
     assert payload['status'] == 'failed'
     assert payload['retry_count'] == 1
     assert call_count['count'] == 2
+
+
+def test_should_workers_run_honors_enable_and_schedule():
+    settings = queue.Settings(enable_optimizer=True, schedule_start_hour=9, schedule_end_hour=17)
+
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is True
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 8, 0, 0)) is False
+
+    settings.enable_optimizer = False
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is False
+
+
+def test_should_workers_run_handles_overnight_windows():
+    settings = queue.Settings(enable_optimizer=True, schedule_start_hour=22, schedule_end_hour=6)
+
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 23, 0, 0)) is True
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 3, 0, 0)) is True
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 12, 0, 0)) is False

@@ -40,6 +40,40 @@ def test_metrics_endpoint(monkeypatch):
     }
 
 
+
+
+def test_get_and_update_settings():
+    with TestClient(app) as client:
+        get_response = client.get('/settings')
+        assert get_response.status_code == 200
+        payload = get_response.json()
+        assert 'enable_optimizer' in payload
+        assert 'schedule_start_hour' in payload
+
+        update_response = client.post(
+            '/settings',
+            json={
+                'enable_optimizer': False,
+                'schedule_start_hour': 9,
+                'schedule_end_hour': 17,
+                'max_workers': 2,
+            },
+        )
+        assert update_response.status_code == 200
+        updated = update_response.json()
+        assert updated['enable_optimizer'] is False
+        assert updated['schedule_start_hour'] == 9
+        assert updated['schedule_end_hour'] == 17
+        assert updated['max_workers'] == 2
+
+        final_response = client.get('/settings')
+        assert final_response.status_code == 200
+        final_payload = final_response.json()
+        assert final_payload['enable_optimizer'] is False
+        assert final_payload['schedule_start_hour'] == 9
+        assert final_payload['schedule_end_hour'] == 17
+
+
 def test_create_and_fetch_job():
     with TestClient(app) as client:
         create_response = client.post('/jobs', json={'source_path': '/media/demo.mkv'})
