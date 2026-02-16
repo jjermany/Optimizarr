@@ -12,11 +12,17 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.job import Job
-from app.models.library import Library, LibraryProfile
+from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
 from app.models.settings import Settings
 from app.services.job_service import prune_job_history
 from app.services.notification_service import enqueue_job_failed, handle_job_terminal_state
-from app.services.optimization_service import is_hdr_video, optimize_video, probe_video_height
+from app.services.optimization_service import (
+    delete_partial_output,
+    is_hdr_video,
+    optimize_video,
+    probe_video_height,
+    stop_active_ffmpeg,
+)
 from app.services.realtime_service import broker
 
 stop_event = Event()
@@ -26,6 +32,7 @@ _manager_thread: Thread | None = None
 _workers_allowed = True
 _queue_paused = False
 _last_prune_at = 0.0
+_last_schedule_check_at = 0.0
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +207,7 @@ def _process_job(job_id: int) -> None:
         )
 
         db.refresh(job)
-        if job.status == 'paused':
+        if job.status in {'paused', 'paused_schedule'}:
             db.commit()
             _publish_job(job, throttle_progress=False)
             return
@@ -275,6 +282,64 @@ def _library_job_can_start(settings: Settings, now: datetime, library: Library |
     return _is_within_schedule_window(now.hour, profile.schedule_start_hour, profile.schedule_end_hour)
 
 
+def _library_is_in_schedule_window(now: datetime, profile: LibraryProfile | None) -> bool:
+    if profile is None:
+        return True
+    return _is_within_schedule_window(now.hour, profile.schedule_start_hour, profile.schedule_end_hour)
+
+
+def _restart_paused_schedule_jobs(db: Session, settings: Settings, now: datetime) -> None:
+    paused_jobs = (
+        db.query(Job, LibraryProfile)
+        .join(Library, Job.library_id == Library.id)
+        .outerjoin(LibraryProfile, LibraryProfile.library_id == Library.id)
+        .filter(Job.status == 'paused_schedule')
+        .all()
+    )
+
+    for job, profile in paused_jobs:
+        if not _library_is_in_schedule_window(now, profile):
+            continue
+
+        delete_partial_output(settings, job.id)
+        job.status = 'queued'
+        job.progress_percent = 0
+        job.fps = None
+        job.eta_seconds = None
+        job.output_path = None
+        job.error_message = None
+        job.cancel_requested = False
+        job.completed_at = None
+        db.commit()
+        _publish_job(job, throttle_progress=False)
+
+
+def _enforce_library_schedule_policies(db: Session, settings: Settings, now: datetime) -> None:
+    _restart_paused_schedule_jobs(db, settings, now)
+
+    running_jobs = (
+        db.query(Job, LibraryProfile)
+        .join(Library, Job.library_id == Library.id)
+        .outerjoin(LibraryProfile, LibraryProfile.library_id == Library.id)
+        .filter(Job.status == 'running')
+        .all()
+    )
+
+    for job, profile in running_jobs:
+        if _library_is_in_schedule_window(now, profile):
+            continue
+        if profile is None or profile.schedule_policy != SchedulePolicyEnum.pause_current:
+            continue
+
+        stop_active_ffmpeg(job.id)
+        db.refresh(job)
+        job.status = 'paused_schedule'
+        job.cancel_requested = False
+        job.eta_seconds = None
+        db.commit()
+        _publish_job(job, throttle_progress=False)
+
+
 def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> int | None:
     queued = (
         db.query(Job, Library, LibraryProfile)
@@ -321,17 +386,23 @@ def _should_workers_run(settings: Settings, now: datetime) -> bool:
 def _manager_loop() -> None:
     global _workers_allowed
     global _last_prune_at
+    global _last_schedule_check_at
     while not stop_event.is_set():
         db = SessionLocal()
         try:
             settings = _get_settings(db)
             _workers_allowed = _should_workers_run(settings, datetime.now())
 
-            if time.monotonic() - _last_prune_at >= 60:
+            now_monotonic = time.monotonic()
+            if now_monotonic - _last_prune_at >= 60:
                 deleted = prune_job_history(db, int(settings.history_retention_days))
                 if deleted:
                     logger.info('Pruned %s stale completed jobs', deleted)
-                _last_prune_at = time.monotonic()
+                _last_prune_at = now_monotonic
+
+            if now_monotonic - _last_schedule_check_at >= 60:
+                _enforce_library_schedule_policies(db, settings, datetime.now())
+                _last_schedule_check_at = now_monotonic
 
             max_workers = max(1, int(settings.max_workers))
 
