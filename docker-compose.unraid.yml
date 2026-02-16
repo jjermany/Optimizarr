@@ -13,8 +13,8 @@ services:
   frontend:
     image: ghcr.io/jjermany/optimizarr-frontend:latest
     container_name: optimizarr-frontend
-    ports:
-      - "8085:80"
     depends_on:
       - api
+    ports:
+      - "8085:80"
     restart: unless-stopped

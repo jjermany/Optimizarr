@@ -1,15 +1,13 @@
-version: "3.9"
-
 services:
   api:
     build:
-      context: ./backend
+      context: .
       dockerfile: Dockerfile
     container_name: optimizarr-api
     volumes:
-      - ./data/media:/media
-      - ./data/config:/config
-      - ./data/cache:/cache
+      - ./media:/media
+      - ./config:/config
+      - ./cache:/cache
     devices:
       - /dev/dri:/dev/dri
     restart: unless-stopped

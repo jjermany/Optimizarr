@@ -23,21 +23,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # ---- API image ----
       - name: Build and push API image
         uses: docker/build-push-action@v5
         with:
-          context: ./backend
+          context: .
+          file: Dockerfile
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/optimizarr-api:latest
             ghcr.io/${{ github.repository_owner }}/optimizarr-api:${{ github.sha }}
 
-      # ---- Frontend image ----
       - name: Build and push Frontend image
         uses: docker/build-push-action@v5
         with:
           context: ./frontend
+          file: ./frontend/Dockerfile
           push: true
           tags: |
             ghcr.io/${{ github.repository_owner }}/optimizarr-frontend:latest
