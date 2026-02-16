@@ -1,19 +1,20 @@
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.models.settings import Settings
 from app.services.job_service import cancel_job, create_job, get_job, list_jobs, retry_job
+from app.services.optimization_service import is_hdr_video
 
 router = APIRouter()
+MEDIA_ROOT = Path('/media')
 
 
 class JobCreateRequest(BaseModel):
     source_path: str = Field(..., examples=['/media/in/movie.mkv'])
-
-
-class JobScanRequest(BaseModel):
-    source_paths: list[str] = Field(default_factory=list)
 
 
 class JobResponse(BaseModel):
@@ -38,6 +39,20 @@ class JobResponse(BaseModel):
 
 class ScanResponse(BaseModel):
     created_jobs: list[JobResponse]
+
+
+def _get_settings(db: Session) -> Settings:
+    settings = db.query(Settings).first()
+    if not settings:
+        settings = Settings()
+        db.add(settings)
+        db.commit()
+        db.refresh(settings)
+    return settings
+
+
+def _output_path_for(source_path: Path) -> Path:
+    return source_path.with_name(f'{source_path.stem}-1080p.mkv')
 
 
 @router.get('/health')
@@ -68,8 +83,27 @@ def get_job_by_id(job_id: int, db: Session = Depends(get_db)) -> JobResponse:
 
 
 @router.post('/jobs/scan', response_model=ScanResponse)
-def scan_jobs(payload: JobScanRequest, db: Session = Depends(get_db)) -> ScanResponse:
-    jobs = [create_job(db, source_path) for source_path in payload.source_paths]
+def scan_jobs(db: Session = Depends(get_db)) -> ScanResponse:
+    settings = _get_settings(db)
+    created_jobs = []
+
+    for media_file in MEDIA_ROOT.rglob('*'):
+        if not media_file.is_file() or media_file.suffix.lower() != '.mkv':
+            continue
+
+        if media_file.stem.endswith('-1080p'):
+            continue
+
+        output_path = _output_path_for(media_file)
+        if output_path.exists():
+            continue
+
+        if settings.process_hdr_only and not is_hdr_video(str(media_file)):
+            continue
+
+        created_jobs.append(create_job(db, str(media_file)))
+
+    jobs = created_jobs
     return ScanResponse(created_jobs=[JobResponse.from_orm_job(job) for job in jobs])
 
 

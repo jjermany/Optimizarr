@@ -74,6 +74,16 @@ def _probe_duration_seconds(input_path: str) -> float | None:
         return None
 
 
+def is_hdr_video(input_path: str) -> bool:
+    transfer = _run_ffprobe_value(input_path, 'stream=color_transfer')
+    primaries = _run_ffprobe_value(input_path, 'stream=color_primaries')
+
+    normalized_transfer = (transfer or '').strip().lower()
+    normalized_primaries = (primaries or '').strip().lower()
+
+    return normalized_transfer in {'smpte2084', 'arib-std-b67'} or normalized_primaries == 'bt2020'
+
+
 def _build_ffmpeg_command(input_path: str, output_path: str, bitrate_mbps: int) -> list[str]:
     return [
         'ffmpeg',
