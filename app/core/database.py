@@ -44,6 +44,24 @@ def init_db() -> None:
             'history_retention_days',
             'history_retention_days INTEGER NOT NULL DEFAULT 30',
         )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'global_quiet_enabled',
+            'global_quiet_enabled BOOLEAN NOT NULL DEFAULT 0',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'global_quiet_start_hour',
+            'global_quiet_start_hour INTEGER NOT NULL DEFAULT 22',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'global_quiet_end_hour',
+            'global_quiet_end_hour INTEGER NOT NULL DEFAULT 6',
+        )
 
         _add_column_if_missing(connection, 'jobs', 'library_id', 'library_id INTEGER')
         _add_column_if_missing(connection, 'jobs', 'profile_snapshot_json', 'profile_snapshot_json TEXT')

@@ -16,5 +16,8 @@ class Settings(Base):
     scan_interval_minutes: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     schedule_start_hour: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     schedule_end_hour: Mapped[int] = mapped_column(Integer, default=23, nullable=False)
+    global_quiet_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    global_quiet_start_hour: Mapped[int] = mapped_column(Integer, default=22, nullable=False)
+    global_quiet_end_hour: Mapped[int] = mapped_column(Integer, default=6, nullable=False)
     process_hdr_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     history_retention_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)

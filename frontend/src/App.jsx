@@ -8,6 +8,7 @@ import {
   fetchSettings,
   fetchWsToken,
   retryJob,
+  updateLibraryProfile,
   updateSettings,
 } from './api';
 import StatCard from './components/StatCard';
@@ -40,6 +41,13 @@ function formatHour(hour) {
 function parseHour(timeValue) {
   const [hour] = timeValue.split(':');
   return Number(hour);
+}
+
+function isWithinWindow(currentHour, startHour, endHour) {
+  if (startHour <= endHour) {
+    return currentHour >= startHour && currentHour <= endHour;
+  }
+  return currentHour >= startHour || currentHour <= endHour;
 }
 
 export default function App() {
@@ -275,6 +283,50 @@ export default function App() {
       setSavingSettings(false);
     }
   }
+  function getLibraryScheduleStatus(library, profile) {
+    if (!settings?.enable_optimizer) {
+      return 'Paused (optimizer disabled)';
+    }
+
+    if (!library.enabled) {
+      return 'Disabled';
+    }
+
+    const nowHour = new Date().getHours();
+    if (!isWithinWindow(nowHour, profile.schedule_start_hour, profile.schedule_end_hour)) {
+      return 'Paused by schedule';
+    }
+
+    if (
+      settings.global_quiet_enabled
+      && isWithinWindow(nowHour, settings.global_quiet_start_hour, settings.global_quiet_end_hour)
+    ) {
+      return 'Paused by quiet hours';
+    }
+
+    return 'Active';
+  }
+
+  async function handleLibraryScheduleChange(libraryId, field, value) {
+    const nextHour = parseHour(value);
+    setLibraryProfiles((prev) => ({
+      ...prev,
+      [libraryId]: {
+        ...prev[libraryId],
+        [field]: nextHour,
+      },
+    }));
+
+    try {
+      const updated = await updateLibraryProfile(libraryId, { [field]: nextHour });
+      setLibraryProfiles((prev) => ({ ...prev, [libraryId]: updated }));
+      setError('');
+    } catch (updateError) {
+      setError(updateError.message || 'Failed to update library schedule.');
+      await refreshLibrariesAndProfiles();
+    }
+  }
+
 
   return (
     <main className="min-h-screen bg-slate-950 p-6">
@@ -427,37 +479,89 @@ export default function App() {
               />
             </label>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="block space-y-2">
-                <span>Schedule start time</span>
+            <div className="space-y-3 rounded border border-slate-800 p-4">
+              <label className="flex items-center justify-between">
+                <span>Enable global quiet hours</span>
                 <input
-                  type="time"
-                  step={3600}
-                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                  value={formatHour(settings.schedule_start_hour)}
+                  type="checkbox"
+                  checked={settings.global_quiet_enabled}
                   onChange={(event) =>
-                    setSettings((prev) => ({
-                      ...prev,
-                      schedule_start_hour: parseHour(event.target.value),
-                    }))
+                    setSettings((prev) => ({ ...prev, global_quiet_enabled: event.target.checked }))
                   }
                 />
               </label>
-              <label className="block space-y-2">
-                <span>Schedule end time</span>
-                <input
-                  type="time"
-                  step={3600}
-                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                  value={formatHour(settings.schedule_end_hour)}
-                  onChange={(event) =>
-                    setSettings((prev) => ({
-                      ...prev,
-                      schedule_end_hour: parseHour(event.target.value),
-                    }))
-                  }
-                />
-              </label>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="block space-y-2">
+                  <span>Quiet hours start</span>
+                  <input
+                    type="time"
+                    step={3600}
+                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    value={formatHour(settings.global_quiet_start_hour)}
+                    onChange={(event) =>
+                      setSettings((prev) => ({
+                        ...prev,
+                        global_quiet_start_hour: parseHour(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="block space-y-2">
+                  <span>Quiet hours end</span>
+                  <input
+                    type="time"
+                    step={3600}
+                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    value={formatHour(settings.global_quiet_end_hour)}
+                    onChange={(event) =>
+                      setSettings((prev) => ({
+                        ...prev,
+                        global_quiet_end_hour: parseHour(event.target.value),
+                      }))
+                    }
+                  />
+                </label>
+              </div>
+            </div>
+
+            <div className="space-y-3 rounded border border-slate-800 p-4">
+              <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Library schedules</h3>
+              {libraries.map((library) => {
+                const profile = libraryProfiles[library.id];
+                if (!profile) {
+                  return null;
+                }
+
+                return (
+                  <div key={library.id} className="grid gap-3 rounded border border-slate-800 bg-slate-950/40 p-3 md:grid-cols-4 md:items-end">
+                    <div className="md:col-span-2">
+                      <p className="font-medium text-cyan-200">{library.name}</p>
+                      <p className="text-xs text-slate-400">{library.path}</p>
+                      <p className="text-xs text-slate-300">Status: {getLibraryScheduleStatus(library, profile)}</p>
+                    </div>
+                    <label className="block space-y-2">
+                      <span className="text-xs text-slate-300">Start</span>
+                      <input
+                        type="time"
+                        step={3600}
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={formatHour(profile.schedule_start_hour)}
+                        onChange={(event) => handleLibraryScheduleChange(library.id, 'schedule_start_hour', event.target.value)}
+                      />
+                    </label>
+                    <label className="block space-y-2">
+                      <span className="text-xs text-slate-300">End</span>
+                      <input
+                        type="time"
+                        step={3600}
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={formatHour(profile.schedule_end_hour)}
+                        onChange={(event) => handleLibraryScheduleChange(library.id, 'schedule_end_hour', event.target.value)}
+                      />
+                    </label>
+                  </div>
+                );
+              })}
             </div>
 
             <label className="flex items-center justify-between">

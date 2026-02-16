@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.job import Job
+from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
 from app.services.job_service import prune_job_history
 from app.services.notification_service import enqueue_job_failed, handle_job_terminal_state
@@ -153,32 +154,62 @@ def _process_job(job_id: int) -> None:
             _active_workers.pop(job_id, None)
 
 
-def _claim_next_queued_job(db: Session) -> int | None:
-    job = (
-        db.query(Job)
-        .filter(Job.status == 'queued')
-        .order_by(Job.created_at.asc())
-        .first()
-    )
-    if not job:
-        return None
-
-    job.status = 'starting'
-    db.commit()
-    _publish_job(job, throttle_progress=False)
-    return job.id
-
-
 def _is_within_schedule_window(current_hour: int, start_hour: int, end_hour: int) -> bool:
     if start_hour <= end_hour:
         return start_hour <= current_hour <= end_hour
     return current_hour >= start_hour or current_hour <= end_hour
 
 
+def _is_within_global_quiet_hours(settings: Settings, now: datetime) -> bool:
+    if not settings.global_quiet_enabled:
+        return False
+    return _is_within_schedule_window(now.hour, settings.global_quiet_start_hour, settings.global_quiet_end_hour)
+
+
+def _library_job_can_start(settings: Settings, now: datetime, library: Library | None, profile: LibraryProfile | None) -> bool:
+    if not settings.enable_optimizer:
+        return False
+
+    if _is_within_global_quiet_hours(settings, now):
+        return False
+
+    if library is None:
+        return True
+
+    if not library.enabled:
+        return False
+
+    if profile is None:
+        return True
+
+    return _is_within_schedule_window(now.hour, profile.schedule_start_hour, profile.schedule_end_hour)
+
+
+def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> int | None:
+    queued = (
+        db.query(Job, Library, LibraryProfile)
+        .outerjoin(Library, Job.library_id == Library.id)
+        .outerjoin(LibraryProfile, LibraryProfile.library_id == Library.id)
+        .filter(Job.status == 'queued')
+        .order_by(Job.created_at.asc())
+        .all()
+    )
+    for job, library, profile in queued:
+        if not _library_job_can_start(settings, now, library, profile):
+            continue
+
+        job.status = 'starting'
+        db.commit()
+        _publish_job(job, throttle_progress=False)
+        return job.id
+
+    return None
+
+
 def _should_workers_run(settings: Settings, now: datetime) -> bool:
     if not settings.enable_optimizer:
         return False
-    return _is_within_schedule_window(now.hour, settings.schedule_start_hour, settings.schedule_end_hour)
+    return not _is_within_global_quiet_hours(settings, now)
 
 
 def _manager_loop() -> None:
@@ -205,7 +236,7 @@ def _manager_loop() -> None:
                     if active_count >= max_workers:
                         break
 
-                    next_job_id = _claim_next_queued_job(db)
+                    next_job_id = _claim_next_queued_job(db, settings, datetime.now())
                     if not next_job_id:
                         break
 
