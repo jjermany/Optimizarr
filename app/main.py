@@ -4,11 +4,12 @@ import logging
 from fastapi import FastAPI
 
 from app.api.routes import router
-from app.core.database import init_db
+from app.core.database import SessionLocal, init_db
 from app.core.logging_config import configure_logging
 from app.services.discovery_service import start_discovery_worker, stop_discovery_worker
 from app.services.notification_service import start_notification_worker, stop_notification_worker
 from app.services.optimization_service import refresh_encoder_cache
+from app.services.recovery_service import run_startup_recovery
 from app.services.realtime_service import broker
 from app.workers.queue import start_worker, stop_worker
 
@@ -20,6 +21,8 @@ async def lifespan(_: FastAPI):
     configure_logging()
     logger.info('Starting Optimizarr application')
     init_db()
+    with SessionLocal() as db:
+        run_startup_recovery(db)
     refresh_encoder_cache()
     broker.start()
     notification_thread = start_notification_worker()
