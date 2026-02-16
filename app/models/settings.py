@@ -1,7 +1,14 @@
-from sqlalchemy import Boolean, Integer
+from enum import Enum
+
+from sqlalchemy import Boolean, Enum as SqlEnum, Integer
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+
+
+class DiscoveryMethodEnum(str, Enum):
+    interval = 'interval'
+    watcher = 'watcher'
 
 
 class Settings(Base):
@@ -21,3 +28,10 @@ class Settings(Base):
     global_quiet_end_hour: Mapped[int] = mapped_column(Integer, default=6, nullable=False)
     process_hdr_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     history_retention_days: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    auto_discovery_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    discovery_method: Mapped[DiscoveryMethodEnum] = mapped_column(
+        SqlEnum(DiscoveryMethodEnum),
+        default=DiscoveryMethodEnum.interval,
+        nullable=False,
+    )
+    discovery_interval_minutes: Mapped[int] = mapped_column(Integer, default=30, nullable=False)

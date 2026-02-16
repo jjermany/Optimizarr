@@ -17,12 +17,12 @@ from app.models.library import (
     LibraryProfile,
     SpeedPresetEnum,
 )
-from app.models.settings import Settings
+from app.models.settings import DiscoveryMethodEnum, Settings
 from app.services import notification_service
-from app.services.job_service import cancel_job, create_job, get_job, job_exists_for_source, list_jobs, retry_job
+from app.services.job_service import cancel_job, create_job, get_job, list_jobs, retry_job
 from app.services.monitoring_service import get_system_metrics
-from app.services.optimization_service import is_hdr_video, probe_video_height
 from app.services.realtime_service import broker, expected_ws_token, next_message
+from app.services.discovery_service import scan_enabled_libraries, scan_library
 
 router = APIRouter()
 MEDIA_ROOT = Path('/media')
@@ -131,6 +131,9 @@ class SettingsResponse(BaseModel):
     global_quiet_end_hour: int
     process_hdr_only: bool
     history_retention_days: int
+    auto_discovery_enabled: bool
+    discovery_method: DiscoveryMethodEnum
+    discovery_interval_minutes: int
 
     @classmethod
     def from_orm_settings(cls, settings: Settings):
@@ -148,6 +151,9 @@ class SettingsResponse(BaseModel):
             global_quiet_end_hour=settings.global_quiet_end_hour,
             process_hdr_only=settings.process_hdr_only,
             history_retention_days=settings.history_retention_days,
+            auto_discovery_enabled=settings.auto_discovery_enabled,
+            discovery_method=settings.discovery_method,
+            discovery_interval_minutes=settings.discovery_interval_minutes,
         )
 
 
@@ -165,6 +171,9 @@ class SettingsUpdateRequest(BaseModel):
     global_quiet_end_hour: int | None = Field(default=None, ge=0, le=23)
     process_hdr_only: bool | None = None
     history_retention_days: int | None = Field(default=None, ge=1)
+    auto_discovery_enabled: bool | None = None
+    discovery_method: DiscoveryMethodEnum | None = None
+    discovery_interval_minutes: int | None = Field(default=None, ge=1)
 
 
 class NotificationTriggerSettings(BaseModel):
@@ -526,41 +535,10 @@ def get_job_by_id(job_id: int, _: None = Depends(require_ui_auth), db: Session =
     return response
 
 
-def _scan_library(db: Session, library: Library) -> list:
-    profile = _get_or_create_library_profile(db, library)
-    created_jobs = []
-    library_path = Path(library.path)
-
-    for media_file in library_path.rglob('*'):
-        if not media_file.is_file() or media_file.suffix.lower() not in {'.mkv', '.mp4'}:
-            continue
-        if media_file.stem.endswith(profile.output_suffix):
-            continue
-
-        output_path = media_file.with_name(f'{media_file.stem}{profile.output_suffix}.{media_file.suffix.lstrip(".")}')
-        if output_path.exists():
-            continue
-
-        source_path = str(media_file)
-        if job_exists_for_source(db, source_path, library_id=library.id):
-            continue
-
-        height = probe_video_height(source_path)
-        if height is None or height < 2000:
-            continue
-
-        if profile.hdr_only and not is_hdr_video(source_path):
-            continue
-
-        created_jobs.append(create_job(db, source_path, library_id=library.id, profile=profile))
-
-    return created_jobs
-
-
 @router.post('/libraries/{library_id}/scan', response_model=ScanResponse)
 def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
     library = _get_library_or_404(db, library_id)
-    jobs = _scan_library(db, library)
+    jobs = scan_library(db, library)
     payload = [JobResponse.from_orm_job(job) for job in jobs]
     notification_service.register_scan_batch([job.id for job in jobs])
     for item in payload:
@@ -570,10 +548,7 @@ def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: S
 
 @router.post('/scan', response_model=ScanResponse)
 def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
-    created_jobs = []
-    libraries = db.query(Library).filter(Library.enabled.is_(True)).order_by(Library.id.asc()).all()
-    for library in libraries:
-        created_jobs.extend(_scan_library(db, library))
+    created_jobs = scan_enabled_libraries(db)
 
     payload = [JobResponse.from_orm_job(job) for job in created_jobs]
     notification_service.register_scan_batch([job.id for job in created_jobs])

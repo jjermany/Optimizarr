@@ -3,6 +3,7 @@ import time
 from fastapi.testclient import TestClient
 
 from app.api import routes
+from app.services import discovery_service
 from app.main import app
 
 
@@ -58,6 +59,9 @@ def test_get_and_update_settings():
         assert 'schedule_start_hour' in payload
         assert 'history_retention_days' in payload
         assert 'global_quiet_enabled' in payload
+        assert 'auto_discovery_enabled' in payload
+        assert payload['discovery_method'] in {'interval', 'watcher'}
+        assert payload['discovery_interval_minutes'] >= 1
 
         update_response = client.post(
             '/settings',
@@ -69,6 +73,9 @@ def test_get_and_update_settings():
                 'global_quiet_enabled': True,
                 'global_quiet_start_hour': 23,
                 'global_quiet_end_hour': 5,
+                'auto_discovery_enabled': False,
+                'discovery_method': 'watcher',
+                'discovery_interval_minutes': 15,
             },
         )
         assert update_response.status_code == 200
@@ -80,6 +87,9 @@ def test_get_and_update_settings():
         assert updated['global_quiet_enabled'] is True
         assert updated['global_quiet_start_hour'] == 23
         assert updated['global_quiet_end_hour'] == 5
+        assert updated['auto_discovery_enabled'] is False
+        assert updated['discovery_method'] == 'watcher'
+        assert updated['discovery_interval_minutes'] == 15
 
         final_response = client.get('/settings')
         assert final_response.status_code == 200
@@ -231,8 +241,8 @@ def test_scan_cancel_and_retry_endpoints(monkeypatch, tmp_path):
     (library_path / 'c-1080p.mkv').write_text('output_exists')
 
     monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
-    monkeypatch.setattr(routes, 'probe_video_height', lambda _: 2160)
-    monkeypatch.setattr(routes, 'is_hdr_video', lambda _: True)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: True)
 
     with TestClient(app) as client:
         create_library = client.post('/libraries', json={'name': 'Shows', 'path': str(library_path), 'enabled': True})
@@ -272,8 +282,8 @@ def test_scan_uses_enabled_libraries(monkeypatch, tmp_path):
     source_disabled.write_text('video')
 
     monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
-    monkeypatch.setattr(routes, 'probe_video_height', lambda _: 2160)
-    monkeypatch.setattr(routes, 'is_hdr_video', lambda _: True)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: True)
 
     with TestClient(app) as client:
         enabled_library = client.post('/libraries', json={'name': 'Shows', 'path': str(enabled_library_path), 'enabled': True})
@@ -317,8 +327,8 @@ def test_scan_library_endpoint_honors_hdr_height_and_idempotency(monkeypatch, tm
     sdr_file.write_text('sdr')
 
     monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
-    monkeypatch.setattr(routes, 'probe_video_height', lambda path: 1080 if path.endswith('low.mp4') else 2160)
-    monkeypatch.setattr(routes, 'is_hdr_video', lambda path: path.endswith('hdr.mkv'))
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda path: 1080 if path.endswith('low.mp4') else 2160)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda path: path.endswith('hdr.mkv'))
 
     with TestClient(app) as client:
         create_library = client.post('/libraries', json={'name': 'HDR', 'path': str(library_path), 'enabled': True})
