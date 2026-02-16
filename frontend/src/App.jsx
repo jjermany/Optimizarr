@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  abortAllJobs,
   abortJob,
   cancelJob,
   createLibrary,
   deleteLibrary,
   fetchLibraries,
+  fetchEncoders,
   fetchLibraryProfile,
   fetchJobs,
   fetchMetrics,
@@ -31,6 +33,8 @@ const FALLBACK_AFTER_MS = 30000;
 const FALLBACK_POLL_MS = 10000;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
+const MESSAGE_DISMISS_MS = 5000;
+const JOBS_PAGE_SIZE = 50;
 
 const PAGE_KEYS = {
   dashboard: 'Dashboard',
@@ -140,12 +144,14 @@ function validateLibraryDraft(draft, libraryEnabled) {
     errors.max_workers = 'Max workers must be at least 1.';
   }
 
-  if (!Number.isInteger(draft.schedule_start_hour) || draft.schedule_start_hour < 0 || draft.schedule_start_hour > 23) {
-    errors.schedule_start_hour = 'Schedule start must be between 0 and 23.';
-  }
+  if (draft.schedule_enabled) {
+    if (!Number.isInteger(draft.schedule_start_hour) || draft.schedule_start_hour < 0 || draft.schedule_start_hour > 23) {
+      errors.schedule_start_hour = 'Schedule start must be between 0 and 23.';
+    }
 
-  if (!Number.isInteger(draft.schedule_end_hour) || draft.schedule_end_hour < 0 || draft.schedule_end_hour > 23) {
-    errors.schedule_end_hour = 'Schedule end must be between 0 and 23.';
+    if (!Number.isInteger(draft.schedule_end_hour) || draft.schedule_end_hour < 0 || draft.schedule_end_hour > 23) {
+      errors.schedule_end_hour = 'Schedule end must be between 0 and 23.';
+    }
   }
 
   if (draft.av1_fallback_codec === 'av1') {
@@ -197,6 +203,8 @@ export default function App() {
   const [fallbackPollingEnabled, setFallbackPollingEnabled] = useState(false);
   const [queuePaused, setQueuePaused] = useState(false);
   const [toasts, setToasts] = useState([]);
+  const [availableEncodersByCodec, setAvailableEncodersByCodec] = useState({});
+  const [jobsPage, setJobsPage] = useState(1);
 
   const wsRef = useRef();
   const reconnectAttemptsRef = useRef(0);
@@ -209,6 +217,23 @@ export default function App() {
     () => jobs.filter((job) => ['pending', 'queued', 'created'].includes(job.status?.toLowerCase())).length,
     [jobs],
   );
+
+
+  const totalJobPages = useMemo(
+    () => Math.max(1, Math.ceil(jobs.length / JOBS_PAGE_SIZE)),
+    [jobs.length],
+  );
+
+  const pagedJobs = useMemo(() => {
+    const start = (jobsPage - 1) * JOBS_PAGE_SIZE;
+    return jobs.slice(start, start + JOBS_PAGE_SIZE);
+  }, [jobs, jobsPage]);
+
+  useEffect(() => {
+    if (jobsPage > totalJobPages) {
+      setJobsPage(totalJobPages);
+    }
+  }, [jobsPage, totalJobPages]);
 
   const selectedLibrary = useMemo(
     () => libraries.find((library) => library.id === selectedLibraryId) ?? null,
@@ -226,7 +251,11 @@ export default function App() {
         state = 'Paused (optimizer disabled)';
       } else if (!library.enabled) {
         state = 'Paused (library disabled)';
-      } else if (profile && !isWithinWindow(nowHour, profile.schedule_start_hour, profile.schedule_end_hour)) {
+      } else if (
+        profile
+        && profile.schedule_enabled !== false
+        && !isWithinWindow(nowHour, profile.schedule_start_hour, profile.schedule_end_hour)
+      ) {
         state = 'Paused by schedule';
       } else if (
         settings?.global_quiet_enabled
@@ -241,16 +270,19 @@ export default function App() {
 
   async function refreshAll() {
     try {
-      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings] = await Promise.all([
+      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextEncoders] = await Promise.all([
         fetchMetrics(),
         fetchJobs(),
         fetchSettings(),
         fetchNotificationSettings(),
+        fetchEncoders(),
       ]);
       setMetrics(nextMetrics);
       setJobs(nextJobs);
       setSettings(nextSettings);
       setNotificationSettings(nextNotificationSettings);
+      const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
+      setAvailableEncodersByCodec(encoderMap);
       setError('');
     } catch (refreshError) {
       setError(refreshError.message || 'Could not refresh data.');
@@ -331,12 +363,24 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (!message) {
+      return undefined;
+    }
+
+    const timer = window.setTimeout(() => {
+      setMessage('');
+    }, MESSAGE_DISMISS_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
+  useEffect(() => {
     if (!selectedLibraryId || !selectedLibraryProfile) {
       setProfileDraft(null);
       setProfileErrors({});
       return;
     }
-    setProfileDraft({ ...selectedLibraryProfile });
+    setProfileDraft({ schedule_enabled: true, preferred_video_encoder: 'auto', ...selectedLibraryProfile });
     setProfileErrors({});
   }, [selectedLibraryId, selectedLibraryProfile]);
 
@@ -498,6 +542,18 @@ export default function App() {
       await refreshAll();
     } catch (actionError) {
       setError(actionError.message || 'Job action failed.');
+    }
+  }
+
+
+  async function handleAbortAllJobs() {
+    try {
+      const result = await abortAllJobs();
+      setMessage(`Aborted ${result.aborted_job_ids.length} job(s).`);
+      setError('');
+      await refreshAll();
+    } catch (actionError) {
+      setError(actionError.message || 'Abort all failed.');
     }
   }
 
@@ -697,9 +753,9 @@ export default function App() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
+    <main className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 p-6 text-slate-100">
       <div className="mx-auto max-w-7xl space-y-6">
-        <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <header className="rounded-xl border border-slate-800 bg-slate-900/70 p-4 shadow-lg shadow-slate-950/40 backdrop-blur flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <h1 className="text-3xl font-bold text-cyan-200">Optimizarr</h1>
           <p className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300">
             WS: {connectionStatus}
@@ -752,7 +808,7 @@ export default function App() {
               <StatCard label="Enable toggle" value={settings?.enable_optimizer ? 'ON' : 'OFF'} />
             </div>
 
-            <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg shadow-slate-950/40">
               <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Per-library runtime state</h2>
               <div className="space-y-2 text-sm">
                 {libraryRuntimeStates.map(({ library, state, queue }) => (
@@ -774,7 +830,7 @@ export default function App() {
 
         {activePage === 'libraries' && (
           <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
-            <div className="space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-4">
+            <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg shadow-slate-950/40">
               <div className="rounded border border-slate-700 bg-slate-950/50 p-3">
                 <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Add library</h2>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -865,7 +921,7 @@ export default function App() {
               </div>
             </div>
 
-            <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
+            <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg shadow-slate-950/40">
               {!selectedLibrary || !profileDraft ? (
                 <p className="text-sm text-slate-300">Select a library to edit its profile.</p>
               ) : (
@@ -915,10 +971,11 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="space-y-2">
-                    <label className="block text-sm">Quality preset</label>
+                  <div className="rounded-xl border border-slate-700/70 bg-slate-950/40 p-4">
+                    <label className="block text-sm font-semibold text-cyan-100">Quality preset</label>
+                    <p className="mb-3 text-xs text-slate-400">Start with a preset, then fine tune below.</p>
                     <select
-                      className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                      className="w-full rounded-lg border border-slate-700 bg-slate-800 p-2"
                       value={selectedPreset}
                       onChange={(event) => {
                         const presetKey = event.target.value;
@@ -936,8 +993,9 @@ export default function App() {
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2">
-                    <label className="space-y-2">
-                      <span className="text-sm">Enabled</span>
+                    <label className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
+                      <span className="text-sm font-medium">Enabled</span>
+                      <p className="text-xs text-slate-400">Disable to stop optimization for this library.</p>
                       <input
                         type="checkbox"
                         checked={selectedLibrary.enabled}
@@ -945,8 +1003,9 @@ export default function App() {
                       />
                     </label>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">HDR only</span>
+                    <label className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
+                      <span className="text-sm font-medium">HDR only</span>
+                      <p className="text-xs text-slate-400">Only process HDR media in this library.</p>
                       <input
                         type="checkbox"
                         checked={profileDraft.hdr_only}
@@ -954,8 +1013,9 @@ export default function App() {
                       />
                     </label>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Target resolution</span>
+                    <label className="space-y-2 md:col-span-2">
+                      <span className="text-sm font-medium">Target resolution</span>
+                      <p className="text-xs text-slate-400">Output height. 1080p is a good default for mixed libraries.</p>
                       <select
                         className="w-full rounded border border-slate-700 bg-slate-800 p-2"
                         value={profileDraft.target_resolution === 1080 || profileDraft.target_resolution === 720 ? String(profileDraft.target_resolution) : 'custom'}
@@ -988,7 +1048,7 @@ export default function App() {
                       <select
                         className="w-full rounded border border-slate-700 bg-slate-800 p-2"
                         value={profileDraft.codec}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, codec: event.target.value }))}
+                        onChange={(event) => setProfileDraft((prev) => { const nextCodec = event.target.value; const available = availableEncodersByCodec[nextCodec] ?? []; const preferred = available.includes(prev.preferred_video_encoder) ? prev.preferred_video_encoder : 'auto'; return { ...prev, codec: nextCodec, preferred_video_encoder: preferred }; })}
                       >
                         <option value="h264">H.264</option>
                         <option value="hevc">HEVC</option>
@@ -997,7 +1057,23 @@ export default function App() {
                     </label>
 
                     <label className="space-y-2">
+                      <span className="text-sm">Preferred encoder</span>
+                      <p className="text-xs text-slate-400">Pick a detected encoder for this codec, or Auto for best available.</p>
+                      <select
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={profileDraft.preferred_video_encoder ?? 'auto'}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, preferred_video_encoder: event.target.value }))}
+                      >
+                        <option value="auto">Auto</option>
+                        {(availableEncodersByCodec[profileDraft.codec] ?? []).map((encoderName) => (
+                          <option key={encoderName} value={encoderName}>{encoderName}</option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="space-y-2">
                       <span className="text-sm">AV1 fallback</span>
+                      <p className="text-xs text-slate-400">Used when AV1 cannot be used on your hardware.</p>
                       <select
                         className="w-full rounded border border-slate-700 bg-slate-800 p-2"
                         value={profileDraft.av1_fallback_codec}
@@ -1009,9 +1085,10 @@ export default function App() {
                       {profileErrors.av1_fallback_codec && <p className="text-xs text-red-300">{profileErrors.av1_fallback_codec}</p>}
                     </label>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Bitrate mode</span>
-                      <div className="flex gap-3 text-sm">
+                    <label className="space-y-2 md:col-span-2 rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
+                      <span className="text-sm font-medium">Bitrate mode</span>
+                      <p className="text-xs text-slate-400">CRF targets visual quality (smaller is higher quality). CBR targets fixed bitrate.</p>
+                      <div className="flex gap-4 text-sm">
                         <label>
                           <input
                             type="radio"
@@ -1019,7 +1096,7 @@ export default function App() {
                             checked={profileDraft.bitrate_mode === 'vbr_crf'}
                             onChange={() => setProfileDraft((prev) => ({ ...prev, bitrate_mode: 'vbr_crf' }))}
                           />
-                          {' '}CRF
+                          {' '}CRF (quality target)
                         </label>
                         <label>
                           <input
@@ -1028,14 +1105,22 @@ export default function App() {
                             checked={profileDraft.bitrate_mode === 'cbr'}
                             onChange={() => setProfileDraft((prev) => ({ ...prev, bitrate_mode: 'cbr' }))}
                           />
-                          {' '}CBR
+                          {' '}CBR (size target)
                         </label>
                       </div>
                     </label>
 
                     {profileDraft.bitrate_mode === 'vbr_crf' && (
-                      <label className="space-y-2">
-                        <span className="text-sm">CRF</span>
+                      <label className="space-y-2 md:col-span-2">
+                        <span className="text-sm">CRF ({profileDraft.crf ?? 23})</span>
+                        <p className="text-xs text-slate-400">Typical range: 18-30. Lower = better quality/larger files, higher = smaller files.</p>
+                        <input
+                          type="range"
+                          min={1}
+                          max={40}
+                          value={profileDraft.crf ?? 23}
+                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, crf: Number(event.target.value) }))}
+                        />
                         <input
                           type="number"
                           min={1}
@@ -1079,7 +1164,7 @@ export default function App() {
                         <option value="medium">Medium</option>
                         <option value="fast">Fast</option>
                       </select>
-                      <p className="text-xs text-slate-400">slow=best efficiency, fast=quickest</p>
+                      <p className="text-xs text-slate-400">Slow = best compression, Fast = quickest encode.</p>
                     </label>
 
                     <label className="space-y-2">
@@ -1110,6 +1195,7 @@ export default function App() {
 
                     <label className="space-y-2">
                       <span className="text-sm">Max workers ({profileDraft.max_workers})</span>
+                      <p className="text-xs text-slate-400">Per-library worker cap.</p>
                       <input
                         type="range"
                         min={1}
@@ -1120,41 +1206,58 @@ export default function App() {
                       {profileErrors.max_workers && <p className="text-xs text-red-300">{profileErrors.max_workers}</p>}
                     </label>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Schedule start</span>
-                      <input
-                        type="time"
-                        step={3600}
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={formatHour(profileDraft.schedule_start_hour)}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_start_hour: parseHour(event.target.value) }))}
-                      />
-                      {profileErrors.schedule_start_hour && <p className="text-xs text-red-300">{profileErrors.schedule_start_hour}</p>}
+                    <label className="space-y-2 md:col-span-2 rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
+                      <span className="text-sm font-medium">Scheduled run window</span>
+                      <p className="text-xs text-slate-400">Turn this off to allow this library to run all day.</p>
+                      <label className="flex items-center gap-2 text-sm text-slate-200">
+                        <input
+                          type="checkbox"
+                          checked={profileDraft.schedule_enabled !== false}
+                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_enabled: event.target.checked }))}
+                        />
+                        Enable schedule window
+                      </label>
                     </label>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Schedule end</span>
-                      <input
-                        type="time"
-                        step={3600}
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={formatHour(profileDraft.schedule_end_hour)}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_end_hour: parseHour(event.target.value) }))}
-                      />
-                      {profileErrors.schedule_end_hour && <p className="text-xs text-red-300">{profileErrors.schedule_end_hour}</p>}
-                    </label>
+                    {profileDraft.schedule_enabled !== false && (
+                      <>
+                        <label className="space-y-2">
+                          <span className="text-sm">Schedule start</span>
+                          <input
+                            type="time"
+                            step={3600}
+                            className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                            value={formatHour(profileDraft.schedule_start_hour)}
+                            onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_start_hour: parseHour(event.target.value) }))}
+                          />
+                          {profileErrors.schedule_start_hour && <p className="text-xs text-red-300">{profileErrors.schedule_start_hour}</p>}
+                        </label>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Schedule close behavior</span>
-                      <select
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={profileDraft.schedule_policy ?? 'finish_current'}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_policy: event.target.value }))}
-                      >
-                        <option value="finish_current">Finish current job</option>
-                        <option value="pause_current">Pause current job</option>
-                      </select>
-                    </label>
+                        <label className="space-y-2">
+                          <span className="text-sm">Schedule end</span>
+                          <input
+                            type="time"
+                            step={3600}
+                            className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                            value={formatHour(profileDraft.schedule_end_hour)}
+                            onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_end_hour: parseHour(event.target.value) }))}
+                          />
+                          {profileErrors.schedule_end_hour && <p className="text-xs text-red-300">{profileErrors.schedule_end_hour}</p>}
+                        </label>
+
+                        <label className="space-y-2 md:col-span-2">
+                          <span className="text-sm">Schedule close behavior</span>
+                          <select
+                            className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                            value={profileDraft.schedule_policy ?? 'finish_current'}
+                            onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_policy: event.target.value }))}
+                          >
+                            <option value="finish_current">Finish current job</option>
+                            <option value="pause_current">Pause current job</option>
+                          </select>
+                        </label>
+                      </>
+                    )}
                   </div>
 
                   <button
@@ -1175,13 +1278,22 @@ export default function App() {
           <section className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
             <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
               <p className="text-sm text-slate-300">Queue controls</p>
-              <button
-                type="button"
-                onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}
-                className="rounded bg-amber-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-amber-400"
-              >
-                {queuePaused ? 'Resume Queue' : 'Pause Queue'}
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleAbortAllJobs()}
+                  className="rounded bg-rose-600 px-3 py-1 text-xs font-medium text-white hover:bg-rose-500"
+                >
+                  Abort All
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}
+                  className="rounded bg-amber-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-amber-400"
+                >
+                  {queuePaused ? 'Resume Queue' : 'Pause Queue'}
+                </button>
+              </div>
             </div>
             <table className="min-w-full divide-y divide-slate-800">
               <thead className="bg-slate-800/70">
@@ -1194,7 +1306,7 @@ export default function App() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
-                {jobs.map((job) => {
+                {pagedJobs.map((job) => {
                   const progress = progressFromStatus(job.status);
                   return (
                     <tr key={job.id}>
@@ -1255,6 +1367,21 @@ export default function App() {
                 })}
               </tbody>
             </table>
+            <div className="flex items-center justify-between border-t border-slate-800 px-4 py-3 text-sm text-slate-300">
+              <p>Page {jobsPage} of {totalJobPages}</p>
+              <div className="flex items-center gap-1">
+                {Array.from({ length: totalJobPages }, (_, index) => index + 1).map((pageNumber) => (
+                  <button
+                    key={pageNumber}
+                    type="button"
+                    onClick={() => setJobsPage(pageNumber)}
+                    className={`rounded px-2 py-1 text-xs ${jobsPage === pageNumber ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'}`}
+                  >
+                    {pageNumber}
+                  </button>
+                ))}
+              </div>
+            </div>
           </section>
         )}
 

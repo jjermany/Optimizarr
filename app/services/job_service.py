@@ -28,12 +28,14 @@ def _profile_snapshot(profile: LibraryProfile | None) -> str | None:
             'speed_preset': profile.speed_preset.value,
             'hdr_only': profile.hdr_only,
             'max_workers': profile.max_workers,
+            'schedule_enabled': profile.schedule_enabled,
             'schedule_start_hour': profile.schedule_start_hour,
             'schedule_end_hour': profile.schedule_end_hour,
             'schedule_policy': profile.schedule_policy.value,
             'output_suffix': profile.output_suffix,
             'output_conflict_policy': profile.output_conflict_policy.value,
             'av1_fallback_codec': profile.av1_fallback_codec.value,
+            'preferred_video_encoder': profile.preferred_video_encoder.value,
         }
     )
 
@@ -197,3 +199,24 @@ def prune_job_history(db: Session, retention_days: int) -> int:
         db.commit()
 
     return deleted_count
+
+
+def abort_all_jobs(db: Session) -> list[Job]:
+    targets = db.query(Job).filter(~Job.status.in_(TERMINAL_STATUSES)).all()
+    if not targets:
+        return []
+
+    settings = _get_settings(db)
+    now = datetime.utcnow()
+    for job in targets:
+        optimization_service.stop_active_ffmpeg(job.id)
+        optimization_service.delete_workspace(settings, job.id)
+        job.status = 'failed'
+        job.error_message = 'Aborted by user'
+        job.cancel_requested = False
+        job.completed_at = now
+
+    db.commit()
+    for job in targets:
+        db.refresh(job)
+    return targets

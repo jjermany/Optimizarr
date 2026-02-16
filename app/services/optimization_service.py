@@ -16,6 +16,11 @@ FPS_REGEX = re.compile(r"fps\s*=\s*(?P<fps>[0-9]*\.?[0-9]+)")
 _ENCODER_CACHE: dict[str, bool] = {}
 _SUPPORTED_ENCODERS = {'h264_qsv', 'hevc_qsv', 'av1_qsv', 'libsvtav1', 'libx264', 'libx265'}
 _QSV_ERROR_PATTERN = re.compile(r'(qsv|mfx).*(init|error|failed|device)', re.IGNORECASE)
+ENCODER_OPTIONS_BY_CODEC = {
+    'h264': ['h264_qsv', 'libx264'],
+    'hevc': ['hevc_qsv', 'libx265'],
+    'av1': ['av1_qsv', 'libsvtav1'],
+}
 _ACTIVE_FFMPEG_LOCK = Lock()
 _ACTIVE_FFMPEG_PROCESSES: dict[int, subprocess.Popen] = {}
 
@@ -174,29 +179,30 @@ def _encoder_available(encoder_name: str) -> bool:
     return _ENCODER_CACHE[encoder_name]
 
 
+def available_encoders_by_codec() -> dict[str, list[str]]:
+    if not _ENCODER_CACHE:
+        refresh_encoder_cache()
+
+    available: dict[str, list[str]] = {}
+    for codec, candidates in ENCODER_OPTIONS_BY_CODEC.items():
+        available[codec] = [name for name in candidates if _encoder_available(name)]
+    return available
+
+
 def _select_encoder(profile: dict[str, Any]) -> EncoderSelection | None:
     codec = str(profile.get('codec', 'h264')).lower()
-
-    if codec == 'h264':
-        if _encoder_available('h264_qsv'):
-            return EncoderSelection(codec='h264', encoder='h264_qsv', use_qsv=True)
-        if _encoder_available('libx264'):
-            return EncoderSelection(codec='h264', encoder='libx264', use_qsv=False)
+    candidates = ENCODER_OPTIONS_BY_CODEC.get(codec, [])
+    if not candidates:
         return None
 
-    if codec == 'hevc':
-        if _encoder_available('hevc_qsv'):
-            return EncoderSelection(codec='hevc', encoder='hevc_qsv', use_qsv=True)
-        if _encoder_available('libx265'):
-            return EncoderSelection(codec='hevc', encoder='libx265', use_qsv=False)
-        return None
+    preferred_encoder = str(profile.get('preferred_video_encoder', 'auto')).lower()
+    if preferred_encoder and preferred_encoder != 'auto':
+        if preferred_encoder in candidates and _encoder_available(preferred_encoder):
+            return EncoderSelection(codec=codec, encoder=preferred_encoder, use_qsv=preferred_encoder.endswith('_qsv'))
 
-    if codec == 'av1':
-        if _encoder_available('av1_qsv'):
-            return EncoderSelection(codec='av1', encoder='av1_qsv', use_qsv=True)
-        if _encoder_available('libsvtav1'):
-            return EncoderSelection(codec='av1', encoder='libsvtav1', use_qsv=False)
-        return None
+    for candidate in candidates:
+        if _encoder_available(candidate):
+            return EncoderSelection(codec=codec, encoder=candidate, use_qsv=candidate.endswith('_qsv'))
 
     return None
 

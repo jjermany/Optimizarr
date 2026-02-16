@@ -18,10 +18,11 @@ from app.models.library import (
     SpeedPresetEnum,
     SchedulePolicyEnum,
     OutputConflictPolicyEnum,
+    PreferredEncoderEnum,
 )
 from app.models.settings import DiscoveryMethodEnum, Settings
 from app.services import notification_service
-from app.services.job_service import abort_job, cancel_job, create_job, get_job, list_jobs, pause_job, resume_job, retry_job
+from app.services.job_service import abort_all_jobs, abort_job, cancel_job, create_job, get_job, list_jobs, pause_job, resume_job, retry_job
 from app.services.monitoring_service import get_system_metrics
 from app.services.realtime_service import broker, expected_ws_token, next_message
 from app.services.discovery_service import scan_enabled_libraries, scan_library
@@ -198,6 +199,10 @@ class RecoveryResponse(BaseModel):
     requeued_jobs: int
     cleaned_workspaces: int
 
+
+class AbortAllJobsResponse(BaseModel):
+    aborted_job_ids: list[int]
+
 class NotificationTriggerSettings(BaseModel):
     job_failed: bool = True
     job_interrupted: bool = True
@@ -290,12 +295,14 @@ class LibraryProfileResponse(BaseModel):
     speed_preset: SpeedPresetEnum
     hdr_only: bool
     max_workers: int
+    schedule_enabled: bool
     schedule_start_hour: int
     schedule_end_hour: int
     schedule_policy: SchedulePolicyEnum
     output_suffix: str
     output_conflict_policy: OutputConflictPolicyEnum
     av1_fallback_codec: CodecEnum
+    preferred_video_encoder: PreferredEncoderEnum
 
     @classmethod
     def from_orm_profile(cls, profile: LibraryProfile):
@@ -310,13 +317,24 @@ class LibraryProfileResponse(BaseModel):
             speed_preset=profile.speed_preset,
             hdr_only=profile.hdr_only,
             max_workers=profile.max_workers,
+            schedule_enabled=profile.schedule_enabled,
             schedule_start_hour=profile.schedule_start_hour,
             schedule_end_hour=profile.schedule_end_hour,
             schedule_policy=profile.schedule_policy,
             output_suffix=profile.output_suffix,
             output_conflict_policy=profile.output_conflict_policy,
             av1_fallback_codec=profile.av1_fallback_codec,
+            preferred_video_encoder=profile.preferred_video_encoder,
         )
+
+
+class EncoderAvailabilityResponse(BaseModel):
+    codec: CodecEnum
+    available_encoders: list[PreferredEncoderEnum]
+
+
+class EncodersResponse(BaseModel):
+    encoders: list[EncoderAvailabilityResponse]
 
 
 class LibraryProfileUpdateRequest(BaseModel):
@@ -330,18 +348,39 @@ class LibraryProfileUpdateRequest(BaseModel):
     speed_preset: SpeedPresetEnum | None = None
     hdr_only: bool | None = None
     max_workers: int | None = Field(default=None, ge=1)
+    schedule_enabled: bool | None = None
     schedule_start_hour: int | None = Field(default=None, ge=0, le=23)
     schedule_end_hour: int | None = Field(default=None, ge=0, le=23)
     schedule_policy: SchedulePolicyEnum | None = None
     output_suffix: str | None = None
     output_conflict_policy: OutputConflictPolicyEnum | None = None
     av1_fallback_codec: CodecEnum | None = None
+    preferred_video_encoder: PreferredEncoderEnum | None = None
 
     @field_validator('av1_fallback_codec')
     @classmethod
     def fallback_codec_must_not_be_av1(cls, value: CodecEnum | None) -> CodecEnum | None:
         if value == CodecEnum.av1:
             raise ValueError('av1_fallback_codec must be hevc or h264')
+        return value
+
+    @field_validator('preferred_video_encoder')
+    @classmethod
+    def preferred_encoder_matches_codec(cls, value: PreferredEncoderEnum | None, info):
+        if value is None or value == PreferredEncoderEnum.auto:
+            return value
+
+        codec = info.data.get('codec')
+        if codec is None:
+            return value
+
+        allowed = {
+            CodecEnum.h264: {PreferredEncoderEnum.h264_qsv, PreferredEncoderEnum.libx264},
+            CodecEnum.hevc: {PreferredEncoderEnum.hevc_qsv, PreferredEncoderEnum.libx265},
+            CodecEnum.av1: {PreferredEncoderEnum.av1_qsv, PreferredEncoderEnum.libsvtav1},
+        }
+        if value not in allowed.get(codec, set()):
+            raise ValueError('preferred_video_encoder is incompatible with selected codec')
         return value
 
 
@@ -529,6 +568,19 @@ def update_library_profile(
     return LibraryProfileResponse.from_orm_profile(profile)
 
 
+
+@router.get('/encoders', response_model=EncodersResponse)
+def get_encoders(_: None = Depends(require_ui_auth)) -> EncodersResponse:
+    from app.services.optimization_service import available_encoders_by_codec
+
+    available = available_encoders_by_codec()
+    payload = [
+        EncoderAvailabilityResponse(codec=CodecEnum(codec), available_encoders=[PreferredEncoderEnum(item) for item in encoders])
+        for codec, encoders in available.items()
+    ]
+    return EncodersResponse(encoders=payload)
+
+
 @router.get('/metrics', response_model=MetricsResponse)
 def metrics(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> MetricsResponse:
     return MetricsResponse(**get_system_metrics(db))
@@ -627,6 +679,17 @@ def resume_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
     broker.publish_system_event('job_resumed', job_id=response.id)
     return response
+
+
+
+@router.post('/jobs/abort-all', response_model=AbortAllJobsResponse)
+def abort_all_jobs_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> AbortAllJobsResponse:
+    jobs = abort_all_jobs(db)
+    for job in jobs:
+        response = JobResponse.from_orm_job(job)
+        broker.publish_job_update(response.model_dump(), throttle_progress=False)
+        broker.publish_system_event('job_aborted', job_id=response.id)
+    return AbortAllJobsResponse(aborted_job_ids=[job.id for job in jobs])
 
 
 @router.post('/jobs/{job_id}/abort', response_model=JobResponse)
