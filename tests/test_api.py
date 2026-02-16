@@ -770,6 +770,44 @@ def test_abort_all_jobs_endpoint():
                 assert job.output_path is None
 
 
+
+
+def test_remove_all_jobs_endpoint_removes_only_terminal_jobs():
+    from app.core.database import SessionLocal
+    from app.models.job import Job
+
+    with TestClient(app) as client:
+        complete = client.post('/jobs', json={'source_path': '/media/complete-remove.mkv'})
+        queued = client.post('/jobs', json={'source_path': '/media/queued-keep.mkv'})
+        assert complete.status_code == 201
+        assert queued.status_code == 201
+
+        complete_id = complete.json()['id']
+        queued_id = queued.json()['id']
+
+        with SessionLocal() as db:
+            complete_job = db.query(Job).filter(Job.id == complete_id).first()
+            queued_job = db.query(Job).filter(Job.id == queued_id).first()
+            assert complete_job is not None
+            assert queued_job is not None
+            complete_job.status = 'skipped'
+            db.commit()
+
+        response = client.post('/jobs/remove-all')
+        assert response.status_code == 200
+        payload = response.json()
+        assert complete_id in payload['removed_job_ids']
+        assert queued_id not in payload['removed_job_ids']
+
+        with SessionLocal() as db:
+            assert db.query(Job).filter(Job.id == complete_id).first() is None
+            assert db.query(Job).filter(Job.id == queued_id).first() is not None
+
+        cleanup = client.post('/jobs/abort-all')
+        assert cleanup.status_code == 200
+        second_pass = client.post('/jobs/remove-all')
+        assert second_pass.status_code == 200
+
 def test_get_encoders_endpoint(monkeypatch):
     monkeypatch.setattr(routes, 'require_ui_auth', lambda credentials=None: None)
     monkeypatch.setattr('app.services.optimization_service.available_encoders_by_codec', lambda: {

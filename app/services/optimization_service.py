@@ -619,10 +619,18 @@ def optimize_video(
         metrics.skipped_reason = 'ffprobe_failed'
         return metrics
 
-    if height < 2000:
-        metrics.status = 'skipped'
-        metrics.skipped_reason = 'source_height_below_threshold'
-        return metrics
+    hdr_only = bool(profile.get('hdr_only'))
+    if not hdr_only:
+        minimum_source_resolution = int(profile.get('minimum_source_resolution') or 0)
+        target_resolution = int(profile.get('target_resolution') or 1080)
+        if minimum_source_resolution and height < minimum_source_resolution:
+            metrics.status = 'skipped'
+            metrics.skipped_reason = 'source_height_below_threshold'
+            return metrics
+        if height <= target_resolution:
+            metrics.status = 'skipped'
+            metrics.skipped_reason = 'source_height_below_target'
+            return metrics
 
     try:
         _ensure_clean_workspace(workspace_path)

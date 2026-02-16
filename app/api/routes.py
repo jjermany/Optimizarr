@@ -33,6 +33,7 @@ from app.services.job_service import (
     get_job,
     list_jobs,
     pause_job,
+    remove_all_terminal_jobs,
     resume_job,
     retry_job,
 )
@@ -253,6 +254,10 @@ class OptimizedCleanupResponse(BaseModel):
 
 class AbortAllJobsResponse(BaseModel):
     aborted_job_ids: list[int]
+
+
+class RemoveAllJobsResponse(BaseModel):
+    removed_job_ids: list[int]
 
 class NotificationTriggerSettings(BaseModel):
     job_failed: bool = True
@@ -765,6 +770,14 @@ def abort_all_jobs_endpoint(_: None = Depends(require_ui_auth), db: Session = De
         broker.publish_job_update(response.model_dump(), throttle_progress=False)
         broker.publish_system_event('job_aborted', job_id=response.id)
     return AbortAllJobsResponse(aborted_job_ids=[job.id for job in jobs])
+
+
+@router.post('/jobs/remove-all', response_model=RemoveAllJobsResponse)
+def remove_all_jobs_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> RemoveAllJobsResponse:
+    removed_job_ids = remove_all_terminal_jobs(db)
+    for job_id in removed_job_ids:
+        broker.publish_system_event('job_removed', job_id=job_id)
+    return RemoveAllJobsResponse(removed_job_ids=removed_job_ids)
 
 
 @router.post('/jobs/{job_id}/abort', response_model=JobResponse)
