@@ -106,6 +106,7 @@ def optimize_video(
     input_path: str,
     settings,
     progress_callback: Callable[[dict[str, float | int | None]], None] | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> OptimizationMetrics:
     output_path = _output_path_for(input_path)
     metrics = OptimizationMetrics(input_path=input_path, output_path=output_path, status='pending')
@@ -148,9 +149,15 @@ def optimize_video(
 
     current_fps: float | None = None
     processed_seconds = 0.0
+    was_cancelled = False
 
     assert process.stdout is not None
     for raw_line in process.stdout:
+        if should_cancel and should_cancel():
+            was_cancelled = True
+            process.terminate()
+            break
+
         line = raw_line.strip()
         if not line:
             continue
@@ -193,7 +200,10 @@ def optimize_video(
     metrics.processed_seconds = processed_seconds
     metrics.fps = current_fps
     metrics.return_code = process.returncode
-    metrics.status = 'complete' if process.returncode == 0 else 'failed'
+    if was_cancelled:
+        metrics.status = 'cancelled'
+    else:
+        metrics.status = 'complete' if process.returncode == 0 else 'failed'
 
     if progress_callback:
         progress_callback(
