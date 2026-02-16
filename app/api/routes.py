@@ -3,6 +3,7 @@ from pathlib import Path
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
@@ -31,6 +32,10 @@ from app.workers import queue as worker_queue
 
 router = APIRouter()
 MEDIA_ROOT = Path('/media')
+BRANDING_ROOTS = (
+    MEDIA_ROOT / 'Logo',
+    Path(__file__).resolve().parents[2] / 'media' / 'Logo',
+)
 APP_VERSION = os.getenv('OPTIMIZARR_VERSION', '0.1.0')
 security = HTTPBasic(auto_error=False)
 
@@ -66,6 +71,27 @@ def _ws_token_or_unauthorized(token: str | None) -> None:
 
     if not token or not secrets.compare_digest(token, required_token):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid websocket token')
+
+
+@router.get('/branding/{asset_name}')
+def get_branding_asset(asset_name: str, _: None = Depends(require_ui_auth)) -> FileResponse:
+    asset_variants = {
+        'logo': ['logo.png'],
+        'icon': ['dynamic-icon.png', 'dynamic-icon.svg', 'icon.png', 'icon.svg'],
+        'dynamic-icon': ['dynamic-icon.png', 'dynamic-icon.svg'],
+    }
+
+    candidates = asset_variants.get(asset_name)
+    if not candidates:
+        raise HTTPException(status_code=404, detail='Branding asset not found')
+
+    for candidate in candidates:
+        for root in BRANDING_ROOTS:
+            path = root / candidate
+            if path.exists() and path.is_file():
+                return FileResponse(path)
+
+    raise HTTPException(status_code=404, detail='Branding asset not found')
 
 
 class JobCreateRequest(BaseModel):
