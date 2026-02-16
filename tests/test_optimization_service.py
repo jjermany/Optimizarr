@@ -128,6 +128,45 @@ def test_is_hdr_video_detects_side_data_metadata(monkeypatch):
     assert optimization_service.is_hdr_video('/media/movie.mkv') is True
 
 
+def test_is_hdr_video_detects_dolby_vision_side_data(monkeypatch):
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffprobe_stream_json',
+        lambda _: {
+            'streams': [
+                {
+                    'color_transfer': 'bt709',
+                    'color_primaries': 'bt709',
+                    'color_space': 'bt709',
+                    'side_data_list': [{'side_data_type': 'DOVI configuration record'}],
+                },
+            ],
+        },
+    )
+
+    assert optimization_service.is_hdr_video('/media/movie.mkv') is True
+
+
+def test_is_hdr_video_detects_bt2020_10bit(monkeypatch):
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffprobe_stream_json',
+        lambda _: {
+            'streams': [
+                {
+                    'color_transfer': 'bt709',
+                    'color_primaries': 'bt2020',
+                    'color_space': 'bt2020nc',
+                    'bits_per_raw_sample': '10',
+                    'side_data_list': [],
+                },
+            ],
+        },
+    )
+
+    assert optimization_service.is_hdr_video('/media/movie.mkv') is True
+
+
 def test_build_encoder_command_prefers_qsv_and_scales(monkeypatch):
     profile = {
         'codec': 'h264',

@@ -1,6 +1,7 @@
 from datetime import datetime
 from datetime import timedelta
 import json
+from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -204,6 +205,30 @@ def prune_job_history(db: Session, retention_days: int) -> int:
         db.commit()
 
     return deleted_count
+
+
+
+
+def cleanup_optimized_outputs(db: Session) -> tuple[int, list[int]]:
+    terminal_jobs = db.query(Job).filter(Job.status.in_(TERMINAL_STATUSES), Job.output_path.is_not(None)).all()
+
+    removed_files = 0
+    removed_job_ids: list[int] = []
+    for job in terminal_jobs:
+        output_path = str(job.output_path or '').strip()
+        if not output_path:
+            continue
+
+        candidate = Path(output_path)
+        if not candidate.exists() or not candidate.is_file():
+            continue
+
+        candidate.unlink(missing_ok=True)
+        if not candidate.exists():
+            removed_files += 1
+            removed_job_ids.append(job.id)
+
+    return removed_files, removed_job_ids
 
 
 def abort_all_jobs(db: Session) -> list[Job]:
