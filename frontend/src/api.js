@@ -13,6 +13,15 @@ async function request(path, options) {
     throw error;
   }
 
+  if (response.status === 204) {
+    return null;
+  }
+
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    return null;
+  }
+
   return response.json();
 }
 
@@ -28,11 +37,22 @@ export function fetchLibraries() {
   return request('/libraries');
 }
 
+export function createLibrary(payload) {
+  return request('/libraries', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
 export function updateLibrary(libraryId, payload) {
   return request(`/libraries/${libraryId}`, {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
+}
+
+export function deleteLibrary(libraryId) {
+  return request(`/libraries/${libraryId}`, { method: 'DELETE' });
 }
 
 export function scanLibrary(libraryId) {

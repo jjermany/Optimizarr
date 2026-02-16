@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   abortJob,
   cancelJob,
+  createLibrary,
+  deleteLibrary,
   fetchLibraries,
   fetchLibraryProfile,
   fetchJobs,
@@ -153,6 +155,23 @@ function validateLibraryDraft(draft, libraryEnabled) {
   return errors;
 }
 
+
+function validateLibraryForm(draft) {
+  const errors = {};
+
+  if (!draft.name?.trim()) {
+    errors.name = 'Library name is required.';
+  }
+
+  if (!draft.path?.trim()) {
+    errors.path = 'Library path is required.';
+  } else if (!draft.path.startsWith('/')) {
+    errors.path = 'Library path must be absolute.';
+  }
+
+  return errors;
+}
+
 export default function App() {
   const [activePage, setActivePage] = useState('dashboard');
   const [metrics, setMetrics] = useState();
@@ -167,6 +186,10 @@ export default function App() {
   const [selectedPreset, setSelectedPreset] = useState('balanced');
   const [savingProfile, setSavingProfile] = useState(false);
   const [scanningLibraries, setScanningLibraries] = useState({});
+  const [libraryDraft, setLibraryDraft] = useState({ name: '', path: '/media/', enabled: true });
+  const [libraryFormErrors, setLibraryFormErrors] = useState({});
+  const [savingLibrary, setSavingLibrary] = useState(false);
+  const [deletingLibraryId, setDeletingLibraryId] = useState(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [savingSettings, setSavingSettings] = useState(false);
@@ -493,6 +516,86 @@ export default function App() {
     }
   }
 
+
+  async function handleCreateLibrary() {
+    const nextErrors = validateLibraryForm(libraryDraft);
+    setLibraryFormErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      return;
+    }
+
+    setSavingLibrary(true);
+    try {
+      const created = await createLibrary({
+        name: libraryDraft.name.trim(),
+        path: libraryDraft.path.trim(),
+        enabled: libraryDraft.enabled,
+      });
+      await refreshLibrariesAndProfiles();
+      setSelectedLibraryId(created.id);
+      setLibraryDraft({ name: '', path: '/media/', enabled: true });
+      setLibraryFormErrors({});
+      setMessage(`Added library ${created.name}.`);
+      setError('');
+    } catch (createError) {
+      setError(createError.message || 'Could not create library.');
+    } finally {
+      setSavingLibrary(false);
+    }
+  }
+
+  async function handleDeleteLibrary(libraryId) {
+    setDeletingLibraryId(libraryId);
+    try {
+      await deleteLibrary(libraryId);
+      const remaining = libraries.filter((library) => library.id !== libraryId);
+      setLibraries(remaining);
+      setSelectedLibraryId((prev) => {
+        if (prev !== libraryId) {
+          return prev;
+        }
+        return remaining[0]?.id ?? null;
+      });
+      setMessage('Library deleted.');
+      setError('');
+      await refreshLibrariesAndProfiles();
+    } catch (deleteError) {
+      setError(deleteError.message || 'Could not delete library.');
+    } finally {
+      setDeletingLibraryId(null);
+    }
+  }
+
+  async function handleSaveLibraryDetails() {
+    if (!selectedLibrary) {
+      return;
+    }
+
+    const nextErrors = validateLibraryForm(selectedLibrary);
+    setLibraryFormErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      return;
+    }
+
+    setSavingLibrary(true);
+    try {
+      const updated = await updateLibrary(selectedLibrary.id, {
+        name: selectedLibrary.name.trim(),
+        path: selectedLibrary.path.trim(),
+        enabled: selectedLibrary.enabled,
+      });
+      setLibraries((prev) => prev.map((library) => (library.id === updated.id ? updated : library)));
+      setLibraryFormErrors({});
+      setMessage('Library details saved.');
+      setError('');
+      await refreshLibrariesAndProfiles();
+    } catch (saveError) {
+      setError(saveError.message || 'Failed to save library details.');
+    } finally {
+      setSavingLibrary(false);
+    }
+  }
+
   async function handleLibraryToggle(libraryId, enabled) {
     const previous = libraries;
     setLibraries((prev) => prev.map((library) => (library.id === libraryId ? { ...library, enabled } : library)));
@@ -671,8 +774,50 @@ export default function App() {
 
         {activePage === 'libraries' && (
           <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
-            <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Libraries</h2>
+            <div className="space-y-4 rounded-lg border border-slate-800 bg-slate-900 p-4">
+              <div className="rounded border border-slate-700 bg-slate-950/50 p-3">
+                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Add library</h2>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <label className="space-y-1 text-sm md:col-span-2">
+                    <span>Name</span>
+                    <input
+                      type="text"
+                      className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                      value={libraryDraft.name}
+                      onChange={(event) => setLibraryDraft((prev) => ({ ...prev, name: event.target.value }))}
+                    />
+                    {libraryFormErrors.name && <p className="text-xs text-red-300">{libraryFormErrors.name}</p>}
+                  </label>
+                  <label className="space-y-1 text-sm md:col-span-2">
+                    <span>Path</span>
+                    <input
+                      type="text"
+                      className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                      value={libraryDraft.path}
+                      onChange={(event) => setLibraryDraft((prev) => ({ ...prev, path: event.target.value }))}
+                    />
+                    {libraryFormErrors.path && <p className="text-xs text-red-300">{libraryFormErrors.path}</p>}
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={libraryDraft.enabled}
+                      onChange={(event) => setLibraryDraft((prev) => ({ ...prev, enabled: event.target.checked }))}
+                    />
+                    Enabled
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  className="mt-3 rounded bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-70"
+                  disabled={savingLibrary}
+                  onClick={handleCreateLibrary}
+                >
+                  {savingLibrary ? 'Adding…' : 'Add library'}
+                </button>
+              </div>
+
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Libraries</h2>
               <div className="space-y-2">
                 {libraries.map((library) => (
                   <div
@@ -705,6 +850,14 @@ export default function App() {
                         >
                           {scanningLibraries[library.id] ? 'Scanning…' : 'Scan'}
                         </button>
+                        <button
+                          type="button"
+                          className="rounded bg-rose-600 px-2 py-1 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
+                          disabled={deletingLibraryId === library.id}
+                          onClick={() => handleDeleteLibrary(library.id)}
+                        >
+                          {deletingLibraryId === library.id ? 'Deleting…' : 'Delete'}
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -717,10 +870,49 @@ export default function App() {
                 <p className="text-sm text-slate-300">Select a library to edit its profile.</p>
               ) : (
                 <div className="space-y-4">
-                  <div className="rounded border border-slate-800 bg-slate-950/40 p-3">
-                    <h2 className="text-lg font-semibold text-cyan-200">{selectedLibrary.name}</h2>
-                    <p className="text-xs text-slate-400">Path: {selectedLibrary.path}</p>
+                  <div className="space-y-3 rounded border border-slate-800 bg-slate-950/40 p-3">
+                    <h2 className="text-lg font-semibold text-cyan-200">Library details</h2>
+                    <label className="space-y-1 text-sm">
+                      <span>Name</span>
+                      <input
+                        type="text"
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={selectedLibrary.name}
+                        onChange={(event) => setLibraries((prev) => prev.map((library) => (
+                          library.id === selectedLibrary.id ? { ...library, name: event.target.value } : library
+                        )))}
+                      />
+                    </label>
+                    <label className="space-y-1 text-sm">
+                      <span>Path</span>
+                      <input
+                        type="text"
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={selectedLibrary.path}
+                        onChange={(event) => setLibraries((prev) => prev.map((library) => (
+                          library.id === selectedLibrary.id ? { ...library, path: event.target.value } : library
+                        )))}
+                      />
+                    </label>
                     <p className="text-xs text-slate-300">Status: {libraryRuntimeStates.find((item) => item.library.id === selectedLibrary.id)?.state}</p>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        className="rounded bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-70"
+                        disabled={savingLibrary}
+                        onClick={handleSaveLibraryDetails}
+                      >
+                        {savingLibrary ? 'Saving…' : 'Save library details'}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-70"
+                        disabled={deletingLibraryId === selectedLibrary.id}
+                        onClick={() => handleDeleteLibrary(selectedLibrary.id)}
+                      >
+                        {deletingLibraryId === selectedLibrary.id ? 'Deleting…' : 'Delete library'}
+                      </button>
+                    </div>
                   </div>
 
                   <div className="space-y-2">
@@ -1125,6 +1317,158 @@ export default function App() {
 
 
             <label className="flex items-center justify-between">
+              <span>Keep original files</span>
+              <input
+                type="checkbox"
+                checked={settings.keep_original}
+                onChange={(event) => setSettings((prev) => ({ ...prev, keep_original: event.target.checked }))}
+              />
+            </label>
+
+            <label className="flex items-center justify-between">
+              <span>Process HDR only</span>
+              <input
+                type="checkbox"
+                checked={settings.process_hdr_only}
+                onChange={(event) => setSettings((prev) => ({ ...prev, process_hdr_only: event.target.checked }))}
+              />
+            </label>
+
+            <label className="block space-y-2">
+              <span>Scan interval minutes</span>
+              <input
+                type="number"
+                min={1}
+                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                value={settings.scan_interval_minutes}
+                onChange={(event) => setSettings((prev) => ({ ...prev, scan_interval_minutes: Number(event.target.value) }))}
+              />
+            </label>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="space-y-2">
+                <span>Schedule start hour</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={23}
+                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                  value={settings.schedule_start_hour}
+                  onChange={(event) => setSettings((prev) => ({ ...prev, schedule_start_hour: Number(event.target.value) }))}
+                />
+              </label>
+              <label className="space-y-2">
+                <span>Schedule end hour</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={23}
+                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                  value={settings.schedule_end_hour}
+                  onChange={(event) => setSettings((prev) => ({ ...prev, schedule_end_hour: Number(event.target.value) }))}
+                />
+              </label>
+            </div>
+
+            <label className="flex items-center justify-between">
+              <span>Global quiet hours enabled</span>
+              <input
+                type="checkbox"
+                checked={settings.global_quiet_enabled}
+                onChange={(event) => setSettings((prev) => ({ ...prev, global_quiet_enabled: event.target.checked }))}
+              />
+            </label>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="space-y-2">
+                <span>Quiet start hour</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={23}
+                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                  value={settings.global_quiet_start_hour}
+                  onChange={(event) => setSettings((prev) => ({ ...prev, global_quiet_start_hour: Number(event.target.value) }))}
+                />
+              </label>
+              <label className="space-y-2">
+                <span>Quiet end hour</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={23}
+                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                  value={settings.global_quiet_end_hour}
+                  onChange={(event) => setSettings((prev) => ({ ...prev, global_quiet_end_hour: Number(event.target.value) }))}
+                />
+              </label>
+            </div>
+
+            <label className="block space-y-2">
+              <span>History retention days</span>
+              <input
+                type="number"
+                min={1}
+                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                value={settings.history_retention_days}
+                onChange={(event) => setSettings((prev) => ({ ...prev, history_retention_days: Number(event.target.value) }))}
+              />
+            </label>
+
+            <label className="flex items-center justify-between">
+              <span>Auto discovery enabled</span>
+              <input
+                type="checkbox"
+                checked={settings.auto_discovery_enabled}
+                onChange={(event) => setSettings((prev) => ({ ...prev, auto_discovery_enabled: event.target.checked }))}
+              />
+            </label>
+
+            <label className="block space-y-2">
+              <span>Discovery method</span>
+              <select
+                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                value={settings.discovery_method}
+                onChange={(event) => setSettings((prev) => ({ ...prev, discovery_method: event.target.value }))}
+              >
+                <option value="interval">Interval</option>
+                <option value="startup">Startup</option>
+              </select>
+            </label>
+
+            <label className="block space-y-2">
+              <span>Discovery interval minutes</span>
+              <input
+                type="number"
+                min={1}
+                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                value={settings.discovery_interval_minutes}
+                onChange={(event) => setSettings((prev) => ({ ...prev, discovery_interval_minutes: Number(event.target.value) }))}
+              />
+            </label>
+
+            <label className="block space-y-2">
+              <span>Workspace root</span>
+              <input
+                type="text"
+                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                value={settings.workspace_root}
+                onChange={(event) => setSettings((prev) => ({ ...prev, workspace_root: event.target.value }))}
+              />
+            </label>
+
+            <label className="block space-y-2">
+              <span>Minimum free disk GB</span>
+              <input
+                type="number"
+                min={1}
+                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                value={settings.min_free_gb}
+                onChange={(event) => setSettings((prev) => ({ ...prev, min_free_gb: Number(event.target.value) }))}
+              />
+            </label>
+
+            <label className="flex items-center justify-between">
               <span>Requeue interrupted jobs on startup</span>
               <input
                 type="checkbox"
@@ -1156,6 +1500,78 @@ export default function App() {
 
             <div className="space-y-3 rounded-lg border border-slate-700 bg-slate-800/60 p-4">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Email notifications</h3>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="space-y-1 text-sm">
+                  <span>SMTP host</span>
+                  <input
+                    type="text"
+                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    value={notificationSettings.smtp_host}
+                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, smtp_host: event.target.value }))}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span>SMTP port</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    value={notificationSettings.smtp_port}
+                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, smtp_port: Number(event.target.value) }))}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span>SMTP username</span>
+                  <input
+                    type="text"
+                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    value={notificationSettings.smtp_user}
+                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, smtp_user: event.target.value }))}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span>SMTP password</span>
+                  <input
+                    type="password"
+                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    value={notificationSettings.smtp_password}
+                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, smtp_password: event.target.value }))}
+                  />
+                </label>
+                <label className="space-y-1 text-sm">
+                  <span>From email</span>
+                  <input
+                    type="email"
+                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    value={notificationSettings.from_email}
+                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, from_email: event.target.value }))}
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input
+                    type="checkbox"
+                    checked={notificationSettings.smtp_tls}
+                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, smtp_tls: event.target.checked }))}
+                  />
+                  Use TLS
+                </label>
+              </div>
+              <label className="space-y-1 text-sm">
+                <span>Recipient emails (comma or newline separated)</span>
+                <textarea
+                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                  rows={3}
+                  value={notificationSettings.to_emails.join(', ')}
+                  onChange={(event) => setNotificationSettings((prev) => ({
+                    ...prev,
+                    to_emails: event.target.value
+                      .split(/[\n,]/)
+                      .map((item) => item.trim())
+                      .filter(Boolean),
+                  }))}
+                />
+              </label>
               <label className="flex items-center justify-between">
                 <span>Job failed</span>
                 <input
