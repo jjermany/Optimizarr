@@ -94,6 +94,10 @@ function progressFromStatus(status) {
   return 20;
 }
 
+function isAbortedJob(job) {
+  return job.status?.toLowerCase() === 'failed' && job.error_message === 'Aborted by user';
+}
+
 function formatHour(hour) {
   return `${String(hour).padStart(2, '0')}:00`;
 }
@@ -278,7 +282,7 @@ export default function App() {
         fetchEncoders(),
       ]);
       setMetrics(nextMetrics);
-      setJobs(nextJobs);
+      setJobs(nextJobs.filter((job) => !isAbortedJob(job)));
       setSettings(nextSettings);
       setNotificationSettings(nextNotificationSettings);
       const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
@@ -326,6 +330,10 @@ export default function App() {
 
   function mergeJobUpdate(nextJob) {
     setJobs((prevJobs) => {
+      if (isAbortedJob(nextJob)) {
+        return prevJobs.filter((job) => job.id !== nextJob.id);
+      }
+
       const existingIndex = prevJobs.findIndex((job) => job.id === nextJob.id);
       if (existingIndex === -1) {
         return [nextJob, ...prevJobs];
@@ -1388,7 +1396,7 @@ export default function App() {
         {activePage === 'settings' && settings && notificationSettings && (
           <section className="space-y-5 rounded-lg border border-slate-800 bg-slate-900 p-6">
             <label className="flex items-center justify-between">
-              <span>Toggle optimizer</span>
+              <span>Toggle optimizer queue processing</span>
               <input
                 type="checkbox"
                 checked={settings.enable_optimizer}
@@ -1397,6 +1405,9 @@ export default function App() {
                 }
               />
             </label>
+            <p className="text-xs text-slate-400">
+              When OFF, new and existing queued jobs stay in the queue and no new workers are started until it is turned back ON.
+            </p>
 
             <label className="block space-y-2">
               <span>Resolution</span>
