@@ -99,3 +99,7 @@ export async function fetchWsToken() {
     throw error;
   }
 }
+
+export function runRecovery() {
+  return request('/recovery/run', { method: 'POST' });
+}

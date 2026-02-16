@@ -63,6 +63,8 @@ def test_get_and_update_settings():
         assert payload['discovery_method'] in {'interval', 'watcher'}
         assert payload['discovery_interval_minutes'] >= 1
         assert payload['workspace_root']
+        assert payload['requeue_interrupted_jobs'] is True
+        assert payload['cleanup_workspaces_on_startup'] is True
 
         update_response = client.post(
             '/settings',
@@ -78,6 +80,8 @@ def test_get_and_update_settings():
                 'discovery_method': 'watcher',
                 'discovery_interval_minutes': 15,
                 'workspace_root': '/cache/workspaces',
+                'requeue_interrupted_jobs': False,
+                'cleanup_workspaces_on_startup': False,
             },
         )
         assert update_response.status_code == 200
@@ -93,6 +97,8 @@ def test_get_and_update_settings():
         assert updated['discovery_method'] == 'watcher'
         assert updated['discovery_interval_minutes'] == 15
         assert updated['workspace_root'] == '/cache/workspaces'
+        assert updated['requeue_interrupted_jobs'] is False
+        assert updated['cleanup_workspaces_on_startup'] is False
 
         final_response = client.get('/settings')
         assert final_response.status_code == 200
@@ -425,3 +431,100 @@ def test_pause_resume_abort_and_queue_controls(monkeypatch, tmp_path):
         resume_queue_response = client.post('/queue/resume')
         assert resume_queue_response.status_code == 200
         assert resume_queue_response.json() == {'status': 'running'}
+
+
+def test_recovery_endpoint_marks_interrupted_requeues_and_cleans_workspace(tmp_path):
+    from app.core.database import SessionLocal
+    from app.models.job import Job
+
+    workspace_root = tmp_path / 'workspaces'
+
+    with TestClient(app) as client:
+        settings_response = client.post(
+            '/settings',
+            json={
+                'workspace_root': str(workspace_root),
+                'requeue_interrupted_jobs': True,
+                'cleanup_workspaces_on_startup': True,
+            },
+        )
+        assert settings_response.status_code == 200
+
+        create_response = client.post('/jobs', json={'source_path': '/media/recover-me.mkv'})
+        assert create_response.status_code == 201
+        job_id = create_response.json()['id']
+
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            assert job is not None
+            job.status = 'running'
+            job.progress_percent = 61
+            job.fps = 24.0
+            db.commit()
+
+        workspace = workspace_root / str(job_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / 'output.partial.mkv').write_text('partial')
+
+        recovery_response = client.post('/recovery/run')
+        assert recovery_response.status_code == 200
+        summary = recovery_response.json()
+        assert summary['recovered_jobs'] >= 1
+        assert summary['requeued_jobs'] >= 1
+        assert summary['cleaned_workspaces'] >= 1
+
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            assert job is not None
+            assert job.status == 'queued'
+            assert job.progress_percent == 0
+            assert job.fps is None
+
+        assert not workspace.exists()
+
+
+def test_recovery_endpoint_can_keep_workspace_and_not_requeue(tmp_path):
+    from app.core.database import SessionLocal
+    from app.models.job import Job
+
+    workspace_root = tmp_path / 'workspaces'
+
+    with TestClient(app) as client:
+        settings_response = client.post(
+            '/settings',
+            json={
+                'workspace_root': str(workspace_root),
+                'requeue_interrupted_jobs': False,
+                'cleanup_workspaces_on_startup': False,
+            },
+        )
+        assert settings_response.status_code == 200
+
+        create_response = client.post('/jobs', json={'source_path': '/media/keep-workspace.mkv'})
+        assert create_response.status_code == 201
+        job_id = create_response.json()['id']
+
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            assert job is not None
+            job.status = 'preflight'
+            db.commit()
+
+        workspace = workspace_root / str(job_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        marker = workspace / 'marker.txt'
+        marker.write_text('keep')
+
+        recovery_response = client.post('/recovery/run')
+        assert recovery_response.status_code == 200
+        summary = recovery_response.json()
+        assert summary['recovered_jobs'] >= 1
+        assert summary['requeued_jobs'] == 0
+        assert summary['cleaned_workspaces'] == 0
+
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            assert job is not None
+            assert job.status == 'interrupted'
+
+        assert marker.exists()

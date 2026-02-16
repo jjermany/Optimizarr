@@ -13,6 +13,7 @@ import {
   resumeJob,
   resumeQueue,
   retryJob,
+  runRecovery,
   scanLibrary,
   updateLibrary,
   updateLibraryProfile,
@@ -163,6 +164,7 @@ export default function App() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [scanningLibraries, setScanningLibraries] = useState({});
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
   const [savingSettings, setSavingSettings] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [fallbackPollingEnabled, setFallbackPollingEnabled] = useState(false);
@@ -503,6 +505,17 @@ export default function App() {
     }
   }
 
+  async function handleRecoveryRun() {
+    try {
+      const result = await runRecovery();
+      setMessage(`Recovered ${result.recovered_jobs} jobs`);
+      setError('');
+      await refreshAll();
+    } catch (recoveryError) {
+      setError(recoveryError.message || 'Recovery failed.');
+    }
+  }
+
   return (
     <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -529,6 +542,7 @@ export default function App() {
         </header>
 
         {error && <p className="rounded bg-red-900/50 p-3 text-red-200">{error}</p>}
+        {message && <p className="rounded bg-emerald-900/50 p-3 text-emerald-200">{message}</p>}
 
         {activePage === 'dashboard' && (
           <section className="space-y-4">
@@ -1014,6 +1028,37 @@ export default function App() {
                 }
               />
             </label>
+
+
+            <label className="flex items-center justify-between">
+              <span>Requeue interrupted jobs on startup</span>
+              <input
+                type="checkbox"
+                checked={settings.requeue_interrupted_jobs}
+                onChange={(event) =>
+                  setSettings((prev) => ({ ...prev, requeue_interrupted_jobs: event.target.checked }))
+                }
+              />
+            </label>
+
+            <label className="flex items-center justify-between">
+              <span>Cleanup workspaces on startup</span>
+              <input
+                type="checkbox"
+                checked={settings.cleanup_workspaces_on_startup}
+                onChange={(event) =>
+                  setSettings((prev) => ({ ...prev, cleanup_workspaces_on_startup: event.target.checked }))
+                }
+              />
+            </label>
+
+            <button
+              type="button"
+              className="rounded bg-indigo-500 px-4 py-2 font-semibold text-slate-950 hover:bg-indigo-400"
+              onClick={handleRecoveryRun}
+            >
+              Run recovery now
+            </button>
 
             <button
               type="button"

@@ -36,3 +36,5 @@ class Settings(Base):
     )
     discovery_interval_minutes: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
     workspace_root: Mapped[str] = mapped_column(String(512), default='/cache/workspaces', nullable=False)
+    requeue_interrupted_jobs: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    cleanup_workspaces_on_startup: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

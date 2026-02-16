@@ -24,6 +24,7 @@ from app.services.job_service import abort_job, cancel_job, create_job, get_job,
 from app.services.monitoring_service import get_system_metrics
 from app.services.realtime_service import broker, expected_ws_token, next_message
 from app.services.discovery_service import scan_enabled_libraries, scan_library
+from app.services.recovery_service import run_startup_recovery
 from app.workers import queue as worker_queue
 
 router = APIRouter()
@@ -137,6 +138,8 @@ class SettingsResponse(BaseModel):
     discovery_method: DiscoveryMethodEnum
     discovery_interval_minutes: int
     workspace_root: str
+    requeue_interrupted_jobs: bool
+    cleanup_workspaces_on_startup: bool
 
     @classmethod
     def from_orm_settings(cls, settings: Settings):
@@ -158,6 +161,8 @@ class SettingsResponse(BaseModel):
             discovery_method=settings.discovery_method,
             discovery_interval_minutes=settings.discovery_interval_minutes,
             workspace_root=settings.workspace_root,
+            requeue_interrupted_jobs=settings.requeue_interrupted_jobs,
+            cleanup_workspaces_on_startup=settings.cleanup_workspaces_on_startup,
         )
 
 
@@ -179,7 +184,15 @@ class SettingsUpdateRequest(BaseModel):
     discovery_method: DiscoveryMethodEnum | None = None
     discovery_interval_minutes: int | None = Field(default=None, ge=1)
     workspace_root: str | None = Field(default=None, min_length=1)
+    requeue_interrupted_jobs: bool | None = None
+    cleanup_workspaces_on_startup: bool | None = None
 
+
+
+class RecoveryResponse(BaseModel):
+    recovered_jobs: int
+    requeued_jobs: int
+    cleaned_workspaces: int
 
 class NotificationTriggerSettings(BaseModel):
     job_failed: bool = True
@@ -614,6 +627,12 @@ def abort_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
     return response
 
+
+
+@router.post('/recovery/run', response_model=RecoveryResponse)
+def run_recovery_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> RecoveryResponse:
+    summary = run_startup_recovery(db)
+    return RecoveryResponse(**summary)
 
 @router.post('/queue/pause')
 def pause_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:

@@ -90,6 +90,18 @@ def init_db() -> None:
             'workspace_root',
             "workspace_root VARCHAR(512) NOT NULL DEFAULT '/cache/workspaces'",
         )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'requeue_interrupted_jobs',
+            'requeue_interrupted_jobs BOOLEAN NOT NULL DEFAULT 1',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'cleanup_workspaces_on_startup',
+            'cleanup_workspaces_on_startup BOOLEAN NOT NULL DEFAULT 1',
+        )
 
         _add_column_if_missing(connection, 'jobs', 'library_id', 'library_id INTEGER')
         _add_column_if_missing(connection, 'jobs', 'profile_snapshot_json', 'profile_snapshot_json TEXT')
@@ -100,4 +112,3 @@ def init_db() -> None:
         _add_column_if_missing(connection, 'jobs', 'fallback_reason', 'fallback_reason TEXT')
         _add_column_if_missing(connection, 'jobs', 'error_message', 'error_message TEXT')
         _add_column_if_missing(connection, 'library_profiles', 'schedule_policy', "schedule_policy VARCHAR(14) NOT NULL DEFAULT 'finish_current'")
-
