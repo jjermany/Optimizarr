@@ -426,6 +426,10 @@ def test_pause_resume_abort_and_queue_controls(monkeypatch, tmp_path):
             job = db.query(Job).filter(Job.id == job_id).first()
             assert job is not None
             job.status = 'paused'
+            job.progress_percent = 42
+            job.fps = 20.0
+            job.eta_seconds = 120
+            job.output_path = '/tmp/output.mkv'
             db.commit()
 
         workspace = workspace_root / str(job_id)
@@ -445,6 +449,10 @@ def test_pause_resume_abort_and_queue_controls(monkeypatch, tmp_path):
         assert abort_response.status_code == 200
         assert abort_response.json()['status'] == 'failed'
         assert abort_response.json()['error_message'] == 'Aborted by user'
+        assert abort_response.json()['progress_percent'] == 0
+        assert abort_response.json()['fps'] is None
+        assert abort_response.json()['eta_seconds'] is None
+        assert abort_response.json()['output_path'] is None
         assert not workspace.exists()
 
         pause_queue_response = client.post('/queue/pause')
@@ -555,16 +563,39 @@ def test_recovery_endpoint_can_keep_workspace_and_not_requeue(tmp_path):
 
 
 def test_abort_all_jobs_endpoint():
+    from app.core.database import SessionLocal
+    from app.models.job import Job
+
     with TestClient(app) as client:
         first = client.post('/jobs', json={'source_path': '/media/a.mkv'})
         second = client.post('/jobs', json={'source_path': '/media/b.mkv'})
         assert first.status_code == 201
         assert second.status_code == 201
 
+        with SessionLocal() as db:
+            jobs = db.query(Job).filter(Job.id.in_([first.json()['id'], second.json()['id']])).all()
+            for job in jobs:
+                job.progress_percent = 55
+                job.fps = 29.97
+                job.eta_seconds = 45
+                job.output_path = '/tmp/old-output.mkv'
+            db.commit()
+
         response = client.post('/jobs/abort-all')
         assert response.status_code == 200
         payload = response.json()
         assert len(payload['aborted_job_ids']) >= 2
+
+        with SessionLocal() as db:
+            jobs = db.query(Job).filter(Job.id.in_(payload['aborted_job_ids'])).all()
+            assert len(jobs) == len(payload['aborted_job_ids'])
+            for job in jobs:
+                assert job.status == 'failed'
+                assert job.error_message == 'Aborted by user'
+                assert job.progress_percent == 0
+                assert job.fps is None
+                assert job.eta_seconds is None
+                assert job.output_path is None
 
 
 def test_get_encoders_endpoint(monkeypatch):

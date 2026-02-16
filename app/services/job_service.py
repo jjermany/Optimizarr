@@ -172,6 +172,10 @@ def abort_job(db: Session, job_id: int) -> Job | None:
     optimization_service.stop_active_ffmpeg(job_id)
     optimization_service.delete_workspace(settings, job_id)
     job.status = 'failed'
+    job.progress_percent = 0
+    job.fps = None
+    job.eta_seconds = None
+    job.output_path = None
     job.error_message = 'Aborted by user'
     job.cancel_requested = False
     job.completed_at = datetime.utcnow()
@@ -212,6 +216,10 @@ def abort_all_jobs(db: Session) -> list[Job]:
         optimization_service.stop_active_ffmpeg(job.id)
         optimization_service.delete_workspace(settings, job.id)
         job.status = 'failed'
+        job.progress_percent = 0
+        job.fps = None
+        job.eta_seconds = None
+        job.output_path = None
         job.error_message = 'Aborted by user'
         job.cancel_requested = False
         job.completed_at = now
