@@ -134,6 +134,7 @@ class SettingsResponse(BaseModel):
     auto_discovery_enabled: bool
     discovery_method: DiscoveryMethodEnum
     discovery_interval_minutes: int
+    workspace_root: str
 
     @classmethod
     def from_orm_settings(cls, settings: Settings):
@@ -154,6 +155,7 @@ class SettingsResponse(BaseModel):
             auto_discovery_enabled=settings.auto_discovery_enabled,
             discovery_method=settings.discovery_method,
             discovery_interval_minutes=settings.discovery_interval_minutes,
+            workspace_root=settings.workspace_root,
         )
 
 
@@ -174,6 +176,7 @@ class SettingsUpdateRequest(BaseModel):
     auto_discovery_enabled: bool | None = None
     discovery_method: DiscoveryMethodEnum | None = None
     discovery_interval_minutes: int | None = Field(default=None, ge=1)
+    workspace_root: str | None = Field(default=None, min_length=1)
 
 
 class NotificationTriggerSettings(BaseModel):

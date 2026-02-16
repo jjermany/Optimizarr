@@ -62,6 +62,7 @@ def test_get_and_update_settings():
         assert 'auto_discovery_enabled' in payload
         assert payload['discovery_method'] in {'interval', 'watcher'}
         assert payload['discovery_interval_minutes'] >= 1
+        assert payload['workspace_root']
 
         update_response = client.post(
             '/settings',
@@ -76,6 +77,7 @@ def test_get_and_update_settings():
                 'auto_discovery_enabled': False,
                 'discovery_method': 'watcher',
                 'discovery_interval_minutes': 15,
+                'workspace_root': '/cache/workspaces',
             },
         )
         assert update_response.status_code == 200
@@ -90,6 +92,7 @@ def test_get_and_update_settings():
         assert updated['auto_discovery_enabled'] is False
         assert updated['discovery_method'] == 'watcher'
         assert updated['discovery_interval_minutes'] == 15
+        assert updated['workspace_root'] == '/cache/workspaces'
 
         final_response = client.get('/settings')
         assert final_response.status_code == 200

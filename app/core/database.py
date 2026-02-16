@@ -83,6 +83,14 @@ def init_db() -> None:
             'discovery_interval_minutes INTEGER NOT NULL DEFAULT 30',
         )
 
+
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'workspace_root',
+            "workspace_root VARCHAR(512) NOT NULL DEFAULT '/cache/workspaces'",
+        )
+
         _add_column_if_missing(connection, 'jobs', 'library_id', 'library_id INTEGER')
         _add_column_if_missing(connection, 'jobs', 'profile_snapshot_json', 'profile_snapshot_json TEXT')
         _add_column_if_missing(connection, 'jobs', 'encoder_used', 'encoder_used VARCHAR(64)')

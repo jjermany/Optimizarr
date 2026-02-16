@@ -114,6 +114,7 @@ def _process_job(job_id: int) -> None:
         metrics = optimize_video(
             job.input_path,
             settings,
+            job_id=job.id,
             progress_callback=on_progress,
             should_cancel=lambda: _should_cancel(db, job_id),
         )
