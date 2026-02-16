@@ -33,6 +33,16 @@ Optimizarr is a FastAPI-based media optimization service designed to discover me
 docker compose up --build
 ```
 
+## Using prebuilt GHCR images
+
+If you deploy from published container images instead of building locally, pull the API image from GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/jjermany/optimizarr:latest
+```
+
+`docker-compose.unraid.yml` is configured to use `ghcr.io/jjermany/optimizarr:latest` for the backend API service.
+
 The frontend listens on `http://localhost:8085` and proxies API traffic to the backend container.
 
 Mounted volumes in `docker-compose.yml`:
