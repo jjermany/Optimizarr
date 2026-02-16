@@ -1,8 +1,8 @@
-name: Build and Push Docker Image
+name: Build and Push Docker Images
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
   build:
@@ -23,16 +23,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/optimizarr
-
-      - name: Build and push
+      # ---- API image ----
+      - name: Build and push API image
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: ./backend
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/optimizarr:latest
-            ghcr.io/${{ github.repository_owner }}/optimizarr:${{ github.sha }}
+            ghcr.io/${{ github.repository_owner }}/optimizarr-api:latest
+            ghcr.io/${{ github.repository_owner }}/optimizarr-api:${{ github.sha }}
+
+      # ---- Frontend image ----
+      - name: Build and push Frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/optimizarr-frontend:latest
+            ghcr.io/${{ github.repository_owner }}/optimizarr-frontend:${{ github.sha }}

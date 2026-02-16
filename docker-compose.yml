@@ -1,12 +1,15 @@
+version: "3.9"
+
 services:
   api:
     build:
-      context: .
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: optimizarr-api
     volumes:
-      - ./media:/media
-      - ./cache:/cache
-      - ./config:/config
+      - ./data/media:/media
+      - ./data/config:/config
+      - ./data/cache:/cache
     devices:
       - /dev/dri:/dev/dri
     restart: unless-stopped
@@ -14,6 +17,7 @@ services:
   frontend:
     build:
       context: ./frontend
+      dockerfile: Dockerfile
     container_name: optimizarr-frontend
     depends_on:
       - api

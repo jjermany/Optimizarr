@@ -1,6 +1,6 @@
 services:
   api:
-    image: ghcr.io/jjermany/optimizarr:latest
+    image: ghcr.io/jjermany/optimizarr-api:latest
     container_name: optimizarr-api
     volumes:
       - /mnt/user/data/media:/media
@@ -11,10 +11,10 @@ services:
     restart: unless-stopped
 
   frontend:
-    image: optimizarr-frontend:latest
+    image: ghcr.io/jjermany/optimizarr-frontend:latest
     container_name: optimizarr-frontend
-    depends_on:
-      - api
     ports:
       - "8085:80"
+    depends_on:
+      - api
     restart: unless-stopped
