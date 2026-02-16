@@ -47,7 +47,7 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
         session.commit()
 
     with TestClient(app) as client:
-        settings_response = client.post('/settings', json={'enable_optimizer': True, 'schedule_start_hour': 0, 'schedule_end_hour': 23})
+        settings_response = client.post('/settings', json={'enable_optimizer': True, 'global_quiet_enabled': False})
         assert settings_response.status_code == 200
 
         create_response = client.post('/jobs', json={'source_path': target_input})
@@ -63,22 +63,31 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
     assert terminal_updates[-1] == (job_id, 'failed')
 
 
-def test_should_workers_run_honors_enable_and_schedule():
-    settings = queue.Settings(enable_optimizer=True, schedule_start_hour=9, schedule_end_hour=17)
+def test_should_workers_run_honors_enable_and_global_quiet_hours():
+    settings = queue.Settings(enable_optimizer=True, global_quiet_enabled=False)
 
     assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is True
-    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 8, 0, 0)) is False
+
+    settings.global_quiet_enabled = True
+    settings.global_quiet_start_hour = 9
+    settings.global_quiet_end_hour = 17
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is False
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 20, 0, 0)) is True
 
     settings.enable_optimizer = False
-    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is False
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 20, 0, 0)) is False
 
 
-def test_should_workers_run_handles_overnight_windows():
-    settings = queue.Settings(enable_optimizer=True, schedule_start_hour=22, schedule_end_hour=6)
+def test_library_job_can_start_honors_library_schedule_and_enablement():
+    settings = queue.Settings(enable_optimizer=True, global_quiet_enabled=False)
+    library = queue.Library(enabled=True)
+    profile = queue.LibraryProfile(schedule_start_hour=22, schedule_end_hour=6)
 
-    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 23, 0, 0)) is True
-    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 3, 0, 0)) is True
-    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 12, 0, 0)) is False
+    assert queue._library_job_can_start(settings, datetime(2024, 1, 1, 23, 0, 0), library, profile) is True
+    assert queue._library_job_can_start(settings, datetime(2024, 1, 1, 12, 0, 0), library, profile) is False
+
+    library.enabled = False
+    assert queue._library_job_can_start(settings, datetime(2024, 1, 1, 23, 0, 0), library, profile) is False
 
 
 def test_should_cancel_when_shutdown_requested():

@@ -57,6 +57,7 @@ def test_get_and_update_settings():
         assert 'enable_optimizer' in payload
         assert 'schedule_start_hour' in payload
         assert 'history_retention_days' in payload
+        assert 'global_quiet_enabled' in payload
 
         update_response = client.post(
             '/settings',
@@ -65,6 +66,9 @@ def test_get_and_update_settings():
                 'schedule_start_hour': 9,
                 'schedule_end_hour': 17,
                 'max_workers': 2,
+                'global_quiet_enabled': True,
+                'global_quiet_start_hour': 23,
+                'global_quiet_end_hour': 5,
             },
         )
         assert update_response.status_code == 200
@@ -73,6 +77,9 @@ def test_get_and_update_settings():
         assert updated['schedule_start_hour'] == 9
         assert updated['schedule_end_hour'] == 17
         assert updated['max_workers'] == 2
+        assert updated['global_quiet_enabled'] is True
+        assert updated['global_quiet_start_hour'] == 23
+        assert updated['global_quiet_end_hour'] == 5
 
         final_response = client.get('/settings')
         assert final_response.status_code == 200
@@ -161,13 +168,22 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
 
         update_profile_response = client.put(
             f'/libraries/{library_id}/profile',
-            json={'hdr_only': True, 'codec': 'av1', 'av1_fallback_codec': 'h264', 'max_workers': 2},
+            json={
+                'hdr_only': True,
+                'codec': 'av1',
+                'av1_fallback_codec': 'h264',
+                'max_workers': 2,
+                'schedule_start_hour': 3,
+                'schedule_end_hour': 11,
+            },
         )
         assert update_profile_response.status_code == 200
         updated_profile = update_profile_response.json()
         assert updated_profile['hdr_only'] is True
         assert updated_profile['codec'] == 'av1'
         assert updated_profile['av1_fallback_codec'] == 'h264'
+        assert updated_profile['schedule_start_hour'] == 3
+        assert updated_profile['schedule_end_hour'] == 11
 
         invalid_path_response = client.post('/libraries', json={'name': 'Bad', 'path': '/tmp/not-allowed'})
         assert invalid_path_response.status_code == 422

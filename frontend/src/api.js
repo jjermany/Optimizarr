@@ -32,6 +32,13 @@ export function fetchLibraryProfile(libraryId) {
   return request(`/libraries/${libraryId}/profile`);
 }
 
+export function updateLibraryProfile(libraryId, payload) {
+  return request(`/libraries/${libraryId}/profile`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
 export function cancelJob(jobId) {
   return request(`/jobs/${jobId}/cancel`, { method: 'POST' });
 }

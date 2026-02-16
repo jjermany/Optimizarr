@@ -126,6 +126,9 @@ class SettingsResponse(BaseModel):
     scan_interval_minutes: int
     schedule_start_hour: int
     schedule_end_hour: int
+    global_quiet_enabled: bool
+    global_quiet_start_hour: int
+    global_quiet_end_hour: int
     process_hdr_only: bool
     history_retention_days: int
 
@@ -140,6 +143,9 @@ class SettingsResponse(BaseModel):
             scan_interval_minutes=settings.scan_interval_minutes,
             schedule_start_hour=settings.schedule_start_hour,
             schedule_end_hour=settings.schedule_end_hour,
+            global_quiet_enabled=settings.global_quiet_enabled,
+            global_quiet_start_hour=settings.global_quiet_start_hour,
+            global_quiet_end_hour=settings.global_quiet_end_hour,
             process_hdr_only=settings.process_hdr_only,
             history_retention_days=settings.history_retention_days,
         )
@@ -154,6 +160,9 @@ class SettingsUpdateRequest(BaseModel):
     scan_interval_minutes: int | None = Field(default=None, ge=1)
     schedule_start_hour: int | None = Field(default=None, ge=0, le=23)
     schedule_end_hour: int | None = Field(default=None, ge=0, le=23)
+    global_quiet_enabled: bool | None = None
+    global_quiet_start_hour: int | None = Field(default=None, ge=0, le=23)
+    global_quiet_end_hour: int | None = Field(default=None, ge=0, le=23)
     process_hdr_only: bool | None = None
     history_retention_days: int | None = Field(default=None, ge=1)
 
