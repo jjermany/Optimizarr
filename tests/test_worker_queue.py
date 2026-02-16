@@ -313,3 +313,54 @@ def test_enforce_schedule_policy_requeues_paused_schedule_job_when_window_opens(
         assert job.status == 'queued'
         assert job.progress_percent == 0
         assert deleted_partials == [job.id]
+
+
+def test_pause_and_resume_queue_publish_system_events(monkeypatch):
+    events = []
+    monkeypatch.setattr(queue.broker, 'publish_system_event', lambda event, **data: events.append((event, data)))
+
+    queue.resume_queue(reason='manual')
+    queue.pause_queue(reason='manual')
+    queue.resume_queue(reason='manual')
+
+    assert events[0] == ('queue_paused', {'reason': 'manual'})
+    assert events[1] == ('queue_resumed', {'reason': 'manual'})
+
+
+def test_enforce_schedule_policy_publishes_state_change(monkeypatch):
+    events = []
+    monkeypatch.setattr(queue, 'stop_active_ffmpeg', lambda *_: None)
+    monkeypatch.setattr(queue.broker, 'publish_system_event', lambda event, **data: events.append((event, data)))
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.commit()
+
+        settings = Settings(enable_optimizer=True, global_quiet_enabled=False)
+        db.add(settings)
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(
+            library_id=library.id,
+            schedule_start_hour=1,
+            schedule_end_hour=2,
+            schedule_policy=SchedulePolicyEnum.pause_current,
+        )
+        db.add(profile)
+        db.commit()
+
+        job = Job(input_path='/media/movies/a.mkv', status='running', library_id=library.id)
+        db.add(job)
+        db.commit()
+
+        queue._enforce_library_schedule_policies(db, settings, datetime(2024, 1, 1, 12, 0, 0))
+
+    assert events
+    assert events[0][0] == 'schedule_policy_state_changed'
+    assert events[0][1]['state'] == 'paused_schedule'

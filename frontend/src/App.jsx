@@ -169,12 +169,14 @@ export default function App() {
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [fallbackPollingEnabled, setFallbackPollingEnabled] = useState(false);
   const [queuePaused, setQueuePaused] = useState(false);
+  const [toasts, setToasts] = useState([]);
 
   const wsRef = useRef();
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef();
   const fallbackTimerRef = useRef();
   const intentionallyClosedRef = useRef(false);
+  const toastTimersRef = useRef({});
 
   const queueCount = useMemo(
     () => jobs.filter((job) => ['pending', 'queued', 'created'].includes(job.status?.toLowerCase())).length,
@@ -247,6 +249,18 @@ export default function App() {
     } catch (refreshError) {
       setError(refreshError.message || 'Could not refresh libraries.');
     }
+  }
+
+  function pushToast(messageText, tone = 'info') {
+    const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    setToasts((prev) => [...prev, { id, message: messageText, tone }]);
+
+    const timer = window.setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id));
+      delete toastTimersRef.current[id];
+    }, 5000);
+
+    toastTimersRef.current[id] = timer;
   }
 
   function mergeJobUpdate(nextJob) {
@@ -375,6 +389,35 @@ export default function App() {
 
           if (payload.type === 'library_update') {
             refreshLibrariesAndProfiles();
+            return;
+          }
+
+          if (payload.type === 'notification') {
+            if (payload.data?.message === 'queue_paused_low_disk') {
+              pushToast('Queue paused due to low disk.', 'warn');
+            }
+            return;
+          }
+
+          if (payload.type === 'system_event') {
+            if (payload.data?.event === 'job_aborted') {
+              pushToast('Aborted job.', 'error');
+              return;
+            }
+
+            if (payload.data?.event === 'queue_paused' && payload.data?.reason === 'schedule') {
+              pushToast('Queue paused due to schedule.', 'warn');
+              return;
+            }
+
+            if (payload.data?.event === 'queue_paused' && payload.data?.reason === 'low_disk') {
+              pushToast('Queue paused due to low disk.', 'warn');
+              return;
+            }
+
+            if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') {
+              pushToast('Recovery ran on startup.', 'info');
+            }
           }
         };
 
@@ -401,6 +444,8 @@ export default function App() {
     return () => {
       intentionallyClosedRef.current = true;
       clearTimers();
+      Object.values(toastTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
+      toastTimersRef.current = {};
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = undefined;
@@ -543,6 +588,23 @@ export default function App() {
 
         {error && <p className="rounded bg-red-900/50 p-3 text-red-200">{error}</p>}
         {message && <p className="rounded bg-emerald-900/50 p-3 text-emerald-200">{message}</p>}
+
+        <div className="pointer-events-none fixed right-4 top-4 z-50 space-y-2">
+          {toasts.map((toast) => (
+            <div
+              key={toast.id}
+              className={`rounded border px-4 py-2 text-sm shadow-lg ${
+                toast.tone === 'error'
+                  ? 'border-red-700 bg-red-900/90 text-red-100'
+                  : toast.tone === 'warn'
+                    ? 'border-amber-600 bg-amber-900/90 text-amber-100'
+                    : 'border-cyan-700 bg-slate-900/95 text-cyan-100'
+              }`}
+            >
+              {toast.message}
+            </div>
+          ))}
+        </div>
 
         {activePage === 'dashboard' && (
           <section className="space-y-4">

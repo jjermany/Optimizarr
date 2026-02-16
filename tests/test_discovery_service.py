@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app.api import routes
 from app.main import app
 from app.services import discovery_service
+from app.services.realtime_service import broker
 
 
 def test_scan_library_respects_hdr_only_profile(monkeypatch, tmp_path):
@@ -54,3 +55,31 @@ def test_scan_library_queues_4k_when_hdr_not_required(monkeypatch, tmp_path):
         created_jobs = scan_response.json()['created_jobs']
         assert len(created_jobs) == 1
         assert created_jobs[0]['source_path'] == str(source_file)
+
+
+def test_scan_library_publishes_discovery_job_queued_event(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'docs'
+    library_path.mkdir()
+
+    source_file = library_path / 'clip.mkv'
+    source_file.write_text('content')
+
+    events = []
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: False)
+    monkeypatch.setattr(broker, 'publish_system_event', lambda event, **data: events.append((event, data)))
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'Docs', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+
+    discovery_events = [item for item in events if item[0] == 'discovery_job_queued']
+    assert len(discovery_events) == 1
+    assert discovery_events[0][1]['source_path'] == str(source_file)
