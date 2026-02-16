@@ -3,13 +3,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.routes import router
-from app.core.database import Base, engine
+from app.core.database import init_db
 from app.workers.queue import start_worker, stop_worker
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    Base.metadata.create_all(bind=engine)
+    init_db()
     worker_thread = start_worker()
     try:
         yield
