@@ -136,7 +136,7 @@ function validateLibraryDraft(draft, libraryEnabled) {
 
   if (!Number.isInteger(draft.minimum_source_resolution) || draft.minimum_source_resolution < 1) {
     errors.minimum_source_resolution = 'Minimum source resolution must be a positive integer.';
-  } else if (Number.isInteger(draft.target_resolution) && draft.minimum_source_resolution <= draft.target_resolution) {
+  } else if (!draft.hdr_only && Number.isInteger(draft.target_resolution) && draft.minimum_source_resolution <= draft.target_resolution) {
     errors.minimum_source_resolution = 'Minimum source resolution must be higher than target resolution.';
   }
 
@@ -1086,7 +1086,7 @@ export default function App() {
 
                     <label className="space-y-2 md:col-span-2">
                       <span className="text-sm font-medium">Minimum source resolution filter</span>
-                      <p className="text-xs text-slate-400">Only queue sources at or above this height during scans.</p>
+                      <p className="text-xs text-slate-400">Only queue sources at or above this height during scans. Ignored when HDR only is enabled.</p>
                       <select
                         className="w-full rounded border border-slate-700 bg-slate-800 p-2"
                         value={[2160, 1440, 1080].includes(profileDraft.minimum_source_resolution) ? String(profileDraft.minimum_source_resolution) : 'custom'}

@@ -283,19 +283,20 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
     if job_exists_for_source(db, source_path, library_id=library.id):
         return None
 
-    height = probe_video_height(source_path)
-    if height is None:
-        return None
+    if profile.hdr_only:
+        if not is_hdr_video(source_path):
+            return None
+    else:
+        height = probe_video_height(source_path)
+        if height is None:
+            return None
 
-    minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
-    if height < minimum_source_resolution:
-        return None
+        minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
+        if height < minimum_source_resolution:
+            return None
 
-    if height <= profile.target_resolution:
-        return None
-
-    if profile.hdr_only and not is_hdr_video(source_path):
-        return None
+        if height <= profile.target_resolution:
+            return None
 
     job = create_job(db, source_path, library_id=library.id, profile=profile)
     broker.publish_system_event(

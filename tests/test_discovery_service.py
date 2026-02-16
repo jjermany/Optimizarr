@@ -32,6 +32,37 @@ def test_scan_library_respects_hdr_only_profile(monkeypatch, tmp_path):
         assert scan_response.json()['created_jobs'] == []
 
 
+def test_scan_library_hdr_only_ignores_resolution_filters(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'hdr'
+    library_path.mkdir()
+
+    source_file = library_path / 'movie-hdr.mkv'
+    source_file.write_text('content')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _: 1080)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: True)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'HDR', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        profile_response = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'hdr_only': True, 'target_resolution': 1080, 'minimum_source_resolution': 2160},
+        )
+        assert profile_response.status_code == 200
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+        created_jobs = scan_response.json()['created_jobs']
+        assert len(created_jobs) == 1
+        assert created_jobs[0]['source_path'] == str(source_file)
+
+
 def test_scan_library_queues_4k_when_hdr_not_required(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()
