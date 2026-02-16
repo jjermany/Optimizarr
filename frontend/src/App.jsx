@@ -19,6 +19,7 @@ import {
   resumeQueue,
   retryJob,
   runCleanup,
+  runOptimizedCleanup,
   runRecovery,
   scanLibrary,
   sendTestNotification,
@@ -774,6 +775,17 @@ export default function App() {
       await refreshAll();
     } catch (cleanupError) {
       setError(cleanupError.message || 'Cleanup failed.');
+    }
+  }
+
+  async function handleOptimizedCleanupRun() {
+    try {
+      const result = await runOptimizedCleanup();
+      setMessage(`Deleted ${result.deleted_files} optimized file(s) from ${result.affected_job_ids.length} job(s)`);
+      setError('');
+      await refreshAll();
+    } catch (cleanupError) {
+      setError(cleanupError.message || 'Optimized cleanup failed.');
     }
   }
 
@@ -1546,7 +1558,14 @@ export default function App() {
                 className="rounded bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400"
                 onClick={handleCleanupRun}
               >
-                Run cleanup now
+                Run workspace cleanup
+              </button>
+              <button
+                type="button"
+                className="rounded bg-amber-500 px-4 py-2 font-semibold text-slate-950 hover:bg-amber-400"
+                onClick={handleOptimizedCleanupRun}
+              >
+                Remove optimized outputs
               </button>
             </div>
 

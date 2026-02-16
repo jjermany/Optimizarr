@@ -23,7 +23,18 @@ from app.models.library import (
 )
 from app.models.settings import DiscoveryMethodEnum, Settings
 from app.services import notification_service
-from app.services.job_service import abort_all_jobs, abort_job, cancel_job, create_job, get_job, list_jobs, pause_job, resume_job, retry_job
+from app.services.job_service import (
+    abort_all_jobs,
+    abort_job,
+    cancel_job,
+    cleanup_optimized_outputs,
+    create_job,
+    get_job,
+    list_jobs,
+    pause_job,
+    resume_job,
+    retry_job,
+)
 from app.services.monitoring_service import get_system_metrics
 from app.services.realtime_service import broker, expected_ws_token, next_message
 from app.services.discovery_service import scan_enabled_libraries, scan_library
@@ -74,7 +85,7 @@ def _ws_token_or_unauthorized(token: str | None) -> None:
 
 
 @router.get('/branding/{asset_name}')
-def get_branding_asset(asset_name: str, _: None = Depends(require_ui_auth)) -> FileResponse:
+def get_branding_asset(asset_name: str) -> FileResponse:
     asset_variants = {
         'logo': ['logo.png'],
         'icon': ['dynamic-icon.png', 'dynamic-icon.svg', 'icon.png', 'icon.svg'],
@@ -92,6 +103,10 @@ def get_branding_asset(asset_name: str, _: None = Depends(require_ui_auth)) -> F
                 return FileResponse(path)
 
     raise HTTPException(status_code=404, detail='Branding asset not found')
+
+@router.get('/favicon.ico', include_in_schema=False)
+def get_favicon() -> FileResponse:
+    return get_branding_asset('icon')
 
 
 class JobCreateRequest(BaseModel):
@@ -228,6 +243,11 @@ class RecoveryResponse(BaseModel):
 
 class CleanupResponse(BaseModel):
     cleaned_workspaces: int
+
+
+class OptimizedCleanupResponse(BaseModel):
+    deleted_files: int
+    affected_job_ids: list[int]
 
 
 class AbortAllJobsResponse(BaseModel):
@@ -786,6 +806,17 @@ def run_cleanup_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
         cleaned_workspaces=cleaned_workspaces,
     )
     return CleanupResponse(cleaned_workspaces=cleaned_workspaces)
+
+
+@router.post('/cleanup/optimized', response_model=OptimizedCleanupResponse)
+def run_optimized_cleanup_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> OptimizedCleanupResponse:
+    deleted_files, affected_job_ids = cleanup_optimized_outputs(db)
+    broker.publish_system_event(
+        'optimized_cleanup_summary',
+        deleted_files=deleted_files,
+        affected_jobs=len(affected_job_ids),
+    )
+    return OptimizedCleanupResponse(deleted_files=deleted_files, affected_job_ids=affected_job_ids)
 
 @router.post('/queue/pause')
 def pause_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:

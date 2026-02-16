@@ -67,6 +67,19 @@ def test_branding_asset_endpoint_returns_404_for_unknown_asset():
     assert response.status_code == 404
 
 
+def test_favicon_endpoint_returns_branding_icon(monkeypatch, tmp_path):
+    logo_dir = tmp_path / 'Logo'
+    logo_dir.mkdir(parents=True)
+    (logo_dir / 'icon.png').write_bytes(b'icon-bytes')
+    monkeypatch.setattr(routes, 'BRANDING_ROOTS', (logo_dir,))
+
+    with TestClient(app) as client:
+        response = client.get('/favicon.ico')
+
+    assert response.status_code == 200
+    assert response.content == b'icon-bytes'
+
+
 def test_metrics_endpoint(monkeypatch):
     monkeypatch.setattr(
         routes,
@@ -721,3 +734,31 @@ def test_get_encoders_endpoint(monkeypatch):
         assert len(data['encoders']) == 3
         h264 = next(item for item in data['encoders'] if item['codec'] == 'h264')
         assert h264['available_encoders'] == ['h264_qsv', 'libx264']
+
+
+def test_cleanup_optimized_endpoint_deletes_recorded_outputs(tmp_path):
+    from app.core.database import SessionLocal
+    from app.models.job import Job
+
+    output_file = tmp_path / 'movie-opt.mkv'
+    output_file.write_text('optimized')
+
+    with TestClient(app) as client:
+        created = client.post('/jobs', json={'source_path': '/media/source-hdr.mkv'})
+        assert created.status_code == 201
+        job_id = created.json()['id']
+
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            assert job is not None
+            job.status = 'complete'
+            job.output_path = str(output_file)
+            db.commit()
+
+        cleanup_response = client.post('/cleanup/optimized')
+        assert cleanup_response.status_code == 200
+        payload = cleanup_response.json()
+        assert payload['deleted_files'] >= 1
+        assert job_id in payload['affected_job_ids']
+
+    assert not output_file.exists()

@@ -151,3 +151,7 @@ export function runRecovery() {
 export function runCleanup() {
   return request('/cleanup/run', { method: 'POST' });
 }
+
+export function runOptimizedCleanup() {
+  return request('/cleanup/optimized', { method: 'POST' });
+}

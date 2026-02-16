@@ -466,7 +466,7 @@ def _run_ffprobe_stream_json(input_path: str) -> dict[str, Any] | None:
         '-select_streams',
         'v:0',
         '-show_entries',
-        'stream=color_transfer,color_primaries,color_space,side_data_list',
+        'stream=color_transfer,color_primaries,color_space,color_range,pix_fmt,bits_per_raw_sample,profile,side_data_list',
         '-of',
         'json',
         input_path,
@@ -490,7 +490,11 @@ def _run_ffprobe_stream_json(input_path: str) -> dict[str, Any] | None:
 
 
 def is_hdr_video(input_path: str) -> bool:
-    hdr_markers = {'smpte2084', 'arib-std-b67', 'bt2020nc', 'bt2020'}
+    # Plex surfaces HDR flags from stream metadata (transfer/primaries/colorspace and Dolby Vision side-data).
+    hdr_transfer_markers = {'smpte2084', 'arib-std-b67'}
+    hdr_space_markers = {'bt2020nc', 'bt2020c', 'bt2020ncl', 'bt2020cl'}
+    hdr_primaries_markers = {'bt2020'}
+    dolby_vision_markers = {'dovi configuration record', 'dolby vision rpu metadata', 'dolby vision'}
 
     payload = _run_ffprobe_stream_json(input_path)
     if payload:
@@ -500,10 +504,23 @@ def is_hdr_video(input_path: str) -> bool:
             transfer = str(stream.get('color_transfer', '')).strip().lower()
             primaries = str(stream.get('color_primaries', '')).strip().lower()
             color_space = str(stream.get('color_space', '')).strip().lower()
+            profile = str(stream.get('profile', '')).strip().lower()
+            pixel_format = str(stream.get('pix_fmt', '')).strip().lower()
+            bit_depth_raw = str(stream.get('bits_per_raw_sample', '0') or '0').strip() or '0'
+            try:
+                bit_depth = int(bit_depth_raw)
+            except ValueError:
+                bit_depth = 0
 
-            if transfer in {'smpte2084', 'arib-std-b67'}:
+            if transfer in hdr_transfer_markers:
                 return True
-            if primaries == 'bt2020' or color_space in hdr_markers:
+            if primaries in hdr_primaries_markers and (transfer or color_space in hdr_space_markers or bit_depth >= 10):
+                return True
+            if color_space in hdr_space_markers and (transfer in hdr_transfer_markers or bit_depth >= 10):
+                return True
+            if 'dvhe' in profile or 'dvh1' in profile:
+                return True
+            if 'yuv420p10' in pixel_format and primaries in hdr_primaries_markers and transfer in hdr_transfer_markers:
                 return True
 
             side_data_list = stream.get('side_data_list', [])
@@ -514,14 +531,22 @@ def is_hdr_video(input_path: str) -> bool:
                     side_data_type = str(side_data.get('side_data_type', '')).lower()
                     if side_data_type in {'mastering display metadata', 'content light level metadata'}:
                         return True
+                    if side_data_type in dolby_vision_markers:
+                        return True
 
     transfer = _run_ffprobe_value(input_path, 'stream=color_transfer')
     primaries = _run_ffprobe_value(input_path, 'stream=color_primaries')
+    color_space = _run_ffprobe_value(input_path, 'stream=color_space')
 
     normalized_transfer = (transfer or '').strip().lower()
     normalized_primaries = (primaries or '').strip().lower()
+    normalized_color_space = (color_space or '').strip().lower()
 
-    return normalized_transfer in {'smpte2084', 'arib-std-b67'} or normalized_primaries == 'bt2020'
+    return (
+        normalized_transfer in hdr_transfer_markers
+        or normalized_primaries in hdr_primaries_markers
+        or normalized_color_space in hdr_space_markers
+    )
 
 
 def _build_ffmpeg_command(input_path: str, output_path: str, bitrate_mbps: int) -> list[str]:
