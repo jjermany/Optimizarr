@@ -74,3 +74,29 @@ def test_optimize_video_runs_and_reports_progress(monkeypatch, tmp_path):
     assert updates
     assert any(update['progress_percent'] == 50 for update in updates)
     assert updates[-1]['progress_percent'] == 100
+
+
+def test_is_hdr_video_detects_hdr_transfer(monkeypatch):
+    def fake_probe(_input, entry):
+        if entry == 'stream=color_transfer':
+            return 'smpte2084'
+        if entry == 'stream=color_primaries':
+            return 'bt709'
+        return None
+
+    monkeypatch.setattr(optimization_service, '_run_ffprobe_value', fake_probe)
+
+    assert optimization_service.is_hdr_video('/media/movie.mkv') is True
+
+
+def test_is_hdr_video_detects_sdr(monkeypatch):
+    def fake_probe(_input, entry):
+        if entry == 'stream=color_transfer':
+            return 'bt709'
+        if entry == 'stream=color_primaries':
+            return 'bt709'
+        return None
+
+    monkeypatch.setattr(optimization_service, '_run_ffprobe_value', fake_probe)
+
+    assert optimization_service.is_hdr_video('/media/movie.mkv') is False

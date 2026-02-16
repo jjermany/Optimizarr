@@ -2,6 +2,7 @@ import time
 
 from fastapi.testclient import TestClient
 
+from app.api import routes
 from app.main import app
 
 
@@ -29,12 +30,32 @@ def test_create_and_fetch_job():
         assert fetched['status'] in {'queued', 'starting', 'running', 'complete', 'failed', 'skipped', 'cancelled'}
 
 
-def test_scan_cancel_and_retry_endpoints():
+def test_scan_cancel_and_retry_endpoints(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    (media_root / 'nested').mkdir(parents=True)
+
+    source_a = media_root / 'a.mkv'
+    source_a.write_text('a')
+
+    source_d = media_root / 'nested' / 'd.mkv'
+    source_d.write_text('d')
+
+    (media_root / 'b-1080p.mkv').write_text('already_optimized_name')
+
+    source_c = media_root / 'c.mkv'
+    source_c.write_text('c')
+    (media_root / 'c-1080p.mkv').write_text('output_exists')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(routes, 'is_hdr_video', lambda _: True)
+
     with TestClient(app) as client:
-        scan_response = client.post('/jobs/scan', json={'source_paths': ['/media/a.mkv', '/media/b.mkv']})
+        scan_response = client.post('/jobs/scan')
         assert scan_response.status_code == 200
         created_jobs = scan_response.json()['created_jobs']
-        assert len(created_jobs) == 2
+
+        created_paths = {job['source_path'] for job in created_jobs}
+        assert created_paths == {str(source_a), str(source_d)}
 
         target_job_id = created_jobs[0]['id']
 
@@ -47,3 +68,37 @@ def test_scan_cancel_and_retry_endpoints():
         assert retry_response.status_code == 200
         retried = retry_response.json()
         assert retried['status'] in {'queued', 'cancelled', 'running'}
+
+
+def test_scan_honors_process_hdr_only(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+
+    hdr_file = media_root / 'hdr.mkv'
+    hdr_file.write_text('hdr')
+    sdr_file = media_root / 'sdr.mkv'
+    sdr_file.write_text('sdr')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(routes, 'is_hdr_video', lambda path: path.endswith('hdr.mkv'))
+
+    with TestClient(app) as client:
+        client.post('/jobs/scan')
+
+        # Enable HDR-only mode and ensure a new scan only queues HDR inputs.
+        from app.core.database import SessionLocal
+        from app.models.settings import Settings
+
+        with SessionLocal() as session:
+            settings = session.query(Settings).first()
+            if settings is None:
+                settings = Settings(process_hdr_only=True)
+                session.add(settings)
+            else:
+                settings.process_hdr_only = True
+            session.commit()
+
+        scan_response = client.post('/jobs/scan')
+        assert scan_response.status_code == 200
+        created_jobs = scan_response.json()['created_jobs']
+        assert {job['source_path'] for job in created_jobs} == {str(hdr_file)}
