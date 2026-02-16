@@ -181,3 +181,90 @@ def test_build_encoder_command_av1_uses_svt_when_qsv_unavailable(monkeypatch):
     assert '-crf' in command and '30' in command
     assert '-c:a' in command and 'eac3' in command
     assert '-b:a' in command and '768k' in command
+
+
+def test_refresh_encoder_cache_parses_ffmpeg_encoders(monkeypatch):
+    class Result:
+        returncode = 0
+        stdout = ' V..... h264_qsv\n V..... libx264\n V..... libx265\n'
+
+    monkeypatch.setattr(optimization_service.subprocess, 'run', lambda *args, **kwargs: Result())
+    optimization_service._ENCODER_CACHE.clear()
+
+    optimization_service.refresh_encoder_cache()
+
+    assert optimization_service._encoder_available('h264_qsv') is True
+    assert optimization_service._encoder_available('hevc_qsv') is False
+    assert optimization_service._encoder_available('libx264') is True
+
+
+def test_optimize_video_fails_when_av1_not_supported(monkeypatch, tmp_path):
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 30.0)
+    monkeypatch.setattr(optimization_service, '_select_encoder', lambda profile: None)
+
+    class AV1Settings:
+        profile_snapshot_json = '{"codec":"av1","av1_fallback_codec":"hevc"}'
+
+    metrics = optimization_service.optimize_video(str(input_path), AV1Settings())
+
+    assert metrics.status == 'failed'
+    assert metrics.error_message == 'AV1 not supported on this host.'
+
+
+def test_optimize_video_retries_h264_qsv_failure_with_software(monkeypatch, tmp_path):
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 100.0)
+    monkeypatch.setattr(optimization_service, '_select_encoder', lambda profile: optimization_service.EncoderSelection(codec='h264', encoder='h264_qsv', use_qsv=True))
+
+    calls = {'count': 0}
+
+    def fake_run_ffmpeg(*args, **kwargs):
+        calls['count'] += 1
+        if calls['count'] == 1:
+            return 1, 1.0, None, False, ['qsv init failed']
+        return 0, 100.0, 30.0, False, []
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+
+    metrics = optimization_service.optimize_video(str(input_path), DummySettings())
+
+    assert metrics.status == 'complete'
+    assert metrics.used_fallback is True
+    assert metrics.encoder_used == 'libx264'
+    assert metrics.fallback_reason == 'h264_qsv_failed'
+
+
+def test_optimize_video_falls_back_when_av1_encode_fails(monkeypatch, tmp_path):
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 100.0)
+    monkeypatch.setattr(optimization_service, '_select_encoder', lambda profile: optimization_service.EncoderSelection(codec='av1', encoder='av1_qsv', use_qsv=True))
+
+    calls = {'count': 0}
+
+    def fake_run_ffmpeg(*args, **kwargs):
+        calls['count'] += 1
+        if calls['count'] == 1:
+            return 1, 10.0, None, False, ['some av1 failure']
+        return 0, 100.0, 48.0, False, []
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+
+    class AV1FallbackSettings:
+        profile_snapshot_json = '{"codec":"av1","av1_fallback_codec":"hevc"}'
+
+    metrics = optimization_service.optimize_video(str(input_path), AV1FallbackSettings())
+
+    assert metrics.status == 'complete'
+    assert metrics.used_fallback is True
+    assert metrics.codec_used == 'hevc'
+    assert metrics.encoder_used == 'libx265'
