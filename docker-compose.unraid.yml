@@ -1,6 +1,6 @@
 services:
   api:
-    image: plex-optimizer:latest
+    image: ghcr.io/jjermany/optimizarr:latest
     container_name: optimizarr-api
     volumes:
       - /mnt/user/data/media:/media
