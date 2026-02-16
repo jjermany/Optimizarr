@@ -470,8 +470,8 @@ def _get_or_create_library_profile(db: Session, library: Library) -> LibraryProf
     return profile
 
 
-def _validate_resolution_constraints(target_resolution: int, minimum_source_resolution: int) -> None:
-    if minimum_source_resolution <= target_resolution:
+def _validate_resolution_constraints(target_resolution: int, minimum_source_resolution: int, hdr_only: bool) -> None:
+    if not hdr_only and minimum_source_resolution <= target_resolution:
         raise HTTPException(
             status_code=422,
             detail='minimum_source_resolution must be greater than target_resolution',
@@ -623,7 +623,8 @@ def update_library_profile(
 
     target_resolution = int(updates.get('target_resolution', profile.target_resolution))
     minimum_source_resolution = int(updates.get('minimum_source_resolution', profile.minimum_source_resolution))
-    _validate_resolution_constraints(target_resolution, minimum_source_resolution)
+    hdr_only = bool(updates.get('hdr_only', profile.hdr_only))
+    _validate_resolution_constraints(target_resolution, minimum_source_resolution, hdr_only)
 
     for field_name, value in updates.items():
         setattr(profile, field_name, value)

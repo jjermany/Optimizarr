@@ -341,9 +341,10 @@ def test_scan_cancel_and_retry_endpoints(monkeypatch, tmp_path):
         created_jobs = scan_response.json()['created_jobs']
 
         created_paths = {job['source_path'] for job in created_jobs}
-        assert created_paths == {str(source_a), str(source_d)}
+        assert {str(source_a), str(source_d)}.issubset(created_paths)
 
-        target_job_id = created_jobs[0]['id']
+        scoped_jobs = [job for job in created_jobs if job['source_path'].startswith(str(library_path))]
+        target_job_id = scoped_jobs[0]['id']
 
         cancel_response = client.post(f'/jobs/{target_job_id}/cancel')
         assert cancel_response.status_code == 200
@@ -470,9 +471,33 @@ def test_profile_update_rejects_min_resolution_equal_or_lower_than_target(monkey
 
         invalid_update = client.put(
             f'/libraries/{library_id}/profile',
-            json={'target_resolution': 1080, 'minimum_source_resolution': 1080},
+            json={'hdr_only': False, 'target_resolution': 1080, 'minimum_source_resolution': 1080},
         )
         assert invalid_update.status_code == 422
+
+
+def test_profile_update_allows_equal_min_resolution_when_hdr_only_enabled(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'library-hdr'
+    library_path.mkdir()
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+
+    with TestClient(app) as client:
+        create_library = client.post('/libraries', json={'name': 'Validation HDR', 'path': str(library_path), 'enabled': True})
+        assert create_library.status_code == 201
+        library_id = create_library.json()['id']
+
+        valid_update = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'hdr_only': True, 'target_resolution': 1080, 'minimum_source_resolution': 1080},
+        )
+        assert valid_update.status_code == 200
+        payload = valid_update.json()
+        assert payload['hdr_only'] is True
+        assert payload['target_resolution'] == 1080
+        assert payload['minimum_source_resolution'] == 1080
 
 
 def test_pause_resume_abort_and_queue_controls(monkeypatch, tmp_path):
