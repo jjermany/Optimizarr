@@ -4,8 +4,8 @@ services:
     container_name: optimizarr-api
     volumes:
       - /mnt/user/data/media:/media
-      - /mnt/cache/appdata/plex-optimizer:/config
-      - /mnt/cache/plex-optimizer-cache:/cache
+      - /mnt/cache/appdata/optimizarr:/config
+      - /mnt/cache/appdata/optimizarr/tmp:/cache
     devices:
       - /dev/dri:/dev/dri
     restart: unless-stopped
