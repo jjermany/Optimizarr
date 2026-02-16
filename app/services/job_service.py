@@ -264,3 +264,15 @@ def abort_all_jobs(db: Session) -> list[Job]:
     for job in targets:
         db.refresh(job)
     return targets
+
+
+def remove_all_terminal_jobs(db: Session) -> list[int]:
+    terminal_jobs = db.query(Job).filter(Job.status.in_(TERMINAL_STATUSES)).all()
+    if not terminal_jobs:
+        return []
+
+    removed_job_ids = [job.id for job in terminal_jobs]
+    for job in terminal_jobs:
+        db.delete(job)
+    db.commit()
+    return removed_job_ids

@@ -37,14 +37,14 @@ def test_optimize_video_skips_low_height(monkeypatch, tmp_path):
     metrics = optimization_service.optimize_video(str(input_path), DummySettings())
 
     assert metrics.status == 'skipped'
-    assert metrics.skipped_reason == 'source_height_below_threshold'
+    assert metrics.skipped_reason == 'source_height_below_target'
 
 
 def test_optimize_video_runs_and_reports_progress(monkeypatch, tmp_path):
     input_path = tmp_path / 'movie.mkv'
     input_path.write_text('placeholder')
 
-    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
     monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 100.0)
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
 
@@ -179,7 +179,7 @@ def test_build_encoder_command_prefers_qsv_and_scales(monkeypatch):
         'crf': 22,
     }
 
-    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_qsv')
 
     command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
@@ -266,7 +266,7 @@ def test_optimize_video_fails_when_av1_not_supported(monkeypatch, tmp_path):
     input_path = tmp_path / 'movie.mkv'
     input_path.write_text('placeholder')
 
-    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
     monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 30.0)
     monkeypatch.setattr(optimization_service, '_select_encoder', lambda profile: None)
 
@@ -283,7 +283,7 @@ def test_optimize_video_retries_h264_qsv_failure_with_software(monkeypatch, tmp_
     input_path = tmp_path / 'movie.mkv'
     input_path.write_text('placeholder')
 
-    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
     monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 100.0)
     monkeypatch.setattr(optimization_service, '_select_encoder', lambda profile: optimization_service.EncoderSelection(codec='h264', encoder='h264_qsv', use_qsv=True))
 
@@ -310,7 +310,7 @@ def test_optimize_video_falls_back_when_av1_encode_fails(monkeypatch, tmp_path):
     input_path = tmp_path / 'movie.mkv'
     input_path.write_text('placeholder')
 
-    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
     monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 100.0)
     monkeypatch.setattr(optimization_service, '_select_encoder', lambda profile: optimization_service.EncoderSelection(codec='av1', encoder='av1_qsv', use_qsv=True))
 
@@ -350,7 +350,7 @@ def test_optimize_video_writes_partial_in_workspace(monkeypatch, tmp_path):
 
     LocalSettings.workspace_root = str(workspace_root)
 
-    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
     monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 10.0)
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
 

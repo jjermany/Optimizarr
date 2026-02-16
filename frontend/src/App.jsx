@@ -16,6 +16,7 @@ import {
   fetchWsToken,
   pauseJob,
   pauseQueue,
+  removeAllJobs,
   resumeJob,
   resumeQueue,
   retryJob,
@@ -577,6 +578,18 @@ export default function App() {
       await refreshAll();
     } catch (actionError) {
       setError(actionError.message || 'Abort all failed.');
+    }
+  }
+
+
+  async function handleRemoveAllJobs() {
+    try {
+      const result = await removeAllJobs();
+      setMessage(`Removed ${result.removed_job_ids.length} job(s).`);
+      setError('');
+      await refreshAll();
+    } catch (actionError) {
+      setError(actionError.message || 'Remove all failed.');
     }
   }
 
@@ -1365,6 +1378,14 @@ export default function App() {
                   className="rounded bg-rose-600 px-3 py-1 text-xs font-medium text-white hover:bg-rose-500"
                 >
                   Abort All
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleRemoveAllJobs()}
+                  className="rounded border border-slate-600 bg-slate-800 px-3 py-1 text-xs font-medium text-slate-100 hover:bg-slate-700"
+                >
+                  Remove All
                 </button>
                 <button
                   type="button"
