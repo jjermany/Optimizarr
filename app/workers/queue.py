@@ -326,17 +326,8 @@ def _is_within_schedule_window(current_hour: int, start_hour: int, end_hour: int
     return current_hour >= start_hour or current_hour <= end_hour
 
 
-def _is_within_global_quiet_hours(settings: Settings, now: datetime) -> bool:
-    if not settings.global_quiet_enabled:
-        return False
-    return _is_within_schedule_window(now.hour, settings.global_quiet_start_hour, settings.global_quiet_end_hour)
-
-
 def _library_job_can_start(settings: Settings, now: datetime, library: Library | None, profile: LibraryProfile | None) -> bool:
     if not settings.enable_optimizer:
-        return False
-
-    if _is_within_global_quiet_hours(settings, now):
         return False
 
     if library is None:
@@ -465,11 +456,10 @@ def is_queue_paused() -> bool:
 
 
 def _should_workers_run(settings: Settings, now: datetime) -> bool:
+    _ = now
     if _queue_paused:
         return False
-    if not settings.enable_optimizer:
-        return False
-    return not _is_within_global_quiet_hours(settings, now)
+    return bool(settings.enable_optimizer)
 
 
 def _manager_loop() -> None:

@@ -147,3 +147,7 @@ export async function fetchWsToken() {
 export function runRecovery() {
   return request('/recovery/run', { method: 'POST' });
 }
+
+export function runCleanup() {
+  return request('/cleanup/run', { method: 'POST' });
+}

@@ -562,6 +562,51 @@ def test_recovery_endpoint_can_keep_workspace_and_not_requeue(tmp_path):
         assert marker.exists()
 
 
+
+
+def test_cleanup_endpoint_removes_stale_workspaces_only(tmp_path):
+    from app.core.database import SessionLocal
+    from app.models.job import Job
+
+    workspace_root = tmp_path / 'workspaces'
+
+    with TestClient(app) as client:
+        settings_response = client.post('/settings', json={'workspace_root': str(workspace_root)})
+        assert settings_response.status_code == 200
+
+        running_response = client.post('/jobs', json={'source_path': '/media/running-cleanup.mkv'})
+        stale_response = client.post('/jobs', json={'source_path': '/media/stale-cleanup.mkv'})
+        assert running_response.status_code == 201
+        assert stale_response.status_code == 201
+        running_id = running_response.json()['id']
+        stale_id = stale_response.json()['id']
+
+        with SessionLocal() as db:
+            running_job = db.query(Job).filter(Job.id == running_id).first()
+            stale_job = db.query(Job).filter(Job.id == stale_id).first()
+            assert running_job is not None
+            assert stale_job is not None
+            running_job.status = 'running'
+            stale_job.status = 'failed'
+            db.commit()
+
+        running_workspace = workspace_root / str(running_id)
+        stale_workspace = workspace_root / str(stale_id)
+        orphan_workspace = workspace_root / '999999'
+        running_workspace.mkdir(parents=True, exist_ok=True)
+        stale_workspace.mkdir(parents=True, exist_ok=True)
+        orphan_workspace.mkdir(parents=True, exist_ok=True)
+
+        cleanup_response = client.post('/cleanup/run')
+        assert cleanup_response.status_code == 200
+        summary = cleanup_response.json()
+        assert summary['cleaned_workspaces'] == 2
+
+        assert running_workspace.exists()
+        assert not stale_workspace.exists()
+        assert not orphan_workspace.exists()
+
+
 def test_abort_all_jobs_endpoint():
     from app.core.database import SessionLocal
     from app.models.job import Job

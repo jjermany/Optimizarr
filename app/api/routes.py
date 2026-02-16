@@ -26,7 +26,7 @@ from app.services.job_service import abort_all_jobs, abort_job, cancel_job, crea
 from app.services.monitoring_service import get_system_metrics
 from app.services.realtime_service import broker, expected_ws_token, next_message
 from app.services.discovery_service import scan_enabled_libraries, scan_library
-from app.services.recovery_service import run_startup_recovery
+from app.services.recovery_service import run_startup_recovery, run_workspace_cleanup
 from app.workers import queue as worker_queue
 
 router = APIRouter()
@@ -197,6 +197,10 @@ class SettingsUpdateRequest(BaseModel):
 class RecoveryResponse(BaseModel):
     recovered_jobs: int
     requeued_jobs: int
+    cleaned_workspaces: int
+
+
+class CleanupResponse(BaseModel):
     cleaned_workspaces: int
 
 
@@ -727,6 +731,19 @@ def run_recovery_endpoint(_: None = Depends(require_ui_auth), db: Session = Depe
         cleaned_workspaces=cleaned_workspaces,
     )
     return RecoveryResponse(recovered_jobs=recovered_jobs, requeued_jobs=requeued_jobs, cleaned_workspaces=cleaned_workspaces)
+
+
+
+@router.post('/cleanup/run', response_model=CleanupResponse)
+def run_cleanup_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> CleanupResponse:
+    summary = run_workspace_cleanup(db)
+    cleaned_workspaces = summary.get('cleaned_workspaces', 0)
+    broker.publish_system_event(
+        'cleanup_summary',
+        trigger='manual',
+        cleaned_workspaces=cleaned_workspaces,
+    )
+    return CleanupResponse(cleaned_workspaces=cleaned_workspaces)
 
 @router.post('/queue/pause')
 def pause_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
