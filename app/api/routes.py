@@ -316,6 +316,7 @@ class LibraryResponse(BaseModel):
 
 class LibraryProfileResponse(BaseModel):
     target_resolution: int
+    minimum_source_resolution: int
     codec: CodecEnum
     container: ContainerEnum
     audio_mode: AudioModeEnum
@@ -338,6 +339,7 @@ class LibraryProfileResponse(BaseModel):
     def from_orm_profile(cls, profile: LibraryProfile):
         return cls(
             target_resolution=profile.target_resolution,
+            minimum_source_resolution=profile.minimum_source_resolution,
             codec=profile.codec,
             container=profile.container,
             audio_mode=profile.audio_mode,
@@ -369,6 +371,7 @@ class EncodersResponse(BaseModel):
 
 class LibraryProfileUpdateRequest(BaseModel):
     target_resolution: int | None = Field(default=None, ge=1)
+    minimum_source_resolution: int | None = Field(default=None, ge=1)
     codec: CodecEnum | None = None
     container: ContainerEnum | None = None
     audio_mode: AudioModeEnum | None = None
@@ -445,6 +448,14 @@ def _get_or_create_library_profile(db: Session, library: Library) -> LibraryProf
     db.commit()
     db.refresh(profile)
     return profile
+
+
+def _validate_resolution_constraints(target_resolution: int, minimum_source_resolution: int) -> None:
+    if minimum_source_resolution <= target_resolution:
+        raise HTTPException(
+            status_code=422,
+            detail='minimum_source_resolution must be greater than target_resolution',
+        )
 
 
 @router.get('/health')
@@ -589,6 +600,11 @@ def update_library_profile(
     profile = _get_or_create_library_profile(db, library)
 
     updates = payload.model_dump(exclude_none=True)
+
+    target_resolution = int(updates.get('target_resolution', profile.target_resolution))
+    minimum_source_resolution = int(updates.get('minimum_source_resolution', profile.minimum_source_resolution))
+    _validate_resolution_constraints(target_resolution, minimum_source_resolution)
+
     for field_name, value in updates.items():
         setattr(profile, field_name, value)
 

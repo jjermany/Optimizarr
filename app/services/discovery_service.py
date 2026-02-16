@@ -284,7 +284,14 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         return None
 
     height = probe_video_height(source_path)
-    if height is None or height < 2000:
+    if height is None:
+        return None
+
+    minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
+    if height < minimum_source_resolution:
+        return None
+
+    if height <= profile.target_resolution:
         return None
 
     if profile.hdr_only and not is_hdr_video(source_path):

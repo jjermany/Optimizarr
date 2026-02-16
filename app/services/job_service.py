@@ -19,6 +19,7 @@ def _profile_snapshot(profile: LibraryProfile | None) -> str | None:
     return json.dumps(
         {
             'target_resolution': profile.target_resolution,
+            'minimum_source_resolution': profile.minimum_source_resolution,
             'codec': profile.codec.value,
             'container': profile.container.value,
             'audio_mode': profile.audio_mode.value,

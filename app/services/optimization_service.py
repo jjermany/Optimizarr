@@ -458,7 +458,63 @@ def _probe_duration_seconds(input_path: str) -> float | None:
         return None
 
 
+def _run_ffprobe_stream_json(input_path: str) -> dict[str, Any] | None:
+    command = [
+        'ffprobe',
+        '-v',
+        'error',
+        '-select_streams',
+        'v:0',
+        '-show_entries',
+        'stream=color_transfer,color_primaries,color_space,side_data_list',
+        '-of',
+        'json',
+        input_path,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
 def is_hdr_video(input_path: str) -> bool:
+    hdr_markers = {'smpte2084', 'arib-std-b67', 'bt2020nc', 'bt2020'}
+
+    payload = _run_ffprobe_stream_json(input_path)
+    if payload:
+        streams = payload.get('streams', [])
+        if isinstance(streams, list) and streams:
+            stream = streams[0] if isinstance(streams[0], dict) else {}
+            transfer = str(stream.get('color_transfer', '')).strip().lower()
+            primaries = str(stream.get('color_primaries', '')).strip().lower()
+            color_space = str(stream.get('color_space', '')).strip().lower()
+
+            if transfer in {'smpte2084', 'arib-std-b67'}:
+                return True
+            if primaries == 'bt2020' or color_space in hdr_markers:
+                return True
+
+            side_data_list = stream.get('side_data_list', [])
+            if isinstance(side_data_list, list):
+                for side_data in side_data_list:
+                    if not isinstance(side_data, dict):
+                        continue
+                    side_data_type = str(side_data.get('side_data_type', '')).lower()
+                    if side_data_type in {'mastering display metadata', 'content light level metadata'}:
+                        return True
+
     transfer = _run_ffprobe_value(input_path, 'stream=color_transfer')
     primaries = _run_ffprobe_value(input_path, 'stream=color_primaries')
 
