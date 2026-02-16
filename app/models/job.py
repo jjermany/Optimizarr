@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -18,6 +18,13 @@ class Job(Base):
     eta_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    library_id: Mapped[int | None] = mapped_column(ForeignKey('libraries.id'), nullable=True)
+    profile_snapshot_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    encoder_used: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    codec_used: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    hwaccel_used: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    used_fallback: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    fallback_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

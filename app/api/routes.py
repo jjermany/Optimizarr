@@ -4,10 +4,19 @@ import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.models.library import (
+    AudioModeEnum,
+    BitrateModeEnum,
+    CodecEnum,
+    ContainerEnum,
+    Library,
+    LibraryProfile,
+    SpeedPresetEnum,
+)
 from app.models.settings import Settings
 from app.services.job_service import cancel_job, create_job, get_job, list_jobs, retry_job
 from app.services.monitoring_service import get_system_metrics
@@ -120,6 +129,118 @@ class SettingsUpdateRequest(BaseModel):
     history_retention_days: int | None = Field(default=None, ge=1)
 
 
+class LibraryBaseRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    path: str = Field(..., min_length=1)
+    enabled: bool = True
+
+    @field_validator('path')
+    @classmethod
+    def validate_media_path(cls, value: str) -> str:
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            raise ValueError('path must be an absolute path')
+
+        media_root = MEDIA_ROOT.resolve()
+        resolved_candidate = candidate.resolve(strict=False)
+
+        if not resolved_candidate.is_relative_to(media_root):
+            raise ValueError('path must be under /media')
+        if not candidate.exists():
+            raise ValueError('path must exist')
+
+        return str(candidate)
+
+
+class LibraryCreateRequest(LibraryBaseRequest):
+    pass
+
+
+class LibraryUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1)
+    path: str | None = None
+    enabled: bool | None = None
+
+    @field_validator('path')
+    @classmethod
+    def validate_optional_media_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return LibraryBaseRequest.validate_media_path(value)
+
+
+class LibraryResponse(BaseModel):
+    id: int
+    name: str
+    path: str
+    enabled: bool
+
+    @classmethod
+    def from_orm_library(cls, library: Library):
+        return cls(id=library.id, name=library.name, path=library.path, enabled=library.enabled)
+
+
+class LibraryProfileResponse(BaseModel):
+    target_resolution: int
+    codec: CodecEnum
+    container: ContainerEnum
+    audio_mode: AudioModeEnum
+    bitrate_mode: BitrateModeEnum
+    bitrate_mbps: int | None
+    crf: int | None
+    speed_preset: SpeedPresetEnum
+    hdr_only: bool
+    max_workers: int
+    schedule_start_hour: int
+    schedule_end_hour: int
+    output_suffix: str
+    av1_fallback_codec: CodecEnum
+
+    @classmethod
+    def from_orm_profile(cls, profile: LibraryProfile):
+        return cls(
+            target_resolution=profile.target_resolution,
+            codec=profile.codec,
+            container=profile.container,
+            audio_mode=profile.audio_mode,
+            bitrate_mode=profile.bitrate_mode,
+            bitrate_mbps=profile.bitrate_mbps,
+            crf=profile.crf,
+            speed_preset=profile.speed_preset,
+            hdr_only=profile.hdr_only,
+            max_workers=profile.max_workers,
+            schedule_start_hour=profile.schedule_start_hour,
+            schedule_end_hour=profile.schedule_end_hour,
+            output_suffix=profile.output_suffix,
+            av1_fallback_codec=profile.av1_fallback_codec,
+        )
+
+
+class LibraryProfileUpdateRequest(BaseModel):
+    target_resolution: int | None = Field(default=None, ge=1)
+    codec: CodecEnum | None = None
+    container: ContainerEnum | None = None
+    audio_mode: AudioModeEnum | None = None
+    bitrate_mode: BitrateModeEnum | None = None
+    bitrate_mbps: int | None = Field(default=None, ge=1)
+    crf: int | None = Field(default=None, ge=1)
+    speed_preset: SpeedPresetEnum | None = None
+    hdr_only: bool | None = None
+    max_workers: int | None = Field(default=None, ge=1)
+    schedule_start_hour: int | None = Field(default=None, ge=0, le=23)
+    schedule_end_hour: int | None = Field(default=None, ge=0, le=23)
+    output_suffix: str | None = None
+    av1_fallback_codec: CodecEnum | None = None
+
+    @field_validator('av1_fallback_codec')
+    @classmethod
+    def fallback_codec_must_not_be_av1(cls, value: CodecEnum | None) -> CodecEnum | None:
+        if value == CodecEnum.av1:
+            raise ValueError('av1_fallback_codec must be hevc or h264')
+        return value
+
+
+
 def _get_settings(db: Session) -> Settings:
     settings = db.query(Settings).first()
     if not settings:
@@ -132,6 +253,24 @@ def _get_settings(db: Session) -> Settings:
 
 def _output_path_for(source_path: Path) -> Path:
     return source_path.with_name(f'{source_path.stem}-1080p.mkv')
+
+
+def _get_library_or_404(db: Session, library_id: int) -> Library:
+    library = db.query(Library).filter(Library.id == library_id).first()
+    if not library:
+        raise HTTPException(status_code=404, detail='Library not found')
+    return library
+
+
+def _get_or_create_library_profile(db: Session, library: Library) -> LibraryProfile:
+    if library.profile:
+        return library.profile
+
+    profile = LibraryProfile(library_id=library.id)
+    db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    return profile
 
 
 @router.get('/health')
@@ -165,6 +304,95 @@ def update_settings(
     db.commit()
     db.refresh(settings)
     return SettingsResponse.from_orm_settings(settings)
+
+
+@router.get('/libraries', response_model=list[LibraryResponse])
+def get_libraries(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> list[LibraryResponse]:
+    libraries = db.query(Library).order_by(Library.name.asc()).all()
+    return [LibraryResponse.from_orm_library(library) for library in libraries]
+
+
+@router.post('/libraries', response_model=LibraryResponse, status_code=201)
+def create_library(
+    payload: LibraryCreateRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> LibraryResponse:
+    existing = db.query(Library).filter(Library.path == payload.path).first()
+    if existing:
+        raise HTTPException(status_code=409, detail='Library path already exists')
+
+    library = Library(name=payload.name, path=payload.path, enabled=payload.enabled)
+    db.add(library)
+    db.commit()
+    db.refresh(library)
+
+    profile = LibraryProfile(library_id=library.id)
+    db.add(profile)
+    db.commit()
+    db.refresh(library)
+
+    return LibraryResponse.from_orm_library(library)
+
+
+@router.put('/libraries/{library_id}', response_model=LibraryResponse)
+def update_library(
+    library_id: int,
+    payload: LibraryUpdateRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> LibraryResponse:
+    library = _get_library_or_404(db, library_id)
+
+    updates = payload.model_dump(exclude_none=True)
+    if 'path' in updates:
+        existing = db.query(Library).filter(Library.path == updates['path'], Library.id != library_id).first()
+        if existing:
+            raise HTTPException(status_code=409, detail='Library path already exists')
+
+    for field_name, value in updates.items():
+        setattr(library, field_name, value)
+
+    db.commit()
+    db.refresh(library)
+    return LibraryResponse.from_orm_library(library)
+
+
+@router.delete('/libraries/{library_id}', status_code=204)
+def delete_library(library_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> None:
+    library = _get_library_or_404(db, library_id)
+    db.delete(library)
+    db.commit()
+
+
+@router.get('/libraries/{library_id}/profile', response_model=LibraryProfileResponse)
+def get_library_profile(
+    library_id: int,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> LibraryProfileResponse:
+    library = _get_library_or_404(db, library_id)
+    profile = _get_or_create_library_profile(db, library)
+    return LibraryProfileResponse.from_orm_profile(profile)
+
+
+@router.put('/libraries/{library_id}/profile', response_model=LibraryProfileResponse)
+def update_library_profile(
+    library_id: int,
+    payload: LibraryProfileUpdateRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> LibraryProfileResponse:
+    library = _get_library_or_404(db, library_id)
+    profile = _get_or_create_library_profile(db, library)
+
+    updates = payload.model_dump(exclude_none=True)
+    for field_name, value in updates.items():
+        setattr(profile, field_name, value)
+
+    db.commit()
+    db.refresh(profile)
+    return LibraryProfileResponse.from_orm_profile(profile)
 
 
 @router.get('/metrics', response_model=MetricsResponse)
@@ -203,21 +431,41 @@ def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db))
     settings = _get_settings(db)
     created_jobs = []
 
-    for media_file in MEDIA_ROOT.rglob('*'):
-        if not media_file.is_file() or media_file.suffix.lower() != '.mkv':
-            continue
+    libraries = db.query(Library).filter(Library.enabled.is_(True)).order_by(Library.id.asc()).all()
+    if libraries:
+        for library in libraries:
+            profile = _get_or_create_library_profile(db, library)
+            library_path = Path(library.path)
+            for media_file in library_path.rglob('*'):
+                if not media_file.is_file() or media_file.suffix.lower() != '.mkv':
+                    continue
+                if media_file.stem.endswith(profile.output_suffix):
+                    continue
 
-        if media_file.stem.endswith('-1080p'):
-            continue
+                output_path = media_file.with_name(f'{media_file.stem}{profile.output_suffix}.{profile.container.value}')
+                if output_path.exists():
+                    continue
 
-        output_path = _output_path_for(media_file)
-        if output_path.exists():
-            continue
+                if profile.hdr_only and not is_hdr_video(str(media_file)):
+                    continue
 
-        if settings.process_hdr_only and not is_hdr_video(str(media_file)):
-            continue
+                created_jobs.append(create_job(db, str(media_file), library_id=library.id, profile=profile))
+    else:
+        for media_file in MEDIA_ROOT.rglob('*'):
+            if not media_file.is_file() or media_file.suffix.lower() != '.mkv':
+                continue
 
-        created_jobs.append(create_job(db, str(media_file)))
+            if media_file.stem.endswith('-1080p'):
+                continue
+
+            output_path = _output_path_for(media_file)
+            if output_path.exists():
+                continue
+
+            if settings.process_hdr_only and not is_hdr_video(str(media_file)):
+                continue
+
+            created_jobs.append(create_job(db, str(media_file)))
 
     jobs = created_jobs
     return ScanResponse(created_jobs=[JobResponse.from_orm_job(job) for job in jobs])

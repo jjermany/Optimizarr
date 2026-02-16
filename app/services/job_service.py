@@ -1,15 +1,46 @@
 from datetime import datetime
 from datetime import timedelta
+import json
 
 from sqlalchemy.orm import Session
 
 from app.models.job import Job
+from app.models.library import LibraryProfile
 
 TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
 
 
-def create_job(db: Session, source_path: str) -> Job:
-    job = Job(input_path=source_path, status='queued')
+def _profile_snapshot(profile: LibraryProfile | None) -> str | None:
+    if profile is None:
+        return None
+
+    return json.dumps(
+        {
+            'target_resolution': profile.target_resolution,
+            'codec': profile.codec.value,
+            'container': profile.container.value,
+            'audio_mode': profile.audio_mode.value,
+            'bitrate_mode': profile.bitrate_mode.value,
+            'bitrate_mbps': profile.bitrate_mbps,
+            'crf': profile.crf,
+            'speed_preset': profile.speed_preset.value,
+            'hdr_only': profile.hdr_only,
+            'max_workers': profile.max_workers,
+            'schedule_start_hour': profile.schedule_start_hour,
+            'schedule_end_hour': profile.schedule_end_hour,
+            'output_suffix': profile.output_suffix,
+            'av1_fallback_codec': profile.av1_fallback_codec.value,
+        }
+    )
+
+
+def create_job(db: Session, source_path: str, library_id: int | None = None, profile: LibraryProfile | None = None) -> Job:
+    job = Job(
+        input_path=source_path,
+        status='queued',
+        library_id=library_id,
+        profile_snapshot_json=_profile_snapshot(profile),
+    )
     db.add(job)
     db.commit()
     db.refresh(job)
