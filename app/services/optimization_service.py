@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 import subprocess
 import time
-from typing import Callable
+from typing import Any, Callable
 
 
 FPS_REGEX = re.compile(r"fps\s*=\s*(?P<fps>[0-9]*\.?[0-9]+)")
+_ENCODER_CACHE: dict[str, bool] = {}
 
 
 @dataclass
@@ -27,6 +29,156 @@ class OptimizationMetrics:
 def _output_path_for(input_path: str) -> str:
     source = Path(input_path)
     return str(source.with_name(f"{source.stem}-1080p.mkv"))
+
+
+def _encoder_available(encoder_name: str) -> bool:
+    if encoder_name in _ENCODER_CACHE:
+        return _ENCODER_CACHE[encoder_name]
+
+    try:
+        result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True, check=False)
+    except OSError:
+        _ENCODER_CACHE[encoder_name] = False
+        return False
+
+    if result.returncode != 0:
+        _ENCODER_CACHE[encoder_name] = False
+        return False
+
+    available = bool(re.search(rf"\b{re.escape(encoder_name)}\b", result.stdout))
+    _ENCODER_CACHE[encoder_name] = available
+    return available
+
+
+def _audio_args(audio_mode: str) -> list[str]:
+    if audio_mode == 'copy':
+        return ['-c:a', 'copy']
+    if audio_mode == 'aac':
+        return ['-c:a', 'aac', '-b:a', '192k']
+    if audio_mode == 'ac3':
+        return ['-c:a', 'ac3', '-b:a', '640k']
+    if audio_mode == 'eac3':
+        return ['-c:a', 'eac3', '-b:a', '768k']
+    return ['-c:a', 'copy']
+
+
+def _software_preset(speed_preset: str) -> str:
+    return {
+        'fast': 'veryfast',
+        'medium': 'medium',
+        'slow': 'slow',
+    }.get(speed_preset, 'medium')
+
+
+def _qsv_preset(speed_preset: str) -> str:
+    # These are conservative values supported by modern Intel QSV encoders.
+    return {
+        'fast': 'faster',
+        'medium': 'medium',
+        'slow': 'slow',
+    }.get(speed_preset, 'medium')
+
+
+def _svt_av1_preset(speed_preset: str) -> str:
+    return {
+        'fast': '8',
+        'medium': '6',
+        'slow': '4',
+    }.get(speed_preset, '6')
+
+
+def _derive_qsv_bitrate_from_crf(crf: int, target_height: int) -> int:
+    # QSV quality controls are not consistently CRF-equivalent across codecs/drivers.
+    # We emulate CRF by deriving a VBR target bitrate using a simple model:
+    # - baseline: CRF 23 @ 1080p ~= 8 Mbps
+    # - every 6 CRF points roughly doubles/halves target bitrate
+    # - scale by pixel ratio against 1080p (height^2 approximation for similar AR)
+    base_bitrate = 8.0
+    quality_multiplier = 2 ** ((23 - crf) / 6.0)
+    resolution_multiplier = (max(360, target_height) / 1080.0) ** 2
+    derived = int(round(base_bitrate * quality_multiplier * resolution_multiplier))
+    return max(1, min(80, derived))
+
+
+def _video_rate_args(codec_impl: str, bitrate_mode: str, bitrate_mbps: int, crf: int, target_height: int) -> list[str]:
+    if bitrate_mode == 'cbr':
+        return [
+            '-b:v',
+            f'{bitrate_mbps}M',
+            '-maxrate',
+            f'{bitrate_mbps + 2}M',
+            '-bufsize',
+            f'{bitrate_mbps * 2}M',
+        ]
+
+    if codec_impl in {'libx264', 'libx265', 'libsvtav1'}:
+        return ['-crf', str(crf)]
+
+    if codec_impl in {'h264_qsv', 'hevc_qsv', 'av1_qsv'}:
+        derived = _derive_qsv_bitrate_from_crf(crf, target_height)
+        return ['-rc:v', 'vbr', '-b:v', f'{derived}M', '-maxrate', f'{derived + 2}M', '-bufsize', f'{derived * 2}M']
+
+    return ['-crf', str(crf)]
+
+
+def build_encoder_command(input_path: str, output_path: str, profile: dict[str, Any]) -> list[str]:
+    codec = str(profile.get('codec', 'h264')).lower()
+    bitrate_mode = str(profile.get('bitrate_mode', 'cbr')).lower()
+    speed_preset = str(profile.get('speed_preset', 'medium')).lower()
+    audio_mode = str(profile.get('audio_mode', 'copy')).lower()
+    target_height = int(profile.get('target_resolution', 1080) or 1080)
+    bitrate_mbps = int(profile.get('bitrate_mbps', 8) or 8)
+    crf = int(profile.get('crf', 23) or 23)
+
+    source_height = _probe_height(input_path)
+    should_scale = source_height is not None and source_height > target_height
+
+    use_qsv = False
+    video_encoder = 'libx264'
+    video_preset_args: list[str] = []
+
+    if codec == 'h264':
+        if _encoder_available('h264_qsv'):
+            use_qsv = True
+            video_encoder = 'h264_qsv'
+            video_preset_args = ['-preset', _qsv_preset(speed_preset)]
+        else:
+            video_encoder = 'libx264'
+            video_preset_args = ['-preset', _software_preset(speed_preset)]
+    elif codec == 'hevc':
+        if _encoder_available('hevc_qsv'):
+            use_qsv = True
+            video_encoder = 'hevc_qsv'
+            video_preset_args = ['-preset', _qsv_preset(speed_preset)]
+        else:
+            video_encoder = 'libx265'
+            video_preset_args = ['-preset', _software_preset(speed_preset)]
+    elif codec == 'av1':
+        if _encoder_available('av1_qsv'):
+            use_qsv = True
+            video_encoder = 'av1_qsv'
+            video_preset_args = ['-preset', _qsv_preset(speed_preset)]
+        elif _encoder_available('libsvtav1'):
+            video_encoder = 'libsvtav1'
+            video_preset_args = ['-preset', _svt_av1_preset(speed_preset)]
+        else:
+            video_encoder = 'libx265'
+            video_preset_args = ['-preset', _software_preset(speed_preset)]
+
+    command = ['ffmpeg', '-i', input_path]
+    if use_qsv:
+        command = ['ffmpeg', '-hwaccel', 'qsv', '-hwaccel_output_format', 'qsv', '-i', input_path]
+
+    if should_scale:
+        scale_filter = f'scale_qsv=-2:{target_height}' if use_qsv else f'scale=-2:{target_height}'
+        command.extend(['-vf', scale_filter])
+
+    command.extend(['-c:v', video_encoder])
+    command.extend(video_preset_args)
+    command.extend(_video_rate_args(video_encoder, bitrate_mode, bitrate_mbps, crf, target_height))
+    command.extend(_audio_args(audio_mode))
+    command.extend(['-progress', 'pipe:1', '-nostats', output_path])
+    return command
 
 
 def _run_ffprobe_value(input_path: str, entry: str) -> str | None:
@@ -90,31 +242,42 @@ def is_hdr_video(input_path: str) -> bool:
 
 
 def _build_ffmpeg_command(input_path: str, output_path: str, bitrate_mbps: int) -> list[str]:
-    return [
-        'ffmpeg',
-        '-hwaccel',
-        'qsv',
-        '-hwaccel_output_format',
-        'qsv',
-        '-i',
+    return build_encoder_command(
         input_path,
-        '-vf',
-        'scale_qsv=1920:1080',
-        '-c:v',
-        'h264_qsv',
-        '-b:v',
-        f'{bitrate_mbps}M',
-        '-maxrate',
-        f'{bitrate_mbps + 2}M',
-        '-bufsize',
-        '16M',
-        '-c:a',
-        'copy',
-        '-progress',
-        'pipe:1',
-        '-nostats',
         output_path,
-    ]
+        {
+            'codec': 'h264',
+            'bitrate_mode': 'cbr',
+            'speed_preset': 'medium',
+            'audio_mode': 'copy',
+            'container': 'mkv',
+            'target_resolution': 1080,
+            'bitrate_mbps': bitrate_mbps,
+            'crf': 23,
+        },
+    )
+
+
+def _profile_from_settings(settings: Any) -> dict[str, Any]:
+    profile_snapshot_json = getattr(settings, 'profile_snapshot_json', None)
+    if profile_snapshot_json:
+        try:
+            parsed = json.loads(profile_snapshot_json)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    return {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': int(getattr(settings, 'target_resolution', 1080) or 1080),
+        'bitrate_mbps': int(getattr(settings, 'bitrate_mbps', 8) or 8),
+        'crf': 23,
+    }
 
 
 def optimize_video(
@@ -146,8 +309,7 @@ def optimize_video(
     duration = _probe_duration_seconds(input_path)
     metrics.duration_seconds = duration
 
-    bitrate_mbps = int(getattr(settings, 'bitrate_mbps', 8))
-    ffmpeg_command = _build_ffmpeg_command(input_path, output_path, bitrate_mbps)
+    ffmpeg_command = build_encoder_command(input_path, output_path, _profile_from_settings(settings))
 
     try:
         process = subprocess.Popen(
