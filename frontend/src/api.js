@@ -28,6 +28,17 @@ export function fetchLibraries() {
   return request('/libraries');
 }
 
+export function updateLibrary(libraryId, payload) {
+  return request(`/libraries/${libraryId}`, {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function scanLibrary(libraryId) {
+  return request(`/libraries/${libraryId}/scan`, { method: 'POST' });
+}
+
 export function fetchLibraryProfile(libraryId) {
   return request(`/libraries/${libraryId}/profile`);
 }
