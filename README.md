@@ -144,4 +144,4 @@ npm test
 ## Notes
 
 - Library paths must be absolute and remain under `/media`.
-- The Docker image includes Intel VA-API related packages and FFmpeg for hardware-assisted encoding scenarios.
+- The Docker image includes FFmpeg and installs Intel VA-API/media runtime packages when available in the base distro repositories.

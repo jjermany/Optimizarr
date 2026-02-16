@@ -5,13 +5,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
         ffmpeg \
-        intel-media-va-driver-non-free \
-        libmfx1 \
-        libvpl2 \
-    && rm -rf /var/lib/apt/lists/*
+        libvpl2; \
+    if apt-cache show intel-media-va-driver >/dev/null 2>&1; then \
+        apt-get install -y --no-install-recommends intel-media-va-driver; \
+    fi; \
+    if apt-cache show libmfx1 >/dev/null 2>&1; then \
+        apt-get install -y --no-install-recommends libmfx1; \
+    elif apt-cache show libmfx-gen1 >/dev/null 2>&1; then \
+        apt-get install -y --no-install-recommends libmfx-gen1; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
