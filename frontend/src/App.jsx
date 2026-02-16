@@ -18,6 +18,7 @@ import {
   resumeJob,
   resumeQueue,
   retryJob,
+  runCleanup,
   runRecovery,
   scanLibrary,
   sendTestNotification,
@@ -251,9 +252,7 @@ export default function App() {
     return libraries.map((library) => {
       const profile = libraryProfiles[library.id];
       let state = 'Running';
-      if (!settings?.enable_optimizer) {
-        state = 'Paused (optimizer disabled)';
-      } else if (!library.enabled) {
+      if (!library.enabled) {
         state = 'Paused (library disabled)';
       } else if (
         profile
@@ -261,11 +260,6 @@ export default function App() {
         && !isWithinWindow(nowHour, profile.schedule_start_hour, profile.schedule_end_hour)
       ) {
         state = 'Paused by schedule';
-      } else if (
-        settings?.global_quiet_enabled
-        && isWithinWindow(nowHour, settings.global_quiet_start_hour, settings.global_quiet_end_hour)
-      ) {
-        state = 'Paused (quiet hours)';
       }
 
       return { library, state, queue: libraryQueueCount(library, jobs) };
@@ -760,6 +754,17 @@ export default function App() {
     }
   }
 
+  async function handleCleanupRun() {
+    try {
+      const result = await runCleanup();
+      setMessage(`Cleanup removed ${result.cleaned_workspaces} workspace(s)`);
+      setError('');
+      await refreshAll();
+    } catch (cleanupError) {
+      setError(cleanupError.message || 'Cleanup failed.');
+    }
+  }
+
   return (
     <main className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 p-6 text-slate-100">
       <div className="mx-auto max-w-7xl space-y-6">
@@ -813,7 +818,6 @@ export default function App() {
               <StatCard label="Active jobs" value={metrics?.active_jobs ?? 0} />
               <StatCard label="Queue count" value={queueCount} />
               <StatCard label="Libraries" value={libraries.length} />
-              <StatCard label="Enable toggle" value={settings?.enable_optimizer ? 'ON' : 'OFF'} />
             </div>
 
             <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg shadow-slate-950/40">
@@ -1395,20 +1399,6 @@ export default function App() {
 
         {activePage === 'settings' && settings && notificationSettings && (
           <section className="space-y-5 rounded-lg border border-slate-800 bg-slate-900 p-6">
-            <label className="flex items-center justify-between">
-              <span>Toggle optimizer queue processing</span>
-              <input
-                type="checkbox"
-                checked={settings.enable_optimizer}
-                onChange={(event) =>
-                  setSettings((prev) => ({ ...prev, enable_optimizer: event.target.checked }))
-                }
-              />
-            </label>
-            <p className="text-xs text-slate-400">
-              When OFF, new and existing queued jobs stay in the queue and no new workers are started until it is turned back ON.
-            </p>
-
             <label className="block space-y-2">
               <span>Resolution</span>
               <select
@@ -1424,21 +1414,6 @@ export default function App() {
                 <option value={2160}>2160p</option>
               </select>
             </label>
-
-            <label className="block space-y-2">
-              <span>Bitrate slider ({settings.bitrate_mbps} Mbps)</span>
-              <input
-                className="w-full"
-                type="range"
-                min={2}
-                max={40}
-                value={settings.bitrate_mbps}
-                onChange={(event) =>
-                  setSettings((prev) => ({ ...prev, bitrate_mbps: Number(event.target.value) }))
-                }
-              />
-            </label>
-
             <label className="block space-y-2">
               <span>Worker count slider ({settings.max_workers})</span>
               <input
@@ -1471,76 +1446,6 @@ export default function App() {
                 onChange={(event) => setSettings((prev) => ({ ...prev, process_hdr_only: event.target.checked }))}
               />
             </label>
-
-            <label className="block space-y-2">
-              <span>Scan interval minutes</span>
-              <input
-                type="number"
-                min={1}
-                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                value={settings.scan_interval_minutes}
-                onChange={(event) => setSettings((prev) => ({ ...prev, scan_interval_minutes: Number(event.target.value) }))}
-              />
-            </label>
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="space-y-2">
-                <span>Schedule start hour</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={23}
-                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                  value={settings.schedule_start_hour}
-                  onChange={(event) => setSettings((prev) => ({ ...prev, schedule_start_hour: Number(event.target.value) }))}
-                />
-              </label>
-              <label className="space-y-2">
-                <span>Schedule end hour</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={23}
-                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                  value={settings.schedule_end_hour}
-                  onChange={(event) => setSettings((prev) => ({ ...prev, schedule_end_hour: Number(event.target.value) }))}
-                />
-              </label>
-            </div>
-
-            <label className="flex items-center justify-between">
-              <span>Global quiet hours enabled</span>
-              <input
-                type="checkbox"
-                checked={settings.global_quiet_enabled}
-                onChange={(event) => setSettings((prev) => ({ ...prev, global_quiet_enabled: event.target.checked }))}
-              />
-            </label>
-
-            <div className="grid gap-3 md:grid-cols-2">
-              <label className="space-y-2">
-                <span>Quiet start hour</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={23}
-                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                  value={settings.global_quiet_start_hour}
-                  onChange={(event) => setSettings((prev) => ({ ...prev, global_quiet_start_hour: Number(event.target.value) }))}
-                />
-              </label>
-              <label className="space-y-2">
-                <span>Quiet end hour</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={23}
-                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                  value={settings.global_quiet_end_hour}
-                  onChange={(event) => setSettings((prev) => ({ ...prev, global_quiet_end_hour: Number(event.target.value) }))}
-                />
-              </label>
-            </div>
 
             <label className="block space-y-2">
               <span>History retention days</span>
@@ -1628,13 +1533,22 @@ export default function App() {
               />
             </label>
 
-            <button
-              type="button"
-              className="rounded bg-indigo-500 px-4 py-2 font-semibold text-slate-950 hover:bg-indigo-400"
-              onClick={handleRecoveryRun}
-            >
-              Run recovery now
-            </button>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                className="rounded bg-indigo-500 px-4 py-2 font-semibold text-slate-950 hover:bg-indigo-400"
+                onClick={handleRecoveryRun}
+              >
+                Run recovery now
+              </button>
+              <button
+                type="button"
+                className="rounded bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400"
+                onClick={handleCleanupRun}
+              >
+                Run cleanup now
+              </button>
+            </div>
 
             <div className="space-y-3 rounded-lg border border-slate-700 bg-slate-800/60 p-4">
               <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Email notifications</h3>

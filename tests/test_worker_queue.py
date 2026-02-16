@@ -67,19 +67,20 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
     assert terminal_updates[-1] == (job_id, 'failed')
 
 
-def test_should_workers_run_honors_enable_and_global_quiet_hours():
-    settings = queue.Settings(enable_optimizer=True, global_quiet_enabled=False)
+def test_should_workers_run_honors_manual_pause_state():
+    settings = queue.Settings(enable_optimizer=True, global_quiet_enabled=True)
 
+    queue.resume_queue()
     assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is True
 
-    settings.global_quiet_enabled = True
-    settings.global_quiet_start_hour = 9
-    settings.global_quiet_end_hour = 17
-    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is False
-    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 20, 0, 0)) is True
-
     settings.enable_optimizer = False
-    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 20, 0, 0)) is False
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is False
+
+    settings.enable_optimizer = True
+    queue.pause_queue()
+    assert queue._should_workers_run(settings, datetime(2024, 1, 1, 10, 0, 0)) is False
+
+    queue.resume_queue()
 
 
 def test_library_job_can_start_honors_library_schedule_and_enablement():
