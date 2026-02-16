@@ -1400,54 +1400,6 @@ export default function App() {
         {activePage === 'settings' && settings && notificationSettings && (
           <section className="space-y-5 rounded-lg border border-slate-800 bg-slate-900 p-6">
             <label className="block space-y-2">
-              <span>Resolution</span>
-              <select
-                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                value={settings.target_resolution}
-                onChange={(event) =>
-                  setSettings((prev) => ({ ...prev, target_resolution: Number(event.target.value) }))
-                }
-              >
-                <option value={720}>720p</option>
-                <option value={1080}>1080p</option>
-                <option value={1440}>1440p</option>
-                <option value={2160}>2160p</option>
-              </select>
-            </label>
-            <label className="block space-y-2">
-              <span>Worker count slider ({settings.max_workers})</span>
-              <input
-                className="w-full"
-                type="range"
-                min={1}
-                max={10}
-                value={settings.max_workers}
-                onChange={(event) =>
-                  setSettings((prev) => ({ ...prev, max_workers: Number(event.target.value) }))
-                }
-              />
-            </label>
-
-
-            <label className="flex items-center justify-between">
-              <span>Keep original files</span>
-              <input
-                type="checkbox"
-                checked={settings.keep_original}
-                onChange={(event) => setSettings((prev) => ({ ...prev, keep_original: event.target.checked }))}
-              />
-            </label>
-
-            <label className="flex items-center justify-between">
-              <span>Process HDR only</span>
-              <input
-                type="checkbox"
-                checked={settings.process_hdr_only}
-                onChange={(event) => setSettings((prev) => ({ ...prev, process_hdr_only: event.target.checked }))}
-              />
-            </label>
-
-            <label className="block space-y-2">
               <span>History retention days</span>
               <input
                 type="number"
