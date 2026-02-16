@@ -1,4 +1,5 @@
 from datetime import datetime
+import json
 import time
 
 from fastapi.testclient import TestClient
@@ -37,6 +38,7 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
         )
 
     monkeypatch.setattr(queue, 'optimize_video', always_fail)
+    monkeypatch.setattr(queue, 'preflight_job', lambda _: True)
     failure_notifications = []
     terminal_updates = []
     monkeypatch.setattr(queue, 'enqueue_job_failed', lambda job: failure_notifications.append(job.id))
@@ -117,3 +119,51 @@ def test_batch_tracking_enqueues_completion_email(monkeypatch):
     assert sent[0][0] == 'Optimizarr batch complete'
     assert 'Processed: 2' in sent[0][1]
     assert 'Failed: 1' in sent[0][1]
+
+
+def test_preflight_job_skips_when_input_missing(tmp_path):
+    job = Job(input_path=str(tmp_path / 'missing.mkv'), status='queued')
+
+    passed = queue.preflight_job(job)
+
+    assert passed is False
+    assert job.status == 'skipped'
+    assert job.error_message == 'Input missing'
+
+
+def test_preflight_job_skips_when_criteria_no_longer_matches(monkeypatch, tmp_path):
+    media = tmp_path / 'movie.mkv'
+    media.write_text('x')
+    job = Job(
+        input_path=str(media),
+        status='queued',
+        profile_snapshot_json=json.dumps({'hdr_only': True, 'output_suffix': '-opt', 'container': 'mkv'}),
+    )
+
+    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 1999)
+
+    passed = queue.preflight_job(job)
+
+    assert passed is False
+    assert job.status == 'skipped'
+    assert job.error_message == 'No longer matches criteria'
+
+
+def test_preflight_job_sets_output_from_snapshot_and_checks_cache(monkeypatch, tmp_path):
+    media = tmp_path / 'movie.mkv'
+    media.write_text('x')
+    job = Job(
+        input_path=str(media),
+        status='queued',
+        profile_snapshot_json=json.dumps({'hdr_only': False, 'output_suffix': '-opt', 'container': 'mp4'}),
+    )
+
+    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda: queue.MIN_CACHE_FREE_BYTES - 1)
+
+    passed = queue.preflight_job(job)
+
+    assert passed is False
+    assert job.output_path.endswith('-opt.mp4')
+    assert job.status == 'failed'
+    assert job.error_message == 'Insufficient cache space'
