@@ -18,9 +18,9 @@ from app.models.library import (
     SpeedPresetEnum,
 )
 from app.models.settings import Settings
-from app.services.job_service import cancel_job, create_job, get_job, list_jobs, retry_job
+from app.services.job_service import cancel_job, create_job, get_job, job_exists_for_source, list_jobs, retry_job
 from app.services.monitoring_service import get_system_metrics
-from app.services.optimization_service import is_hdr_video
+from app.services.optimization_service import is_hdr_video, probe_video_height
 
 router = APIRouter()
 MEDIA_ROOT = Path('/media')
@@ -426,49 +426,52 @@ def get_job_by_id(job_id: int, _: None = Depends(require_ui_auth), db: Session =
     return JobResponse.from_orm_job(job)
 
 
-@router.post('/jobs/scan', response_model=ScanResponse)
-def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
-    settings = _get_settings(db)
+def _scan_library(db: Session, library: Library) -> list:
+    profile = _get_or_create_library_profile(db, library)
     created_jobs = []
+    library_path = Path(library.path)
 
-    libraries = db.query(Library).filter(Library.enabled.is_(True)).order_by(Library.id.asc()).all()
-    if libraries:
-        for library in libraries:
-            profile = _get_or_create_library_profile(db, library)
-            library_path = Path(library.path)
-            for media_file in library_path.rglob('*'):
-                if not media_file.is_file() or media_file.suffix.lower() != '.mkv':
-                    continue
-                if media_file.stem.endswith(profile.output_suffix):
-                    continue
+    for media_file in library_path.rglob('*'):
+        if not media_file.is_file() or media_file.suffix.lower() not in {'.mkv', '.mp4'}:
+            continue
+        if media_file.stem.endswith(profile.output_suffix):
+            continue
 
-                output_path = media_file.with_name(f'{media_file.stem}{profile.output_suffix}.{profile.container.value}')
-                if output_path.exists():
-                    continue
+        output_path = media_file.with_name(f'{media_file.stem}{profile.output_suffix}.{media_file.suffix.lstrip(".")}')
+        if output_path.exists():
+            continue
 
-                if profile.hdr_only and not is_hdr_video(str(media_file)):
-                    continue
+        source_path = str(media_file)
+        if job_exists_for_source(db, source_path, library_id=library.id):
+            continue
 
-                created_jobs.append(create_job(db, str(media_file), library_id=library.id, profile=profile))
-    else:
-        for media_file in MEDIA_ROOT.rglob('*'):
-            if not media_file.is_file() or media_file.suffix.lower() != '.mkv':
-                continue
+        height = probe_video_height(source_path)
+        if height is None or height < 2000:
+            continue
 
-            if media_file.stem.endswith('-1080p'):
-                continue
+        if profile.hdr_only and not is_hdr_video(source_path):
+            continue
 
-            output_path = _output_path_for(media_file)
-            if output_path.exists():
-                continue
+        created_jobs.append(create_job(db, source_path, library_id=library.id, profile=profile))
 
-            if settings.process_hdr_only and not is_hdr_video(str(media_file)):
-                continue
+    return created_jobs
 
-            created_jobs.append(create_job(db, str(media_file)))
 
-    jobs = created_jobs
+@router.post('/libraries/{library_id}/scan', response_model=ScanResponse)
+def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
+    library = _get_library_or_404(db, library_id)
+    jobs = _scan_library(db, library)
     return ScanResponse(created_jobs=[JobResponse.from_orm_job(job) for job in jobs])
+
+
+@router.post('/scan', response_model=ScanResponse)
+def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
+    created_jobs = []
+    libraries = db.query(Library).filter(Library.enabled.is_(True)).order_by(Library.id.asc()).all()
+    for library in libraries:
+        created_jobs.extend(_scan_library(db, library))
+
+    return ScanResponse(created_jobs=[JobResponse.from_orm_job(job) for job in created_jobs])
 
 
 @router.post('/jobs/{job_id}/cancel', response_model=JobResponse)

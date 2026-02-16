@@ -47,6 +47,15 @@ def create_job(db: Session, source_path: str, library_id: int | None = None, pro
     return job
 
 
+def job_exists_for_source(db: Session, source_path: str, library_id: int | None = None) -> bool:
+    query = db.query(Job).filter(Job.input_path == source_path)
+    if library_id is None:
+        query = query.filter(Job.library_id.is_(None))
+    else:
+        query = query.filter(Job.library_id == library_id)
+    return db.query(query.exists()).scalar()
+
+
 def get_job(db: Session, job_id: int) -> Job | None:
     return db.query(Job).filter(Job.id == job_id).first()
 
