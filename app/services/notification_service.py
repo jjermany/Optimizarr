@@ -180,6 +180,17 @@ def enqueue_job_failed(job: Job) -> None:
     enqueue_email(subject='Optimizarr job failed', body=body)
 
 
+
+def enqueue_low_disk_space_alert(min_free_gb: int, free_gb: float) -> None:
+    enqueue_email(
+        subject='Optimizarr queue paused: low cache space',
+        body=(
+            'Queue was paused because workspace cache free space is below threshold.\n'
+            f'Minimum free space: {min_free_gb} GB\n'
+            f'Current free space: {free_gb:.2f} GB\n'
+        ),
+    )
+
 def register_scan_batch(job_ids: list[int]) -> None:
     if not job_ids:
         return

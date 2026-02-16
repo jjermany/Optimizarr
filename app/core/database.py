@@ -84,6 +84,14 @@ def init_db() -> None:
         )
 
 
+
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'min_free_gb',
+            'min_free_gb INTEGER NOT NULL DEFAULT 25',
+        )
+
         _add_column_if_missing(
             connection,
             'settings',
@@ -112,3 +120,11 @@ def init_db() -> None:
         _add_column_if_missing(connection, 'jobs', 'fallback_reason', 'fallback_reason TEXT')
         _add_column_if_missing(connection, 'jobs', 'error_message', 'error_message TEXT')
         _add_column_if_missing(connection, 'library_profiles', 'schedule_policy', "schedule_policy VARCHAR(14) NOT NULL DEFAULT 'finish_current'")
+
+        _add_column_if_missing(
+            connection,
+            'library_profiles',
+            'output_conflict_policy',
+            "output_conflict_policy VARCHAR(9) NOT NULL DEFAULT 'skip'",
+        )
+

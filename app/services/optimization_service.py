@@ -75,10 +75,28 @@ def _ensure_clean_workspace(workspace_path: Path) -> None:
 
 def _output_paths(input_path: str, profile: dict[str, Any], workspace_path: Path) -> tuple[Path, Path]:
     source = Path(input_path)
-    container = _container_from_profile(profile)
-    final_output_path = source.with_name(f'{source.stem}-1080p.{container}')
+    resolved_output_path = str(profile.get('resolved_output_path') or '').strip()
+    if resolved_output_path:
+        final_output_path = Path(resolved_output_path)
+        container = final_output_path.suffix.lstrip('.') or _container_from_profile(profile)
+    else:
+        container = _container_from_profile(profile)
+        output_suffix = str(profile.get('output_suffix') or '-1080p')
+        final_output_path = source.with_name(f'{source.stem}{output_suffix}.{container}')
     partial_output_path = workspace_path / f'output.partial.{container}'
     return final_output_path, partial_output_path
+
+
+def _resolve_conflict_target(path: Path) -> Path:
+    if not path.exists():
+        return path
+
+    version = 2
+    candidate = path
+    while candidate.exists():
+        candidate = path.with_name(f'{path.stem}-v{version}{path.suffix}')
+        version += 1
+    return candidate
 
 
 def delete_workspace(settings: Any, job_id: int) -> None:
@@ -495,10 +513,17 @@ def optimize_video(
     final_output_path, partial_output_path = _output_paths(input_path, profile, workspace_path)
     metrics = OptimizationMetrics(input_path=input_path, output_path=str(final_output_path), status='pending')
 
+    output_conflict_policy = str(profile.get('output_conflict_policy') or 'skip').lower()
     if final_output_path.exists():
-        metrics.status = 'skipped'
-        metrics.skipped_reason = 'output_exists'
-        return metrics
+        if output_conflict_policy == 'overwrite':
+            final_output_path.unlink(missing_ok=True)
+        elif output_conflict_policy == 'rename':
+            final_output_path = _resolve_conflict_target(final_output_path)
+            metrics.output_path = str(final_output_path)
+        else:
+            metrics.status = 'skipped'
+            metrics.skipped_reason = 'output_exists'
+            return metrics
 
     height = _probe_height(input_path)
     metrics.height = height

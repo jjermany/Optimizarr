@@ -15,7 +15,7 @@ from app.models.job import Job
 from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
 from app.models.settings import Settings
 from app.services.job_service import prune_job_history
-from app.services.notification_service import enqueue_job_failed, handle_job_terminal_state
+from app.services.notification_service import enqueue_job_failed, enqueue_low_disk_space_alert, handle_job_terminal_state
 from app.services.optimization_service import (
     delete_partial_output,
     is_hdr_video,
@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
 MIN_SOURCE_HEIGHT = 2000
-MIN_CACHE_FREE_BYTES = 15 * 1024 * 1024 * 1024
+_disk_space_alert_active = False
+
+BYTES_PER_GB = 1024 * 1024 * 1024
 
 
 def _get_settings(db: Session) -> Settings:
@@ -110,7 +112,60 @@ def _cache_free_bytes() -> int:
     return shutil.disk_usage(cache_path).free
 
 
-def preflight_job(job: Job) -> bool:
+def _required_cache_free_bytes(settings: Settings) -> int:
+    min_free_gb = max(1, int(getattr(settings, 'min_free_gb', 25) or 25))
+    return min_free_gb * BYTES_PER_GB
+
+
+def _pause_queue_for_low_disk_space(settings: Settings, free_bytes: int) -> None:
+    global _disk_space_alert_active
+    pause_queue()
+
+    with _pool_lock:
+        if _disk_space_alert_active:
+            return
+        _disk_space_alert_active = True
+
+    min_free_gb = max(1, int(getattr(settings, 'min_free_gb', 25) or 25))
+    free_gb = free_bytes / BYTES_PER_GB
+    logger.warning('Queue paused due to low cache space: %.2f GB free < %s GB required', free_gb, min_free_gb)
+    enqueue_low_disk_space_alert(min_free_gb=min_free_gb, free_gb=free_gb)
+    broker.publish_notification('queue_paused_low_disk')
+
+
+def _clear_low_disk_alert() -> None:
+    global _disk_space_alert_active
+    with _pool_lock:
+        _disk_space_alert_active = False
+
+
+def _apply_output_conflict_policy(job: Job, snapshot: dict) -> bool:
+    policy = str(snapshot.get('output_conflict_policy') or 'skip').lower()
+    output_path = Path(job.output_path or '')
+    if not output_path.exists():
+        return True
+
+    if policy == 'overwrite':
+        output_path.unlink(missing_ok=True)
+        return True
+
+    if policy == 'rename':
+        candidate = output_path
+        version = 2
+        while candidate.exists():
+            candidate = output_path.with_name(f'{output_path.stem}-v{version}{output_path.suffix}')
+            version += 1
+        job.output_path = str(candidate)
+        snapshot['resolved_output_path'] = job.output_path
+        job.profile_snapshot_json = json.dumps(snapshot)
+        return True
+
+    job.status = 'skipped'
+    job.error_message = 'Output exists'
+    return False
+
+
+def preflight_job(job: Job, settings: Settings) -> bool:
     snapshot = _profile_snapshot(job)
 
     if not Path(job.input_path).exists():
@@ -135,15 +190,17 @@ def preflight_job(job: Job) -> bool:
         return False
 
     job.output_path = _preflight_output_path(job, snapshot)
-    if Path(job.output_path).exists():
-        job.status = 'skipped'
-        job.error_message = 'Output exists'
+    if not _apply_output_conflict_policy(job, snapshot):
         return False
 
-    if _cache_free_bytes() < MIN_CACHE_FREE_BYTES:
+    free_bytes = _cache_free_bytes()
+    if free_bytes < _required_cache_free_bytes(settings):
+        _pause_queue_for_low_disk_space(settings, free_bytes)
         job.status = 'failed'
         job.error_message = 'Insufficient cache space'
         return False
+
+    _clear_low_disk_alert()
 
     return True
 
@@ -174,7 +231,7 @@ def _process_job(job_id: int) -> None:
         db.commit()
         _publish_job(job, throttle_progress=False)
 
-        if not preflight_job(job):
+        if not preflight_job(job, settings):
             _mark_finished(job)
             db.commit()
             _publish_job(job, throttle_progress=False)
@@ -198,6 +255,7 @@ def _process_job(job_id: int) -> None:
             db.commit()
             _publish_job(job, throttle_progress=True)
 
+        settings.profile_snapshot_json = job.profile_snapshot_json
         metrics = optimize_video(
             job.input_path,
             settings,

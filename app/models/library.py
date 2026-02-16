@@ -41,6 +41,12 @@ class SchedulePolicyEnum(str, Enum):
     pause_current = 'pause_current'
 
 
+class OutputConflictPolicyEnum(str, Enum):
+    skip = 'skip'
+    overwrite = 'overwrite'
+    rename = 'rename'
+
+
 class Library(Base):
     __tablename__ = 'libraries'
 
@@ -82,6 +88,11 @@ class LibraryProfile(Base):
         nullable=False,
     )
     output_suffix: Mapped[str] = mapped_column(String(64), default='-1080p', nullable=False)
+    output_conflict_policy: Mapped[OutputConflictPolicyEnum] = mapped_column(
+        SqlEnum(OutputConflictPolicyEnum),
+        default=OutputConflictPolicyEnum.skip,
+        nullable=False,
+    )
     av1_fallback_codec: Mapped[CodecEnum] = mapped_column(SqlEnum(CodecEnum), default=CodecEnum.hevc, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

@@ -17,6 +17,7 @@ from app.models.library import (
     LibraryProfile,
     SpeedPresetEnum,
     SchedulePolicyEnum,
+    OutputConflictPolicyEnum,
 )
 from app.models.settings import DiscoveryMethodEnum, Settings
 from app.services import notification_service
@@ -140,6 +141,7 @@ class SettingsResponse(BaseModel):
     workspace_root: str
     requeue_interrupted_jobs: bool
     cleanup_workspaces_on_startup: bool
+    min_free_gb: int
 
     @classmethod
     def from_orm_settings(cls, settings: Settings):
@@ -163,6 +165,7 @@ class SettingsResponse(BaseModel):
             workspace_root=settings.workspace_root,
             requeue_interrupted_jobs=settings.requeue_interrupted_jobs,
             cleanup_workspaces_on_startup=settings.cleanup_workspaces_on_startup,
+            min_free_gb=settings.min_free_gb,
         )
 
 
@@ -186,6 +189,7 @@ class SettingsUpdateRequest(BaseModel):
     workspace_root: str | None = Field(default=None, min_length=1)
     requeue_interrupted_jobs: bool | None = None
     cleanup_workspaces_on_startup: bool | None = None
+    min_free_gb: int | None = Field(default=None, ge=1)
 
 
 
@@ -288,6 +292,7 @@ class LibraryProfileResponse(BaseModel):
     schedule_end_hour: int
     schedule_policy: SchedulePolicyEnum
     output_suffix: str
+    output_conflict_policy: OutputConflictPolicyEnum
     av1_fallback_codec: CodecEnum
 
     @classmethod
@@ -307,6 +312,7 @@ class LibraryProfileResponse(BaseModel):
             schedule_end_hour=profile.schedule_end_hour,
             schedule_policy=profile.schedule_policy,
             output_suffix=profile.output_suffix,
+            output_conflict_policy=profile.output_conflict_policy,
             av1_fallback_codec=profile.av1_fallback_codec,
         )
 
@@ -326,6 +332,7 @@ class LibraryProfileUpdateRequest(BaseModel):
     schedule_end_hour: int | None = Field(default=None, ge=0, le=23)
     schedule_policy: SchedulePolicyEnum | None = None
     output_suffix: str | None = None
+    output_conflict_policy: OutputConflictPolicyEnum | None = None
     av1_fallback_codec: CodecEnum | None = None
 
     @field_validator('av1_fallback_codec')
