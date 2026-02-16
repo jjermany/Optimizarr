@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.api.routes import router
 from app.core.database import init_db
 from app.core.logging_config import configure_logging
+from app.services.discovery_service import start_discovery_worker, stop_discovery_worker
 from app.services.notification_service import start_notification_worker, stop_notification_worker
 from app.services.optimization_service import refresh_encoder_cache
 from app.services.realtime_service import broker
@@ -23,15 +24,18 @@ async def lifespan(_: FastAPI):
     broker.start()
     notification_thread = start_notification_worker()
     worker_thread = start_worker()
+    discovery_thread = start_discovery_worker()
     try:
         yield
     finally:
         logger.info('Shutting down Optimizarr application')
         stop_worker()
         stop_notification_worker()
+        stop_discovery_worker()
         broker.stop()
         worker_thread.join(timeout=5)
         notification_thread.join(timeout=5)
+        discovery_thread.join(timeout=5)
         logger.info('Optimizarr shutdown complete')
 
 

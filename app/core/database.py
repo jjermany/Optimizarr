@@ -63,6 +63,26 @@ def init_db() -> None:
             'global_quiet_end_hour INTEGER NOT NULL DEFAULT 6',
         )
 
+
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'auto_discovery_enabled',
+            'auto_discovery_enabled BOOLEAN NOT NULL DEFAULT 1',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'discovery_method',
+            "discovery_method VARCHAR(8) NOT NULL DEFAULT 'interval'",
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'discovery_interval_minutes',
+            'discovery_interval_minutes INTEGER NOT NULL DEFAULT 30',
+        )
+
         _add_column_if_missing(connection, 'jobs', 'library_id', 'library_id INTEGER')
         _add_column_if_missing(connection, 'jobs', 'profile_snapshot_json', 'profile_snapshot_json TEXT')
         _add_column_if_missing(connection, 'jobs', 'encoder_used', 'encoder_used VARCHAR(64)')
