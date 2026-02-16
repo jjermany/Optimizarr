@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 from threading import Event, Lock, Thread
 import time
 
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.job import Job
 from app.models.settings import Settings
+from app.services.job_service import prune_job_history
 from app.services.optimization_service import optimize_video
 
 stop_event = Event()
@@ -16,6 +18,9 @@ _pool_lock = Lock()
 _active_workers: dict[int, Thread] = {}
 _manager_thread: Thread | None = None
 _workers_allowed = True
+_last_prune_at = 0.0
+
+logger = logging.getLogger(__name__)
 
 
 TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
@@ -32,6 +37,8 @@ def _get_settings(db: Session) -> Settings:
 
 
 def _should_cancel(db: Session, job_id: int) -> bool:
+    if stop_event.is_set():
+        return True
     job = db.query(Job).filter(Job.id == job_id).first()
     return bool(job and job.cancel_requested)
 
@@ -133,11 +140,18 @@ def _should_workers_run(settings: Settings, now: datetime) -> bool:
 
 def _manager_loop() -> None:
     global _workers_allowed
+    global _last_prune_at
     while not stop_event.is_set():
         db = SessionLocal()
         try:
             settings = _get_settings(db)
             _workers_allowed = _should_workers_run(settings, datetime.now())
+
+            if time.monotonic() - _last_prune_at >= 60:
+                deleted = prune_job_history(db, int(settings.history_retention_days))
+                if deleted:
+                    logger.info('Pruned %s stale completed jobs', deleted)
+                _last_prune_at = time.monotonic()
 
             max_workers = max(1, int(settings.max_workers))
 
@@ -174,9 +188,26 @@ def start_worker() -> Thread:
 
 
 def stop_worker() -> None:
+    global _manager_thread
     stop_event.set()
+
+    db = SessionLocal()
+    try:
+        with _pool_lock:
+            active_ids = list(_active_workers.keys())
+        if active_ids:
+            db.query(Job).filter(Job.id.in_(active_ids)).update({'cancel_requested': True}, synchronize_session=False)
+            db.commit()
+    finally:
+        db.close()
+
+    if _manager_thread and _manager_thread.is_alive():
+        _manager_thread.join(timeout=5)
+
     with _pool_lock:
         workers = list(_active_workers.values())
     for worker in workers:
         if worker.is_alive():
-            worker.join(timeout=1)
+            worker.join(timeout=5)
+
+    _manager_thread = None

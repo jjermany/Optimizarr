@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 DB_PATH = Path(os.getenv('PLEX_OPTIMIZER_DB_PATH', '/config/plex_optimizer.db'))
@@ -25,3 +25,12 @@ def init_db() -> None:
     import app.models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+
+    with engine.begin() as connection:
+        settings_columns = {
+            row[1] for row in connection.execute(text('PRAGMA table_info(settings)')).fetchall()
+        }
+        if 'history_retention_days' not in settings_columns:
+            connection.execute(
+                text('ALTER TABLE settings ADD COLUMN history_retention_days INTEGER NOT NULL DEFAULT 30')
+            )
