@@ -63,6 +63,12 @@ class JobResponse(BaseModel):
     output_path: str | None = None
     retry_count: int
     cancel_requested: bool
+    encoder_used: str | None = None
+    codec_used: str | None = None
+    hwaccel_used: bool | None = None
+    used_fallback: bool | None = None
+    fallback_reason: str | None = None
+    error_message: str | None = None
 
     @classmethod
     def from_orm_job(cls, job):
@@ -73,6 +79,12 @@ class JobResponse(BaseModel):
             output_path=job.output_path,
             retry_count=job.retry_count,
             cancel_requested=job.cancel_requested,
+            encoder_used=job.encoder_used,
+            codec_used=job.codec_used,
+            hwaccel_used=job.hwaccel_used,
+            used_fallback=job.used_fallback,
+            fallback_reason=job.fallback_reason,
+            error_message=job.error_message,
         )
 
 

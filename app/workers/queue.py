@@ -65,6 +65,11 @@ def _process_job(job_id: int) -> None:
         job.status = 'running'
         job.progress_percent = 0
         job.error_message = None
+        job.encoder_used = None
+        job.codec_used = None
+        job.hwaccel_used = None
+        job.used_fallback = None
+        job.fallback_reason = None
         db.commit()
 
         def on_progress(update: dict[str, float | int | None]) -> None:
@@ -88,8 +93,13 @@ def _process_job(job_id: int) -> None:
         job.status = metrics.status
         job.output_path = metrics.output_path
         job.fps = metrics.fps
+        job.encoder_used = metrics.encoder_used
+        job.codec_used = metrics.codec_used
+        job.hwaccel_used = metrics.hwaccel_used
+        job.used_fallback = metrics.used_fallback
+        job.fallback_reason = metrics.fallback_reason
         if metrics.status == 'failed':
-            job.error_message = metrics.skipped_reason or 'optimization_failed'
+            job.error_message = metrics.error_message or metrics.skipped_reason or 'optimization_failed'
             if job.retry_count < 1:
                 job.retry_count += 1
                 job.status = 'queued'
