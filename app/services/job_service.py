@@ -68,6 +68,16 @@ def get_job(db: Session, job_id: int) -> Job | None:
     return db.query(Job).filter(Job.id == job_id).first()
 
 
+def delete_job(db: Session, job_id: int) -> bool:
+    job = get_job(db, job_id)
+    if not job:
+        return False
+
+    db.delete(job)
+    db.commit()
+    return True
+
+
 def list_jobs(db: Session) -> list[Job]:
     return db.query(Job).order_by(Job.created_at.desc()).all()
 

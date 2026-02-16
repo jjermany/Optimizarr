@@ -4,6 +4,7 @@ import {
   abortJob,
   cancelJob,
   createLibrary,
+  deleteJob,
   deleteLibrary,
   fetchLibraries,
   fetchEncoders,
@@ -558,6 +559,8 @@ export default function App() {
         await resumeJob(jobId);
       } else if (action === 'abort') {
         await abortJob(jobId);
+      } else if (action === 'remove') {
+        await deleteJob(jobId);
       }
       await refreshAll();
     } catch (actionError) {
@@ -1435,6 +1438,15 @@ export default function App() {
                               className="rounded bg-cyan-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-cyan-400"
                             >
                               Retry
+                            </button>
+                          )}
+                          {['complete', 'failed', 'skipped', 'cancelled', 'interrupted'].includes(job.status) && (
+                            <button
+                              type="button"
+                              onClick={() => handleJobAction('remove', job.id)}
+                              className="rounded border border-slate-600 bg-slate-800 px-3 py-1 text-xs font-medium text-slate-100 hover:bg-slate-700"
+                            >
+                              Remove
                             </button>
                           )}
                         </div>

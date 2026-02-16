@@ -146,13 +146,38 @@ def test_preflight_job_skips_when_criteria_no_longer_matches(monkeypatch, tmp_pa
         profile_snapshot_json=json.dumps({'hdr_only': True, 'output_suffix': '-opt', 'container': 'mkv'}),
     )
 
-    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 1999)
+    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(queue, 'is_hdr_video', lambda _: False)
 
     passed = queue.preflight_job(job, queue.Settings())
 
     assert passed is False
     assert job.status == 'skipped'
     assert job.error_message == 'No longer matches criteria'
+
+
+def test_preflight_job_uses_profile_minimum_source_resolution(monkeypatch, tmp_path):
+    media = tmp_path / 'movie.mkv'
+    media.write_text('x')
+    job = Job(
+        input_path=str(media),
+        status='queued',
+        profile_snapshot_json=json.dumps({
+            'hdr_only': False,
+            'minimum_source_resolution': 1080,
+            'target_resolution': 720,
+            'output_suffix': '-opt',
+            'container': 'mkv',
+        }),
+    )
+
+    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 1080)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda: 100 * queue.BYTES_PER_GB)
+
+    passed = queue.preflight_job(job, queue.Settings(min_free_gb=25))
+
+    assert passed is True
+    assert job.status == 'queued'
 
 
 def test_preflight_job_sets_output_from_snapshot_and_checks_cache(monkeypatch, tmp_path):

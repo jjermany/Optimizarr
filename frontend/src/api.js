@@ -94,6 +94,11 @@ export function abortJob(jobId) {
   return request(`/jobs/${jobId}/abort`, { method: 'POST' });
 }
 
+
+export function deleteJob(jobId) {
+  return request(`/jobs/${jobId}`, { method: 'DELETE' });
+}
+
 export function abortAllJobs() {
   return request('/jobs/abort-all', { method: 'POST' });
 }

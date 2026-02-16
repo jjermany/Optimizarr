@@ -29,6 +29,7 @@ from app.services.job_service import (
     cancel_job,
     cleanup_optimized_outputs,
     create_job,
+    delete_job,
     get_job,
     list_jobs,
     pause_job,
@@ -682,6 +683,13 @@ def get_job_by_id(job_id: int, _: None = Depends(require_ui_auth), db: Session =
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
     return response
+
+
+@router.delete('/jobs/{job_id}', status_code=204)
+def delete_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> None:
+    deleted = delete_job(db, job_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail='Job not found')
 
 
 @router.post('/libraries/{library_id}/scan', response_model=ScanResponse)
