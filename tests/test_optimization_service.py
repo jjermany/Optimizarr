@@ -5,6 +5,7 @@ from app.services import optimization_service
 
 class DummySettings:
     bitrate_mbps = 8
+    workspace_root = '/cache/workspaces'
 
 
 class DummyPopen:
@@ -60,6 +61,7 @@ def test_optimize_video_runs_and_reports_progress(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(optimization_service.subprocess, 'Popen', fake_popen)
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *args, **kwargs: True)
 
     updates = []
     metrics = optimization_service.optimize_video(
@@ -232,6 +234,7 @@ def test_optimize_video_retries_h264_qsv_failure_with_software(monkeypatch, tmp_
         return 0, 100.0, 30.0, False, []
 
     monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *args, **kwargs: True)
 
     metrics = optimization_service.optimize_video(str(input_path), DummySettings())
 
@@ -258,6 +261,7 @@ def test_optimize_video_falls_back_when_av1_encode_fails(monkeypatch, tmp_path):
         return 0, 100.0, 48.0, False, []
 
     monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *args, **kwargs: True)
 
     class AV1FallbackSettings:
         profile_snapshot_json = '{"codec":"av1","av1_fallback_codec":"hevc"}'
@@ -268,3 +272,55 @@ def test_optimize_video_falls_back_when_av1_encode_fails(monkeypatch, tmp_path):
     assert metrics.used_fallback is True
     assert metrics.codec_used == 'hevc'
     assert metrics.encoder_used == 'libx265'
+
+
+
+def test_optimize_video_writes_partial_in_workspace(monkeypatch, tmp_path):
+    media_dir = tmp_path / 'media'
+    media_dir.mkdir()
+    input_path = media_dir / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    workspace_root = tmp_path / 'workspaces'
+
+    class LocalSettings(DummySettings):
+        pass
+
+    LocalSettings.workspace_root = str(workspace_root)
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 10.0)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+
+    captured = {}
+
+    def fake_run_ffmpeg(command, *args, **kwargs):
+        captured['command'] = command
+        return 0, 10.0, 24.0, False, []
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *args, **kwargs: True)
+
+    metrics = optimization_service.optimize_video(str(input_path), LocalSettings(), job_id=22)
+
+    assert metrics.status == 'complete'
+    assert str(workspace_root / '22' / 'output.partial.mkv') in captured['command']
+    assert not (media_dir / 'output.partial.mkv').exists()
+    assert not (workspace_root / '22').exists()
+
+
+def test_commit_output_file_cross_filesystem_path(monkeypatch, tmp_path):
+    partial = tmp_path / 'workspace' / 'output.partial.mkv'
+    partial.parent.mkdir(parents=True)
+    partial.write_text('data')
+
+    destination_dir = tmp_path / 'media'
+    destination_dir.mkdir()
+    final = destination_dir / 'movie-1080p.mkv'
+
+    monkeypatch.setattr(optimization_service, '_is_same_filesystem', lambda *_args, **_kwargs: False)
+
+    assert optimization_service._commit_output_file(partial, final, 5) is True
+    assert final.exists()
+    assert not partial.exists()
+    assert all('partial' not in p.name and 'temp' not in p.name for p in destination_dir.iterdir())

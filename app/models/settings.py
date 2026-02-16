@@ -1,6 +1,6 @@
 from enum import Enum
 
-from sqlalchemy import Boolean, Enum as SqlEnum, Integer
+from sqlalchemy import Boolean, Enum as SqlEnum, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -35,3 +35,4 @@ class Settings(Base):
         nullable=False,
     )
     discovery_interval_minutes: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    workspace_root: Mapped[str] = mapped_column(String(512), default='/cache/workspaces', nullable=False)

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import time
 from typing import Any, Callable
@@ -44,6 +46,64 @@ class EncoderSelection:
 def _output_path_for(input_path: str) -> str:
     source = Path(input_path)
     return str(source.with_name(f"{source.stem}-1080p.mkv"))
+
+
+def _container_from_profile(profile: dict[str, Any]) -> str:
+    container = str(profile.get('container', 'mkv')).lower().strip('.')
+    return container or 'mkv'
+
+
+def _workspace_root_from_settings(settings: Any) -> Path:
+    configured = str(getattr(settings, 'workspace_root', '/cache/workspaces') or '/cache/workspaces')
+    return Path(configured)
+
+
+def _job_workspace_path(settings: Any, job_id: int | None) -> Path:
+    workspace_root = _workspace_root_from_settings(settings)
+    folder_name = str(job_id) if job_id is not None else 'adhoc'
+    return workspace_root / folder_name
+
+
+def _ensure_clean_workspace(workspace_path: Path) -> None:
+    if workspace_path.exists():
+        shutil.rmtree(workspace_path, ignore_errors=True)
+    workspace_path.mkdir(parents=True, exist_ok=True)
+
+
+def _output_paths(input_path: str, profile: dict[str, Any], workspace_path: Path) -> tuple[Path, Path]:
+    source = Path(input_path)
+    container = _container_from_profile(profile)
+    final_output_path = source.with_name(f'{source.stem}-1080p.{container}')
+    partial_output_path = workspace_path / f'output.partial.{container}'
+    return final_output_path, partial_output_path
+
+
+
+
+def _is_same_filesystem(source_path: Path, destination_dir: Path) -> bool:
+    try:
+        return os.stat(source_path).st_dev == os.stat(destination_dir).st_dev
+    except OSError:
+        return False
+
+
+def _commit_output_file(partial_output_path: Path, final_output_path: Path, job_id: int | None) -> bool:
+    final_output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if _is_same_filesystem(partial_output_path, final_output_path.parent):
+        os.replace(partial_output_path, final_output_path)
+        return True
+
+    temp_target_name = f'.optimizarr-commit-{job_id or "job"}-{int(time.time() * 1000)}{final_output_path.suffix}'
+    temp_target_path = final_output_path.parent / temp_target_name
+    try:
+        shutil.copy2(partial_output_path, temp_target_path)
+        os.replace(temp_target_path, final_output_path)
+        partial_output_path.unlink(missing_ok=True)
+        return True
+    except OSError:
+        temp_target_path.unlink(missing_ok=True)
+        return False
 
 
 def refresh_encoder_cache() -> None:
@@ -393,13 +453,16 @@ def _profile_from_settings(settings: Any) -> dict[str, Any]:
 def optimize_video(
     input_path: str,
     settings,
+    job_id: int | None = None,
     progress_callback: Callable[[dict[str, float | int | None]], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> OptimizationMetrics:
-    output_path = _output_path_for(input_path)
-    metrics = OptimizationMetrics(input_path=input_path, output_path=output_path, status='pending')
+    profile = _profile_from_settings(settings)
+    workspace_path = _job_workspace_path(settings, job_id)
+    final_output_path, partial_output_path = _output_paths(input_path, profile, workspace_path)
+    metrics = OptimizationMetrics(input_path=input_path, output_path=str(final_output_path), status='pending')
 
-    if Path(output_path).exists():
+    if final_output_path.exists():
         metrics.status = 'skipped'
         metrics.skipped_reason = 'output_exists'
         return metrics
@@ -416,9 +479,16 @@ def optimize_video(
         metrics.skipped_reason = 'source_height_below_threshold'
         return metrics
 
+    try:
+        _ensure_clean_workspace(workspace_path)
+    except OSError:
+        metrics.status = 'failed'
+        metrics.skipped_reason = 'workspace_prepare_failed'
+        metrics.error_message = 'workspace_prepare_failed'
+        return metrics
+
     duration = _probe_duration_seconds(input_path)
     metrics.duration_seconds = duration
-    profile = _profile_from_settings(settings)
     selection = _select_encoder(profile)
 
     if not selection and str(profile.get('codec', 'h264')).lower() == 'av1':
@@ -431,7 +501,7 @@ def optimize_video(
         fallback_encoder = 'libx264' if profile_codec == 'h264' else 'libx265'
         selection = EncoderSelection(codec=profile_codec, encoder=fallback_encoder, use_qsv=False)
 
-    ffmpeg_command = _build_command_with_selection(input_path, output_path, profile, selection)
+    ffmpeg_command = _build_command_with_selection(input_path, str(partial_output_path), profile, selection)
     return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
         ffmpeg_command,
         duration,
@@ -454,7 +524,7 @@ def optimize_video(
     if return_code != 0 and selection.use_qsv and selection.codec in {'h264', 'hevc'} and _has_qsv_error(output_lines):
         software_encoder = 'libx264' if selection.codec == 'h264' else 'libx265'
         fallback_selection = EncoderSelection(codec=selection.codec, encoder=software_encoder, use_qsv=False)
-        fallback_command = _build_command_with_selection(input_path, output_path, profile, fallback_selection)
+        fallback_command = _build_command_with_selection(input_path, str(partial_output_path), profile, fallback_selection)
         return_code, processed_seconds, current_fps, was_cancelled, _ = _run_ffmpeg(
             fallback_command,
             duration,
@@ -475,7 +545,7 @@ def optimize_video(
         if av1_fallback_codec in {'h264', 'hevc'}:
             fallback_encoder = 'libx264' if av1_fallback_codec == 'h264' else 'libx265'
             fallback_selection = EncoderSelection(codec=av1_fallback_codec, encoder=fallback_encoder, use_qsv=False)
-            fallback_command = _build_command_with_selection(input_path, output_path, profile, fallback_selection)
+            fallback_command = _build_command_with_selection(input_path, str(partial_output_path), profile, fallback_selection)
             return_code, processed_seconds, current_fps, was_cancelled, _ = _run_ffmpeg(
                 fallback_command,
                 duration,
@@ -493,10 +563,20 @@ def optimize_video(
 
     if was_cancelled:
         metrics.status = 'cancelled'
+    elif return_code == 0:
+        committed = _commit_output_file(partial_output_path, final_output_path, job_id)
+        if committed:
+            metrics.status = 'complete'
+            shutil.rmtree(workspace_path, ignore_errors=True)
+        else:
+            metrics.status = 'failed'
+            metrics.skipped_reason = 'commit_failed'
+            metrics.error_message = 'commit_failed'
     else:
-        metrics.status = 'complete' if return_code == 0 else 'failed'
+        metrics.status = 'failed'
     if metrics.status == 'failed':
-        metrics.skipped_reason = 'optimization_failed'
+        if not metrics.skipped_reason:
+            metrics.skipped_reason = 'optimization_failed'
         if not metrics.error_message:
             metrics.error_message = 'optimization_failed'
 
