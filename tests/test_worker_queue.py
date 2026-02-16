@@ -40,7 +40,7 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
         )
 
     monkeypatch.setattr(queue, 'optimize_video', always_fail)
-    monkeypatch.setattr(queue, 'preflight_job', lambda _: True)
+    monkeypatch.setattr(queue, 'preflight_job', lambda *_: True)
     failure_notifications = []
     terminal_updates = []
     monkeypatch.setattr(queue, 'enqueue_job_failed', lambda job: failure_notifications.append(job.id))
@@ -126,7 +126,7 @@ def test_batch_tracking_enqueues_completion_email(monkeypatch):
 def test_preflight_job_skips_when_input_missing(tmp_path):
     job = Job(input_path=str(tmp_path / 'missing.mkv'), status='queued')
 
-    passed = queue.preflight_job(job)
+    passed = queue.preflight_job(job, queue.Settings())
 
     assert passed is False
     assert job.status == 'skipped'
@@ -144,7 +144,7 @@ def test_preflight_job_skips_when_criteria_no_longer_matches(monkeypatch, tmp_pa
 
     monkeypatch.setattr(queue, 'probe_video_height', lambda _: 1999)
 
-    passed = queue.preflight_job(job)
+    passed = queue.preflight_job(job, queue.Settings())
 
     assert passed is False
     assert job.status == 'skipped'
@@ -161,14 +161,67 @@ def test_preflight_job_sets_output_from_snapshot_and_checks_cache(monkeypatch, t
     )
 
     monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
-    monkeypatch.setattr(queue, '_cache_free_bytes', lambda: queue.MIN_CACHE_FREE_BYTES - 1)
+    settings = queue.Settings(min_free_gb=25)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda: (settings.min_free_gb * queue.BYTES_PER_GB) - 1)
 
-    passed = queue.preflight_job(job)
+    passed = queue.preflight_job(job, settings)
 
     assert passed is False
     assert job.output_path.endswith('-opt.mp4')
     assert job.status == 'failed'
     assert job.error_message == 'Insufficient cache space'
+
+
+def test_preflight_job_applies_output_conflict_policy_rename(monkeypatch, tmp_path):
+    media = tmp_path / 'movie.mkv'
+    media.write_text('x')
+    existing = tmp_path / 'movie-opt.mkv'
+    existing.write_text('output')
+
+    job = Job(
+        input_path=str(media),
+        status='queued',
+        profile_snapshot_json=json.dumps({'output_suffix': '-opt', 'container': 'mkv', 'output_conflict_policy': 'rename'}),
+    )
+
+    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda: 100 * queue.BYTES_PER_GB)
+
+    passed = queue.preflight_job(job, queue.Settings(min_free_gb=25))
+
+    assert passed is True
+    assert job.output_path.endswith('-opt-v2.mkv')
+
+
+def test_preflight_job_low_disk_pauses_queue_and_alerts(monkeypatch, tmp_path):
+    media = tmp_path / 'movie.mkv'
+    media.write_text('x')
+    job = Job(
+        input_path=str(media),
+        status='queued',
+        profile_snapshot_json=json.dumps({'output_suffix': '-opt', 'container': 'mkv'}),
+    )
+
+    settings = queue.Settings(min_free_gb=25)
+    alerts = []
+    notifications = []
+    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda: (settings.min_free_gb * queue.BYTES_PER_GB) - 1)
+    monkeypatch.setattr(queue, 'enqueue_low_disk_space_alert', lambda **kwargs: alerts.append(kwargs))
+    monkeypatch.setattr(queue.broker, 'publish_notification', lambda event: notifications.append(event))
+
+    queue.resume_queue()
+    queue._clear_low_disk_alert()
+    passed = queue.preflight_job(job, settings)
+
+    assert passed is False
+    assert job.status == 'failed'
+    assert queue.is_queue_paused() is True
+    assert alerts and alerts[0]['min_free_gb'] == 25
+    assert notifications == ['queue_paused_low_disk']
+
+    queue.resume_queue()
+    queue._clear_low_disk_alert()
 
 
 def test_should_workers_run_honors_manual_pause():

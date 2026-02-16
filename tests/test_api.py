@@ -65,6 +65,7 @@ def test_get_and_update_settings():
         assert payload['workspace_root']
         assert payload['requeue_interrupted_jobs'] is True
         assert payload['cleanup_workspaces_on_startup'] is True
+        assert payload['min_free_gb'] == 25
 
         update_response = client.post(
             '/settings',
@@ -82,6 +83,7 @@ def test_get_and_update_settings():
                 'workspace_root': '/cache/workspaces',
                 'requeue_interrupted_jobs': False,
                 'cleanup_workspaces_on_startup': False,
+                'min_free_gb': 32,
             },
         )
         assert update_response.status_code == 200
@@ -99,6 +101,7 @@ def test_get_and_update_settings():
         assert updated['workspace_root'] == '/cache/workspaces'
         assert updated['requeue_interrupted_jobs'] is False
         assert updated['cleanup_workspaces_on_startup'] is False
+        assert updated['min_free_gb'] == 32
 
         final_response = client.get('/settings')
         assert final_response.status_code == 200
@@ -185,6 +188,7 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
         assert profile_response.status_code == 200
         assert profile_response.json()['output_suffix'] == '-1080p'
         assert profile_response.json()['schedule_policy'] == 'finish_current'
+        assert profile_response.json()['output_conflict_policy'] == 'skip'
 
         update_profile_response = client.put(
             f'/libraries/{library_id}/profile',
@@ -196,6 +200,7 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
                 'schedule_start_hour': 3,
                 'schedule_end_hour': 11,
                 'schedule_policy': 'pause_current',
+                'output_conflict_policy': 'rename',
             },
         )
         assert update_profile_response.status_code == 200
@@ -206,6 +211,7 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
         assert updated_profile['schedule_start_hour'] == 3
         assert updated_profile['schedule_end_hour'] == 11
         assert updated_profile['schedule_policy'] == 'pause_current'
+        assert updated_profile['output_conflict_policy'] == 'rename'
 
         invalid_path_response = client.post('/libraries', json={'name': 'Bad', 'path': '/tmp/not-allowed'})
         assert invalid_path_response.status_code == 422
@@ -496,6 +502,7 @@ def test_recovery_endpoint_can_keep_workspace_and_not_requeue(tmp_path):
                 'workspace_root': str(workspace_root),
                 'requeue_interrupted_jobs': False,
                 'cleanup_workspaces_on_startup': False,
+                'min_free_gb': 32,
             },
         )
         assert settings_response.status_code == 200

@@ -32,6 +32,7 @@ def _profile_snapshot(profile: LibraryProfile | None) -> str | None:
             'schedule_end_hour': profile.schedule_end_hour,
             'schedule_policy': profile.schedule_policy.value,
             'output_suffix': profile.output_suffix,
+            'output_conflict_policy': profile.output_conflict_policy.value,
             'av1_fallback_codec': profile.av1_fallback_codec.value,
         }
     )
