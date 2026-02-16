@@ -1,13 +1,20 @@
 services:
-  plex-optimizer:
+  api:
     image: plex-optimizer:latest
-    container_name: plex-optimizer
-    ports:
-      - "8080:8080"
+    container_name: optimizarr-api
     volumes:
       - /mnt/user/data/media:/media
       - /mnt/cache/appdata/plex-optimizer:/config
       - /mnt/cache/plex-optimizer-cache:/cache
     devices:
       - /dev/dri:/dev/dri
+    restart: unless-stopped
+
+  frontend:
+    image: optimizarr-frontend:latest
+    container_name: optimizarr-frontend
+    depends_on:
+      - api
+    ports:
+      - "8085:80"
     restart: unless-stopped
