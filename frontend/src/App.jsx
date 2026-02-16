@@ -8,6 +8,8 @@ import {
   fetchSettings,
   fetchWsToken,
   retryJob,
+  scanLibrary,
+  updateLibrary,
   updateLibraryProfile,
   updateSettings,
 } from './api';
@@ -21,8 +23,51 @@ const RECONNECT_MAX_DELAY_MS = 30000;
 
 const PAGE_KEYS = {
   dashboard: 'Dashboard',
+  libraries: 'Libraries',
   jobs: 'Jobs',
   settings: 'Settings',
+};
+
+const QUALITY_PRESETS = {
+  efficiency: {
+    label: 'Efficiency (smaller files)',
+    profile: {
+      codec: 'av1',
+      av1_fallback_codec: 'hevc',
+      bitrate_mode: 'vbr_crf',
+      crf: 28,
+      speed_preset: 'slow',
+      target_resolution: 1080,
+      container: 'mkv',
+      audio_mode: 'copy',
+    },
+  },
+  balanced: {
+    label: 'Balanced',
+    profile: {
+      codec: 'hevc',
+      bitrate_mode: 'vbr_crf',
+      crf: 23,
+      speed_preset: 'medium',
+      target_resolution: 1080,
+      container: 'mkv',
+      audio_mode: 'copy',
+      av1_fallback_codec: 'hevc',
+    },
+  },
+  speed: {
+    label: 'Fast encode',
+    profile: {
+      codec: 'h264',
+      bitrate_mode: 'cbr',
+      bitrate_mbps: 12,
+      speed_preset: 'fast',
+      target_resolution: 720,
+      container: 'mp4',
+      audio_mode: 'aac',
+      av1_fallback_codec: 'h264',
+    },
+  },
 };
 
 function progressFromStatus(status) {
@@ -50,6 +95,55 @@ function isWithinWindow(currentHour, startHour, endHour) {
   return currentHour >= startHour || currentHour <= endHour;
 }
 
+function libraryQueueCount(library, jobs) {
+  return jobs.filter(
+    (job) => ['pending', 'queued', 'created'].includes(job.status?.toLowerCase())
+      && (job.source_path === library.path || job.source_path.startsWith(`${library.path}/`)),
+  ).length;
+}
+
+function validateLibraryDraft(draft, libraryEnabled) {
+  const errors = {};
+
+  if (!libraryEnabled) {
+    return errors;
+  }
+
+  if (!Number.isInteger(draft.target_resolution) || draft.target_resolution < 1) {
+    errors.target_resolution = 'Target resolution must be a positive integer.';
+  }
+
+  if (draft.bitrate_mode === 'vbr_crf') {
+    if (!Number.isInteger(draft.crf) || draft.crf < 1) {
+      errors.crf = 'CRF must be a positive integer.';
+    }
+  }
+
+  if (draft.bitrate_mode === 'cbr') {
+    if (!Number.isInteger(draft.bitrate_mbps) || draft.bitrate_mbps < 1) {
+      errors.bitrate_mbps = 'Bitrate must be at least 1 Mbps.';
+    }
+  }
+
+  if (!Number.isInteger(draft.max_workers) || draft.max_workers < 1) {
+    errors.max_workers = 'Max workers must be at least 1.';
+  }
+
+  if (!Number.isInteger(draft.schedule_start_hour) || draft.schedule_start_hour < 0 || draft.schedule_start_hour > 23) {
+    errors.schedule_start_hour = 'Schedule start must be between 0 and 23.';
+  }
+
+  if (!Number.isInteger(draft.schedule_end_hour) || draft.schedule_end_hour < 0 || draft.schedule_end_hour > 23) {
+    errors.schedule_end_hour = 'Schedule end must be between 0 and 23.';
+  }
+
+  if (draft.av1_fallback_codec === 'av1') {
+    errors.av1_fallback_codec = 'AV1 fallback must be HEVC or H.264.';
+  }
+
+  return errors;
+}
+
 export default function App() {
   const [activePage, setActivePage] = useState('dashboard');
   const [metrics, setMetrics] = useState();
@@ -57,6 +151,12 @@ export default function App() {
   const [libraries, setLibraries] = useState([]);
   const [libraryProfiles, setLibraryProfiles] = useState({});
   const [settings, setSettings] = useState();
+  const [selectedLibraryId, setSelectedLibraryId] = useState(null);
+  const [profileDraft, setProfileDraft] = useState(null);
+  const [profileErrors, setProfileErrors] = useState({});
+  const [selectedPreset, setSelectedPreset] = useState('balanced');
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [scanningLibraries, setScanningLibraries] = useState({});
   const [error, setError] = useState('');
   const [savingSettings, setSavingSettings] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
@@ -72,6 +172,35 @@ export default function App() {
     () => jobs.filter((job) => ['pending', 'queued', 'created'].includes(job.status?.toLowerCase())).length,
     [jobs],
   );
+
+  const selectedLibrary = useMemo(
+    () => libraries.find((library) => library.id === selectedLibraryId) ?? null,
+    [libraries, selectedLibraryId],
+  );
+
+  const selectedLibraryProfile = selectedLibraryId ? libraryProfiles[selectedLibraryId] : null;
+
+  const libraryRuntimeStates = useMemo(() => {
+    const nowHour = new Date().getHours();
+    return libraries.map((library) => {
+      const profile = libraryProfiles[library.id];
+      let state = 'Running';
+      if (!settings?.enable_optimizer) {
+        state = 'Paused (optimizer disabled)';
+      } else if (!library.enabled) {
+        state = 'Paused (library disabled)';
+      } else if (profile && !isWithinWindow(nowHour, profile.schedule_start_hour, profile.schedule_end_hour)) {
+        state = 'Paused (schedule)';
+      } else if (
+        settings?.global_quiet_enabled
+        && isWithinWindow(nowHour, settings.global_quiet_start_hour, settings.global_quiet_end_hour)
+      ) {
+        state = 'Paused (quiet hours)';
+      }
+
+      return { library, state, queue: libraryQueueCount(library, jobs) };
+    });
+  }, [jobs, libraries, libraryProfiles, settings]);
 
   async function refreshAll() {
     try {
@@ -93,6 +222,10 @@ export default function App() {
     try {
       const nextLibraries = await fetchLibraries();
       setLibraries(nextLibraries);
+
+      if (!selectedLibraryId && nextLibraries.length > 0) {
+        setSelectedLibraryId(nextLibraries[0].id);
+      }
 
       const profileEntries = await Promise.all(
         nextLibraries.map(async (library) => {
@@ -145,6 +278,16 @@ export default function App() {
     refreshAll();
     refreshLibrariesAndProfiles();
   }, []);
+
+  useEffect(() => {
+    if (!selectedLibraryId || !selectedLibraryProfile) {
+      setProfileDraft(null);
+      setProfileErrors({});
+      return;
+    }
+    setProfileDraft({ ...selectedLibraryProfile });
+    setProfileErrors({});
+  }, [selectedLibraryId, selectedLibraryProfile]);
 
   useEffect(() => {
     if (!fallbackPollingEnabled) {
@@ -270,6 +413,55 @@ export default function App() {
     }
   }
 
+  async function handleLibraryToggle(libraryId, enabled) {
+    const previous = libraries;
+    setLibraries((prev) => prev.map((library) => (library.id === libraryId ? { ...library, enabled } : library)));
+    try {
+      await updateLibrary(libraryId, { enabled });
+      setError('');
+    } catch (updateError) {
+      setLibraries(previous);
+      setError(updateError.message || 'Failed to update library state.');
+    }
+  }
+
+  async function handleLibraryScan(libraryId) {
+    setScanningLibraries((prev) => ({ ...prev, [libraryId]: true }));
+    try {
+      await scanLibrary(libraryId);
+      await refreshAll();
+      setError('');
+    } catch (scanError) {
+      setError(scanError.message || 'Failed to start library scan.');
+    } finally {
+      setScanningLibraries((prev) => ({ ...prev, [libraryId]: false }));
+    }
+  }
+
+  async function handleSaveLibraryProfile() {
+    if (!selectedLibrary || !profileDraft) {
+      return;
+    }
+
+    const nextErrors = validateLibraryDraft(profileDraft, selectedLibrary.enabled);
+    setProfileErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) {
+      return;
+    }
+
+    setSavingProfile(true);
+    try {
+      const updated = await updateLibraryProfile(selectedLibrary.id, profileDraft);
+      setLibraryProfiles((prev) => ({ ...prev, [selectedLibrary.id]: updated }));
+      setProfileDraft({ ...updated });
+      setError('');
+    } catch (saveError) {
+      setError(saveError.message || 'Failed to save library profile.');
+    } finally {
+      setSavingProfile(false);
+    }
+  }
+
   async function saveSettings() {
     if (!settings) return;
     setSavingSettings(true);
@@ -283,54 +475,10 @@ export default function App() {
       setSavingSettings(false);
     }
   }
-  function getLibraryScheduleStatus(library, profile) {
-    if (!settings?.enable_optimizer) {
-      return 'Paused (optimizer disabled)';
-    }
-
-    if (!library.enabled) {
-      return 'Disabled';
-    }
-
-    const nowHour = new Date().getHours();
-    if (!isWithinWindow(nowHour, profile.schedule_start_hour, profile.schedule_end_hour)) {
-      return 'Paused by schedule';
-    }
-
-    if (
-      settings.global_quiet_enabled
-      && isWithinWindow(nowHour, settings.global_quiet_start_hour, settings.global_quiet_end_hour)
-    ) {
-      return 'Paused by quiet hours';
-    }
-
-    return 'Active';
-  }
-
-  async function handleLibraryScheduleChange(libraryId, field, value) {
-    const nextHour = parseHour(value);
-    setLibraryProfiles((prev) => ({
-      ...prev,
-      [libraryId]: {
-        ...prev[libraryId],
-        [field]: nextHour,
-      },
-    }));
-
-    try {
-      const updated = await updateLibraryProfile(libraryId, { [field]: nextHour });
-      setLibraryProfiles((prev) => ({ ...prev, [libraryId]: updated }));
-      setError('');
-    } catch (updateError) {
-      setError(updateError.message || 'Failed to update library schedule.');
-      await refreshLibrariesAndProfiles();
-    }
-  }
-
 
   return (
-    <main className="min-h-screen bg-slate-950 p-6">
-      <div className="mx-auto max-w-6xl space-y-6">
+    <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
+      <div className="mx-auto max-w-7xl space-y-6">
         <header className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <h1 className="text-3xl font-bold text-cyan-200">Optimizarr</h1>
           <p className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300">
@@ -356,14 +504,331 @@ export default function App() {
         {error && <p className="rounded bg-red-900/50 p-3 text-red-200">{error}</p>}
 
         {activePage === 'dashboard' && (
-          <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
-            <StatCard label="GPU %" value={`${metrics?.gpu_video_percent ?? 0}%`} />
-            <StatCard label="CPU %" value={`${metrics?.cpu_percent ?? 0}%`} />
-            <StatCard label="Active jobs" value={metrics?.active_jobs ?? 0} />
-            <StatCard label="Queue count" value={queueCount} />
-            <StatCard label="Libraries" value={libraries.length} />
-            <StatCard label="Profiles" value={Object.keys(libraryProfiles).length} />
-            <StatCard label="Enable toggle" value={settings?.enable_optimizer ? 'ON' : 'OFF'} />
+          <section className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
+              <StatCard label="GPU %" value={`${metrics?.gpu_video_percent ?? 0}%`} />
+              <StatCard label="CPU %" value={`${metrics?.cpu_percent ?? 0}%`} />
+              <StatCard label="Active jobs" value={metrics?.active_jobs ?? 0} />
+              <StatCard label="Queue count" value={queueCount} />
+              <StatCard label="Libraries" value={libraries.length} />
+              <StatCard label="Enable toggle" value={settings?.enable_optimizer ? 'ON' : 'OFF'} />
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
+              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Per-library runtime state</h2>
+              <div className="space-y-2 text-sm">
+                {libraryRuntimeStates.map(({ library, state, queue }) => (
+                  <div key={library.id} className="flex items-center justify-between rounded border border-slate-800 bg-slate-950/40 p-3">
+                    <div>
+                      <p className="font-medium text-cyan-200">{library.name}</p>
+                      <p className="text-xs text-slate-400">{library.path}</p>
+                    </div>
+                    <div className="text-right">
+                      <p>{state}</p>
+                      <p className="text-xs text-slate-400">Queue: {queue}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {activePage === 'libraries' && (
+          <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
+            <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
+              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Libraries</h2>
+              <div className="space-y-2">
+                {libraries.map((library) => (
+                  <div
+                    key={library.id}
+                    className={`rounded border p-3 ${
+                      selectedLibraryId === library.id ? 'border-cyan-500 bg-slate-950' : 'border-slate-800 bg-slate-950/40'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <button type="button" className="text-left" onClick={() => setSelectedLibraryId(library.id)}>
+                        <p className="font-medium text-cyan-200">{library.name}</p>
+                        <p className="text-xs text-slate-400">{library.path}</p>
+                        <p className="text-xs text-slate-300">Queue: {libraryQueueCount(library, jobs)}</p>
+                      </button>
+                      <div className="flex items-center gap-2">
+                        <label className="text-xs text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={library.enabled}
+                            onChange={(event) => handleLibraryToggle(library.id, event.target.checked)}
+                            className="mr-1"
+                          />
+                          enabled
+                        </label>
+                        <button
+                          type="button"
+                          className="rounded bg-cyan-600 px-2 py-1 text-xs font-semibold text-slate-950 hover:bg-cyan-500 disabled:opacity-60"
+                          disabled={Boolean(scanningLibraries[library.id])}
+                          onClick={() => handleLibraryScan(library.id)}
+                        >
+                          {scanningLibraries[library.id] ? 'Scanning…' : 'Scan'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-800 bg-slate-900 p-4">
+              {!selectedLibrary || !profileDraft ? (
+                <p className="text-sm text-slate-300">Select a library to edit its profile.</p>
+              ) : (
+                <div className="space-y-4">
+                  <div className="rounded border border-slate-800 bg-slate-950/40 p-3">
+                    <h2 className="text-lg font-semibold text-cyan-200">{selectedLibrary.name}</h2>
+                    <p className="text-xs text-slate-400">Path: {selectedLibrary.path}</p>
+                    <p className="text-xs text-slate-300">Status: {libraryRuntimeStates.find((item) => item.library.id === selectedLibrary.id)?.state}</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="block text-sm">Quality preset</label>
+                    <select
+                      className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                      value={selectedPreset}
+                      onChange={(event) => {
+                        const presetKey = event.target.value;
+                        setSelectedPreset(presetKey);
+                        const preset = QUALITY_PRESETS[presetKey];
+                        if (preset) {
+                          setProfileDraft((prev) => ({ ...prev, ...preset.profile }));
+                        }
+                      }}
+                    >
+                      {Object.entries(QUALITY_PRESETS).map(([key, value]) => (
+                        <option key={key} value={key}>{value.label}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <label className="space-y-2">
+                      <span className="text-sm">Enabled</span>
+                      <input
+                        type="checkbox"
+                        checked={selectedLibrary.enabled}
+                        onChange={(event) => handleLibraryToggle(selectedLibrary.id, event.target.checked)}
+                      />
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">HDR only</span>
+                      <input
+                        type="checkbox"
+                        checked={profileDraft.hdr_only}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, hdr_only: event.target.checked }))}
+                      />
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">Target resolution</span>
+                      <select
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={profileDraft.target_resolution === 1080 || profileDraft.target_resolution === 720 ? String(profileDraft.target_resolution) : 'custom'}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          setProfileDraft((prev) => ({
+                            ...prev,
+                            target_resolution: value === 'custom' ? prev.target_resolution : Number(value),
+                          }));
+                        }}
+                      >
+                        <option value="1080">1080p</option>
+                        <option value="720">720p</option>
+                        <option value="custom">Custom</option>
+                      </select>
+                      {profileDraft.target_resolution !== 1080 && profileDraft.target_resolution !== 720 && (
+                        <input
+                          type="number"
+                          min={1}
+                          className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                          value={profileDraft.target_resolution}
+                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, target_resolution: Number(event.target.value) }))}
+                        />
+                      )}
+                      {profileErrors.target_resolution && <p className="text-xs text-red-300">{profileErrors.target_resolution}</p>}
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">Codec</span>
+                      <select
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={profileDraft.codec}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, codec: event.target.value }))}
+                      >
+                        <option value="h264">H.264</option>
+                        <option value="hevc">HEVC</option>
+                        <option value="av1">AV1</option>
+                      </select>
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">AV1 fallback</span>
+                      <select
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={profileDraft.av1_fallback_codec}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, av1_fallback_codec: event.target.value }))}
+                      >
+                        <option value="hevc">HEVC</option>
+                        <option value="h264">H.264</option>
+                      </select>
+                      {profileErrors.av1_fallback_codec && <p className="text-xs text-red-300">{profileErrors.av1_fallback_codec}</p>}
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">Bitrate mode</span>
+                      <div className="flex gap-3 text-sm">
+                        <label>
+                          <input
+                            type="radio"
+                            name="bitrate-mode"
+                            checked={profileDraft.bitrate_mode === 'vbr_crf'}
+                            onChange={() => setProfileDraft((prev) => ({ ...prev, bitrate_mode: 'vbr_crf' }))}
+                          />
+                          {' '}CRF
+                        </label>
+                        <label>
+                          <input
+                            type="radio"
+                            name="bitrate-mode"
+                            checked={profileDraft.bitrate_mode === 'cbr'}
+                            onChange={() => setProfileDraft((prev) => ({ ...prev, bitrate_mode: 'cbr' }))}
+                          />
+                          {' '}CBR
+                        </label>
+                      </div>
+                    </label>
+
+                    {profileDraft.bitrate_mode === 'vbr_crf' && (
+                      <label className="space-y-2">
+                        <span className="text-sm">CRF</span>
+                        <input
+                          type="number"
+                          min={1}
+                          className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                          value={profileDraft.crf ?? ''}
+                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, crf: Number(event.target.value) }))}
+                        />
+                        {profileErrors.crf && <p className="text-xs text-red-300">{profileErrors.crf}</p>}
+                      </label>
+                    )}
+
+                    {profileDraft.bitrate_mode === 'cbr' && (
+                      <label className="space-y-2 md:col-span-2">
+                        <span className="text-sm">Bitrate ({profileDraft.bitrate_mbps ?? 1} Mbps)</span>
+                        <input
+                          type="range"
+                          min={1}
+                          max={40}
+                          value={profileDraft.bitrate_mbps ?? 1}
+                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, bitrate_mbps: Number(event.target.value) }))}
+                        />
+                        <input
+                          type="number"
+                          min={1}
+                          className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                          value={profileDraft.bitrate_mbps ?? ''}
+                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, bitrate_mbps: Number(event.target.value) }))}
+                        />
+                        {profileErrors.bitrate_mbps && <p className="text-xs text-red-300">{profileErrors.bitrate_mbps}</p>}
+                      </label>
+                    )}
+
+                    <label className="space-y-2">
+                      <span className="text-sm">Speed preset</span>
+                      <select
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={profileDraft.speed_preset}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, speed_preset: event.target.value }))}
+                      >
+                        <option value="slow">Slow</option>
+                        <option value="medium">Medium</option>
+                        <option value="fast">Fast</option>
+                      </select>
+                      <p className="text-xs text-slate-400">slow=best efficiency, fast=quickest</p>
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">Container</span>
+                      <select
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={profileDraft.container}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, container: event.target.value }))}
+                      >
+                        <option value="mkv">mkv</option>
+                        <option value="mp4">mp4</option>
+                      </select>
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">Audio</span>
+                      <select
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={profileDraft.audio_mode}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, audio_mode: event.target.value }))}
+                      >
+                        <option value="copy">copy</option>
+                        <option value="aac">aac</option>
+                        <option value="ac3">ac3</option>
+                        <option value="eac3">eac3</option>
+                      </select>
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">Max workers ({profileDraft.max_workers})</span>
+                      <input
+                        type="range"
+                        min={1}
+                        max={10}
+                        value={profileDraft.max_workers}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, max_workers: Number(event.target.value) }))}
+                      />
+                      {profileErrors.max_workers && <p className="text-xs text-red-300">{profileErrors.max_workers}</p>}
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">Schedule start</span>
+                      <input
+                        type="time"
+                        step={3600}
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={formatHour(profileDraft.schedule_start_hour)}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_start_hour: parseHour(event.target.value) }))}
+                      />
+                      {profileErrors.schedule_start_hour && <p className="text-xs text-red-300">{profileErrors.schedule_start_hour}</p>}
+                    </label>
+
+                    <label className="space-y-2">
+                      <span className="text-sm">Schedule end</span>
+                      <input
+                        type="time"
+                        step={3600}
+                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        value={formatHour(profileDraft.schedule_end_hour)}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_end_hour: parseHour(event.target.value) }))}
+                      />
+                      {profileErrors.schedule_end_hour && <p className="text-xs text-red-300">{profileErrors.schedule_end_hour}</p>}
+                    </label>
+                  </div>
+
+                  <button
+                    type="button"
+                    className="rounded bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-70"
+                    disabled={savingProfile}
+                    onClick={handleSaveLibraryProfile}
+                  >
+                    {savingProfile ? 'Saving…' : 'Save'}
+                  </button>
+                </div>
+              )}
+            </div>
           </section>
         )}
 
@@ -475,102 +940,6 @@ export default function App() {
                 value={settings.max_workers}
                 onChange={(event) =>
                   setSettings((prev) => ({ ...prev, max_workers: Number(event.target.value) }))
-                }
-              />
-            </label>
-
-            <div className="space-y-3 rounded border border-slate-800 p-4">
-              <label className="flex items-center justify-between">
-                <span>Enable global quiet hours</span>
-                <input
-                  type="checkbox"
-                  checked={settings.global_quiet_enabled}
-                  onChange={(event) =>
-                    setSettings((prev) => ({ ...prev, global_quiet_enabled: event.target.checked }))
-                  }
-                />
-              </label>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <label className="block space-y-2">
-                  <span>Quiet hours start</span>
-                  <input
-                    type="time"
-                    step={3600}
-                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                    value={formatHour(settings.global_quiet_start_hour)}
-                    onChange={(event) =>
-                      setSettings((prev) => ({
-                        ...prev,
-                        global_quiet_start_hour: parseHour(event.target.value),
-                      }))
-                    }
-                  />
-                </label>
-                <label className="block space-y-2">
-                  <span>Quiet hours end</span>
-                  <input
-                    type="time"
-                    step={3600}
-                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                    value={formatHour(settings.global_quiet_end_hour)}
-                    onChange={(event) =>
-                      setSettings((prev) => ({
-                        ...prev,
-                        global_quiet_end_hour: parseHour(event.target.value),
-                      }))
-                    }
-                  />
-                </label>
-              </div>
-            </div>
-
-            <div className="space-y-3 rounded border border-slate-800 p-4">
-              <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Library schedules</h3>
-              {libraries.map((library) => {
-                const profile = libraryProfiles[library.id];
-                if (!profile) {
-                  return null;
-                }
-
-                return (
-                  <div key={library.id} className="grid gap-3 rounded border border-slate-800 bg-slate-950/40 p-3 md:grid-cols-4 md:items-end">
-                    <div className="md:col-span-2">
-                      <p className="font-medium text-cyan-200">{library.name}</p>
-                      <p className="text-xs text-slate-400">{library.path}</p>
-                      <p className="text-xs text-slate-300">Status: {getLibraryScheduleStatus(library, profile)}</p>
-                    </div>
-                    <label className="block space-y-2">
-                      <span className="text-xs text-slate-300">Start</span>
-                      <input
-                        type="time"
-                        step={3600}
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={formatHour(profile.schedule_start_hour)}
-                        onChange={(event) => handleLibraryScheduleChange(library.id, 'schedule_start_hour', event.target.value)}
-                      />
-                    </label>
-                    <label className="block space-y-2">
-                      <span className="text-xs text-slate-300">End</span>
-                      <input
-                        type="time"
-                        step={3600}
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={formatHour(profile.schedule_end_hour)}
-                        onChange={(event) => handleLibraryScheduleChange(library.id, 'schedule_end_hour', event.target.value)}
-                      />
-                    </label>
-                  </div>
-                );
-              })}
-            </div>
-
-            <label className="flex items-center justify-between">
-              <span>HDR only toggle</span>
-              <input
-                type="checkbox"
-                checked={settings.process_hdr_only}
-                onChange={(event) =>
-                  setSettings((prev) => ({ ...prev, process_hdr_only: event.target.checked }))
                 }
               />
             </label>
