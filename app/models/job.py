@@ -26,6 +26,8 @@ class Job(Base):
     used_fallback: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     fallback_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_resolution: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_is_hdr: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

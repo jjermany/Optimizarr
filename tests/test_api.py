@@ -591,6 +591,55 @@ def test_pause_resume_abort_and_queue_controls(monkeypatch, tmp_path):
         assert resume_queue_response.json() == {'status': 'running'}
 
 
+
+
+def test_start_job_endpoint(monkeypatch, tmp_path):
+    called = []
+
+    from app.workers import queue as worker_queue
+
+    monkeypatch.setattr(worker_queue, 'start_queued_job', lambda job_id: called.append(job_id) or True)
+
+    with TestClient(app) as client:
+        create_response = client.post('/jobs', json={'source_path': '/media/start-me.mkv'})
+        assert create_response.status_code == 201
+        job_id = create_response.json()['id']
+
+        response = client.post(f'/jobs/{job_id}/start')
+        assert response.status_code == 200
+        assert response.json()['id'] == job_id
+
+    assert called == [job_id]
+
+
+def test_scan_endpoints_pause_queue_before_queueing(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'library'
+    library_path.mkdir()
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+
+    paused_reasons = []
+    from app.workers import queue as worker_queue
+
+    monkeypatch.setattr(worker_queue, 'pause_queue', lambda reason='manual': paused_reasons.append(reason))
+    monkeypatch.setattr(routes, 'scan_enabled_libraries', lambda db: [])
+    monkeypatch.setattr(routes, 'scan_library', lambda db, library: [])
+
+    with TestClient(app) as client:
+        create_library = client.post('/libraries', json={'name': 'Scan Pause', 'path': str(library_path), 'enabled': True})
+        assert create_library.status_code == 201
+        library_id = create_library.json()['id']
+
+        lib_scan = client.post(f'/libraries/{library_id}/scan')
+        assert lib_scan.status_code == 200
+
+        scan_all = client.post('/scan')
+        assert scan_all.status_code == 200
+
+    assert paused_reasons == ['manual_scan', 'manual_scan']
+
 def test_recovery_endpoint_marks_interrupted_requeues_and_cleans_workspace(tmp_path):
     from app.core.database import SessionLocal
     from app.models.job import Job

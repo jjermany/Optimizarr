@@ -131,6 +131,8 @@ class JobResponse(BaseModel):
     used_fallback: bool | None = None
     fallback_reason: str | None = None
     error_message: str | None = None
+    source_resolution: int | None = None
+    source_is_hdr: bool | None = None
 
     @classmethod
     def from_orm_job(cls, job):
@@ -150,6 +152,8 @@ class JobResponse(BaseModel):
             used_fallback=job.used_fallback,
             fallback_reason=job.fallback_reason,
             error_message=job.error_message,
+            source_resolution=job.source_resolution,
+            source_is_hdr=job.source_is_hdr,
         )
 
 
@@ -700,6 +704,7 @@ def delete_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
 @router.post('/libraries/{library_id}/scan', response_model=ScanResponse)
 def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
     library = _get_library_or_404(db, library_id)
+    worker_queue.pause_queue(reason='manual_scan')
     jobs = scan_library(db, library)
     payload = [JobResponse.from_orm_job(job) for job in jobs]
     notification_service.register_scan_batch([job.id for job in jobs], library_name=library.name)
@@ -710,6 +715,7 @@ def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: S
 
 @router.post('/scan', response_model=ScanResponse)
 def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
+    worker_queue.pause_queue(reason='manual_scan')
     created_jobs = scan_enabled_libraries(db)
 
     payload = [JobResponse.from_orm_job(job) for job in created_jobs]
@@ -747,6 +753,21 @@ def pause_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
     broker.publish_system_event('job_paused', job_id=response.id)
+    return response
+
+
+@router.post('/jobs/{job_id}/start', response_model=JobResponse)
+def start_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
+    started = worker_queue.start_queued_job(job_id)
+    if not started:
+        raise HTTPException(status_code=409, detail='Job cannot be started')
+
+    job = get_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Job not found')
+
+    response = JobResponse.from_orm_job(job)
+    broker.publish_job_update(response.model_dump(), throttle_progress=False)
     return response
 
 

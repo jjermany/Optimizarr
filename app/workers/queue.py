@@ -466,6 +466,50 @@ def is_queue_paused() -> bool:
     return _queue_paused
 
 
+def start_queued_job(job_id: int) -> bool:
+    db = SessionLocal()
+    try:
+        settings = _get_settings(db)
+        row = (
+            db.query(Job, Library, LibraryProfile)
+            .outerjoin(Library, Job.library_id == Library.id)
+            .outerjoin(LibraryProfile, LibraryProfile.library_id == Library.id)
+            .filter(Job.id == job_id)
+            .first()
+        )
+        if row is None:
+            return False
+
+        job, library, profile = row
+        if job.status != 'queued':
+            return False
+
+        if not bool(settings.enable_optimizer):
+            return False
+
+        if not _library_job_can_start(settings, datetime.now(), library, profile):
+            return False
+
+        with _pool_lock:
+            if job_id in _active_workers:
+                return False
+
+            max_workers = max(1, int(settings.max_workers))
+            if len(_active_workers) >= max_workers:
+                return False
+
+            job.status = 'starting'
+            db.commit()
+            _publish_job(job, throttle_progress=False)
+
+            worker = Thread(target=_process_job, args=(job_id,), daemon=True, name=f'optimizer-job-{job_id}')
+            worker.start()
+            _active_workers[job_id] = worker
+        return True
+    finally:
+        db.close()
+
+
 def _should_workers_run(settings: Settings, now: datetime) -> bool:
     _ = now
     if _queue_paused:

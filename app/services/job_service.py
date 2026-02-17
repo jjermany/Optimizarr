@@ -42,12 +42,21 @@ def _profile_snapshot(profile: LibraryProfile | None) -> str | None:
     )
 
 
-def create_job(db: Session, source_path: str, library_id: int | None = None, profile: LibraryProfile | None = None) -> Job:
+def create_job(
+    db: Session,
+    source_path: str,
+    library_id: int | None = None,
+    profile: LibraryProfile | None = None,
+    source_resolution: int | None = None,
+    source_is_hdr: bool | None = None,
+) -> Job:
     job = Job(
         input_path=source_path,
         status='queued',
         library_id=library_id,
         profile_snapshot_json=_profile_snapshot(profile),
+        source_resolution=source_resolution,
+        source_is_hdr=source_is_hdr,
     )
     db.add(job)
     db.commit()
