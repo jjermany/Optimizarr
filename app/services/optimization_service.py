@@ -87,11 +87,6 @@ class EncoderSelection:
     is_explicit_preference: bool = False
 
 
-def _output_path_for(input_path: str) -> str:
-    source = Path(input_path)
-    return str(source.with_name(f"{source.stem}-1080p.mkv"))
-
-
 def _container_from_profile(profile: dict[str, Any]) -> str:
     container = str(profile.get('container', 'mkv')).lower().strip('.')
     return container or 'mkv'
@@ -166,20 +161,6 @@ def get_active_position(job_id: int) -> float | None:
     """Return the most recently reported encode position (seconds) for an active job."""
     with _ACTIVE_FFMPEG_LOCK:
         return _ACTIVE_FFMPEG_POSITIONS.get(job_id)
-
-
-def probe_partial_output_duration(settings: Any, job_id: int) -> float | None:
-    """Probe the partial output file in the workspace and return its duration in seconds."""
-    workspace_path = _job_workspace_path(settings, job_id)
-    if not workspace_path.exists():
-        return None
-    partials = list(workspace_path.glob('output.partial.*'))
-    if not partials:
-        return None
-    partial_path = partials[0]
-    return _probe_duration_seconds(str(partial_path))
-
-
 
 
 def _is_same_filesystem(source_path: Path, destination_dir: Path) -> bool:
@@ -684,23 +665,6 @@ def is_hdr_video(input_path: str) -> bool:
         normalized_transfer in hdr_transfer_markers
         or normalized_primaries in hdr_primaries_markers
         or normalized_color_space in hdr_space_markers
-    )
-
-
-def _build_ffmpeg_command(input_path: str, output_path: str, bitrate_mbps: int) -> list[str]:
-    return build_encoder_command(
-        input_path,
-        output_path,
-        {
-            'codec': 'h264',
-            'bitrate_mode': 'cbr',
-            'speed_preset': 'medium',
-            'audio_mode': 'copy',
-            'container': 'mkv',
-            'target_resolution': 1080,
-            'bitrate_mbps': bitrate_mbps,
-            'crf': 23,
-        },
     )
 
 
