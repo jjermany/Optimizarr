@@ -78,6 +78,7 @@ def test_job_progress_throttle_limits_to_one_event_per_second():
 
 def test_ws_stream_receives_queue_pause_system_event():
     with TestClient(app) as client:
+        client.post('/queue/resume')
         with client.websocket_connect('/ws') as websocket:
             pause_response = client.post('/queue/pause')
             assert pause_response.status_code == 200

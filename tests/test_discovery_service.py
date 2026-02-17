@@ -156,3 +156,31 @@ def test_scan_library_publishes_discovery_job_queued_event(monkeypatch, tmp_path
     discovery_events = [item for item in events if item[0] == 'discovery_job_queued']
     assert len(discovery_events) == 1
     assert discovery_events[0][1]['source_path'] == str(source_file)
+
+
+def test_scan_library_skips_disabled_library_by_default(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'disabled'
+    library_path.mkdir()
+
+    source_file = library_path / 'movie.mkv'
+    source_file.write_text('content')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: True)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'Disabled', 'path': str(library_path), 'enabled': False})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        from app.core.database import SessionLocal
+        from app.models.library import Library
+
+        with SessionLocal() as session:
+            library = session.query(Library).filter(Library.id == library_id).first()
+            assert library is not None
+            created_jobs = discovery_service.scan_library(session, library)
+            assert created_jobs == []

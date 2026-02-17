@@ -78,3 +78,22 @@ def test_format_notification_html_falls_back_to_heading_without_logo():
     assert 'Optimizarr notification test' in html
     assert 'Library' in html
     assert 'Reason' in html
+
+
+def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
+    queued = []
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+
+    notification_service._batches.clear()
+    notification_service.register_scan_batch([42], library_name='Movies')
+
+    job = type('JobStub', (), {'id': 42, 'source_path': '/media/Movies/title.mkv', 'error_message': 'optimization_failed', 'library_id': None})
+
+    notification_service.enqueue_job_failed(job)
+    assert queued == []
+
+    notification_service.handle_job_terminal_state(42, 'failed')
+    assert len(queued) == 1
+    assert queued[0][0] == 'Optimizarr batch complete'
+    assert 'title.mkv' in queued[0][1]
+    assert 'grouped alert' in queued[0][1]

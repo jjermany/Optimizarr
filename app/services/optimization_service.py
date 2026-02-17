@@ -681,54 +681,6 @@ def optimize_video(
     metrics.codec_used = selection.codec
     metrics.hwaccel_used = selection.use_qsv
 
-    if (
-        return_code != 0
-        and selection.use_qsv
-        and not selection.is_explicit_preference
-        and selection.codec in {'h264', 'hevc'}
-        and _has_qsv_error(output_lines)
-    ):
-        software_encoder = 'libx264' if selection.codec == 'h264' else 'libx265'
-        fallback_selection = EncoderSelection(codec=selection.codec, encoder=software_encoder, use_qsv=False)
-        fallback_command = _build_command_with_selection(input_path, str(partial_output_path), profile, fallback_selection)
-        return_code, processed_seconds, current_fps, was_cancelled, _ = _run_ffmpeg(
-            job_id,
-            fallback_command,
-            duration,
-            progress_callback,
-            should_cancel,
-        )
-        metrics.used_fallback = True
-        metrics.fallback_reason = f'{selection.encoder}_failed'
-        metrics.encoder_used = fallback_selection.encoder
-        metrics.codec_used = fallback_selection.codec
-        metrics.hwaccel_used = False
-        metrics.processed_seconds = processed_seconds
-        metrics.fps = current_fps
-        metrics.return_code = return_code
-
-    if return_code != 0 and selection.codec == 'av1':
-        av1_fallback_codec = str(profile.get('av1_fallback_codec', 'hevc')).lower()
-        if av1_fallback_codec in {'h264', 'hevc'}:
-            fallback_encoder = 'libx264' if av1_fallback_codec == 'h264' else 'libx265'
-            fallback_selection = EncoderSelection(codec=av1_fallback_codec, encoder=fallback_encoder, use_qsv=False)
-            fallback_command = _build_command_with_selection(input_path, str(partial_output_path), profile, fallback_selection)
-            return_code, processed_seconds, current_fps, was_cancelled, _ = _run_ffmpeg(
-                job_id,
-                fallback_command,
-                duration,
-                progress_callback,
-                should_cancel,
-            )
-            metrics.used_fallback = True
-            metrics.fallback_reason = f'av1_encode_failed_fallback_to_{av1_fallback_codec}'
-            metrics.encoder_used = fallback_selection.encoder
-            metrics.codec_used = fallback_selection.codec
-            metrics.hwaccel_used = False
-            metrics.processed_seconds = processed_seconds
-            metrics.fps = current_fps
-            metrics.return_code = return_code
-
     if was_cancelled:
         metrics.status = 'cancelled'
     elif return_code == 0:
@@ -742,6 +694,12 @@ def optimize_video(
             metrics.error_message = 'commit_failed'
     else:
         metrics.status = 'failed'
+        if selection.use_qsv and _has_qsv_error(output_lines):
+            metrics.skipped_reason = 'qsv_encode_failed'
+            metrics.error_message = 'qsv_encode_failed'
+        elif selection.codec == 'av1':
+            metrics.skipped_reason = 'av1_encode_failed'
+            metrics.error_message = 'av1_encode_failed'
     if metrics.status == 'failed':
         if not metrics.skipped_reason:
             metrics.skipped_reason = 'optimization_failed'
