@@ -7,7 +7,20 @@ async function request(path, options) {
   });
 
   if (!response.ok) {
-    const detail = await response.text();
+    let detail;
+    const contentType = response.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) {
+      const payload = await response.json().catch(() => null);
+      if (typeof payload?.detail === 'string' && payload.detail.trim()) {
+        detail = payload.detail.trim();
+      }
+    }
+
+    if (!detail) {
+      const bodyText = await response.text();
+      detail = bodyText.trim();
+    }
+
     const error = new Error(detail || `Request failed: ${response.status}`);
     error.status = response.status;
     throw error;
