@@ -1064,10 +1064,15 @@ def optimize_video(
     # retry with the same QSV encoder but use CPU (zscale) tone mapping instead.
     # This is slower than vpp_qsv but still keeps QSV encoding; it is better than
     # dropping to VAAPI entirely when QSV encoding itself is healthy.
+    # Skip this slow CPU path when a VAAPI encoder is available — VAAPI uses GPU
+    # tone mapping (tonemap_vaapi) and will be faster; let the VAAPI fallback below
+    # handle it instead.
     _apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
+    _vaapi_fallback_available = bool(_QSV_VAAPI_FALLBACK.get(selection.encoder) and _encoder_available(_QSV_VAAPI_FALLBACK.get(selection.encoder, '')))
     if (
         return_code is not None and return_code != 0 and not was_cancelled
         and selection.use_qsv and _apply_tonemap and not selection.force_sw_tonemap
+        and not _vaapi_fallback_available
     ):
         sw_tonemap_selection = EncoderSelection(
             codec=selection.codec,
@@ -1104,7 +1109,7 @@ def optimize_video(
         metrics.used_fallback = True
         metrics.fallback_reason = 'qsv_vpp_tonemap_failed_sw_tonemap'
 
-    if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv and not selection.is_explicit_preference:
+    if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv:
         vaapi_encoder = _QSV_VAAPI_FALLBACK.get(selection.encoder)
         if vaapi_encoder and _encoder_available(vaapi_encoder):
             logger.warning(
