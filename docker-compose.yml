@@ -10,6 +10,9 @@ services:
       - ./cache:/cache
     devices:
       - /dev/dri:/dev/dri
+    environment:
+      - LIBVA_DRIVER_NAME=iHD
+      - QSV_DEVICE=/dev/dri/renderD128
     restart: unless-stopped
 
   frontend:

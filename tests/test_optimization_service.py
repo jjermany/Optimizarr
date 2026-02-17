@@ -184,13 +184,41 @@ def test_build_encoder_command_prefers_qsv_and_scales(monkeypatch):
 
     command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
 
-    assert command[:8] == ['ffmpeg', '-hwaccel', 'qsv', '-hwaccel_output_format', 'qsv', '-i', '/media/in.mkv', '-vf']
-    assert 'scale_qsv=-2:1080' in command
+    assert command[:7] == ['ffmpeg', '-init_hw_device', 'qsv=hw:/dev/dri/renderD128', '-filter_hw_device', 'hw', '-i', '/media/in.mkv']
+    assert '-vf' in command
+    qsv_filter = command[command.index('-vf') + 1]
+    assert 'format=nv12' in qsv_filter
+    assert 'hwupload=extra_hw_frames=64' in qsv_filter
+    assert 'scale_qsv=-2:1080' in qsv_filter
     assert '-c:v' in command and 'h264_qsv' in command
     assert '-b:v' in command and '8M' in command
     assert '-maxrate' in command and '10M' in command
     assert '-bufsize' in command and '16M' in command
 
+
+
+
+def test_build_encoder_command_uses_custom_qsv_device(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'fast',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 22,
+        'qsv_device': '/dev/dri/renderD129',
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1080)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_qsv')
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    assert command[:3] == ['ffmpeg', '-init_hw_device', 'qsv=hw:/dev/dri/renderD129']
+    qsv_filter = command[command.index('-vf') + 1]
+    assert qsv_filter == 'format=nv12,hwupload=extra_hw_frames=64'
 
 def test_build_encoder_command_software_hevc_vbr_crf(monkeypatch):
     profile = {
@@ -297,8 +325,11 @@ def test_optimize_video_fails_when_h264_qsv_encode_fails(monkeypatch, tmp_path):
 
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
     monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 100.0)
-    monkeypatch.setattr(optimization_service, '_select_encoder', lambda profile: optimization_service.EncoderSelection(codec='h264', encoder='h264_qsv', use_qsv=True))
-
+    monkeypatch.setattr(
+        optimization_service,
+        '_select_encoder',
+        lambda profile: optimization_service.EncoderSelection(codec='h264', encoder='h264_qsv', use_qsv=True),
+    )
     calls = {'count': 0}
 
     def fake_run_ffmpeg(*args, **kwargs):

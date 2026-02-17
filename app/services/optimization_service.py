@@ -311,11 +311,16 @@ def _build_command_with_selection(
 
     command = ['ffmpeg', '-i', input_path]
     if selection.use_qsv:
-        command = ['ffmpeg', '-hwaccel', 'qsv', '-hwaccel_output_format', 'qsv', '-i', input_path]
+        qsv_device = str(profile.get('qsv_device') or '/dev/dri/renderD128').strip()
+        command = ['ffmpeg', '-init_hw_device', f'qsv=hw:{qsv_device}', '-filter_hw_device', 'hw', '-i', input_path]
 
-    if should_scale:
-        scale_filter = f'scale_qsv=-2:{target_height}' if selection.use_qsv else f'scale=-2:{target_height}'
-        command.extend(['-vf', scale_filter])
+    if selection.use_qsv:
+        filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
+        if should_scale:
+            filters.append(f'scale_qsv=-2:{target_height}')
+        command.extend(['-vf', ','.join(filters)])
+    elif should_scale:
+        command.extend(['-vf', f'scale=-2:{target_height}'])
 
     command.extend(['-c:v', selection.encoder])
     command.extend(video_preset_args)
@@ -591,6 +596,7 @@ def _profile_from_settings(settings: Any) -> dict[str, Any]:
         'target_resolution': int(getattr(settings, 'target_resolution', 1080) or 1080),
         'bitrate_mbps': int(getattr(settings, 'bitrate_mbps', 8) or 8),
         'crf': 23,
+        'qsv_device': os.getenv('QSV_DEVICE', '/dev/dri/renderD128'),
     }
 
 
@@ -668,6 +674,7 @@ def optimize_video(
         progress_callback,
         should_cancel,
     )
+
     if return_code is None:
         metrics.status = 'failed'
         metrics.skipped_reason = 'ffmpeg_unavailable'
