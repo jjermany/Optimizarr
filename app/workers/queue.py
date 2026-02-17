@@ -18,6 +18,7 @@ from app.services.job_service import prune_job_history
 from app.services.notification_service import enqueue_job_failed, enqueue_low_disk_space_alert, handle_job_terminal_state
 from app.services.optimization_service import (
     delete_partial_output,
+    get_active_position,
     is_hdr_video,
     optimize_video,
     probe_video_height,
@@ -250,8 +251,14 @@ def _process_job(job_id: int) -> None:
             return
 
         settings = _get_settings(db)
+
+        # Capture any saved resume position before the preflight resets job fields.
+        resume_position = job.resume_position_seconds
+
         job.status = 'preflight'
-        job.progress_percent = 0
+        # Preserve existing progress when resuming so the UI shows the already-done portion.
+        if not resume_position:
+            job.progress_percent = 0
         job.error_message = None
         job.encoder_used = None
         job.codec_used = None
@@ -270,6 +277,10 @@ def _process_job(job_id: int) -> None:
             handle_job_terminal_state(job.id, job.status)
             return
 
+        # Clear the resume position from the DB now that we are about to use it;
+        # on success it is no longer needed, and on failure the job will be retried
+        # from scratch or re-paused with a new position.
+        job.resume_position_seconds = None
         job.status = 'running'
         db.commit()
         _publish_job(job, throttle_progress=False)
@@ -302,6 +313,7 @@ def _process_job(job_id: int) -> None:
             progress_callback=on_progress,
             should_cancel=lambda: _should_cancel(db, job_id),
             encoder_selected_callback=on_encoder_selected,
+            resume_position_seconds=resume_position,
         )
 
         db.refresh(job)
@@ -330,6 +342,7 @@ def _process_job(job_id: int) -> None:
                 job.progress_percent = 0
                 job.eta_seconds = None
                 job.completed_at = None
+                job.resume_position_seconds = None
             else:
                 _mark_finished(job)
         elif metrics.status == 'complete':
@@ -408,15 +421,16 @@ def _restart_paused_schedule_jobs(db: Session, settings: Settings, now: datetime
         if not _library_is_in_schedule_window(now, profile):
             continue
 
-        delete_partial_output(settings, job.id)
+        # Preserve the partial output so the job can resume from its saved
+        # position rather than re-encoding from the start.
         job.status = 'queued'
-        job.progress_percent = 0
         job.fps = None
         job.eta_seconds = None
         job.output_path = None
         job.error_message = None
         job.cancel_requested = False
         job.completed_at = None
+        # resume_position_seconds and progress_percent are kept as-is.
         db.commit()
         _publish_job(job, throttle_progress=False)
         broker.publish_system_event(
@@ -444,11 +458,14 @@ def _enforce_library_schedule_policies(db: Session, settings: Settings, now: dat
         if profile is None or profile.schedule_policy != SchedulePolicyEnum.pause_current:
             continue
 
+        current_position = get_active_position(job.id)
         stop_active_ffmpeg(job.id)
         db.refresh(job)
         job.status = 'paused_schedule'
         job.cancel_requested = False
         job.eta_seconds = None
+        if current_position is not None and current_position > 0:
+            job.resume_position_seconds = current_position
         db.commit()
         _publish_job(job, throttle_progress=False)
         broker.publish_system_event(

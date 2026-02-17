@@ -49,6 +49,7 @@ ENCODER_OPTIONS_BY_CODEC = {
 }
 _ACTIVE_FFMPEG_LOCK = Lock()
 _ACTIVE_FFMPEG_PROCESSES: dict[int, subprocess.Popen] = {}
+_ACTIVE_FFMPEG_POSITIONS: dict[int, float] = {}
 # When QSV fails at runtime (MFX session error), try the VAAPI equivalent before
 # giving up.  VAAPI uses the iHD driver directly — no VPL runtime needed.
 _QSV_VAAPI_FALLBACK: dict[str, str] = {
@@ -159,6 +160,24 @@ def stop_active_ffmpeg(job_id: int) -> bool:
         return False
     process.terminate()
     return True
+
+
+def get_active_position(job_id: int) -> float | None:
+    """Return the most recently reported encode position (seconds) for an active job."""
+    with _ACTIVE_FFMPEG_LOCK:
+        return _ACTIVE_FFMPEG_POSITIONS.get(job_id)
+
+
+def probe_partial_output_duration(settings: Any, job_id: int) -> float | None:
+    """Probe the partial output file in the workspace and return its duration in seconds."""
+    workspace_path = _job_workspace_path(settings, job_id)
+    if not workspace_path.exists():
+        return None
+    partials = list(workspace_path.glob('output.partial.*'))
+    if not partials:
+        return None
+    partial_path = partials[0]
+    return _probe_duration_seconds(str(partial_path))
 
 
 
@@ -454,6 +473,7 @@ def _run_ffmpeg(
     if job_id is not None:
         with _ACTIVE_FFMPEG_LOCK:
             _ACTIVE_FFMPEG_PROCESSES[job_id] = process
+            _ACTIVE_FFMPEG_POSITIONS[job_id] = 0.0
 
     current_fps: float | None = None
     processed_seconds = 0.0
@@ -487,6 +507,9 @@ def _run_ffmpeg(
             try:
                 out_time_ms = int(line.split('=', maxsplit=1)[1].strip())
                 processed_seconds = out_time_ms / 1_000_000
+                if job_id is not None:
+                    with _ACTIVE_FFMPEG_LOCK:
+                        _ACTIVE_FFMPEG_POSITIONS[job_id] = processed_seconds
             except ValueError:
                 processed_seconds = processed_seconds
 
@@ -506,6 +529,7 @@ def _run_ffmpeg(
     if job_id is not None:
         with _ACTIVE_FFMPEG_LOCK:
             _ACTIVE_FFMPEG_PROCESSES.pop(job_id, None)
+            _ACTIVE_FFMPEG_POSITIONS.pop(job_id, None)
 
     rc = process.returncode
     if rc != 0 and not was_cancelled:
@@ -703,6 +727,126 @@ def _profile_from_settings(settings: Any) -> dict[str, Any]:
     }
 
 
+def _build_resume_command(
+    input_path: str,
+    resume_position_seconds: float,
+    output_path: str,
+    profile: dict[str, Any],
+    selection: 'EncoderSelection',
+) -> list[str]:
+    """Build an FFmpeg command that seeks into the input and encodes the remaining portion."""
+    seek_args = ['-ss', str(resume_position_seconds)]
+
+    bitrate_mode = str(profile.get('bitrate_mode', 'cbr')).lower()
+    speed_preset = str(profile.get('speed_preset', 'medium')).lower()
+    audio_mode = str(profile.get('audio_mode', 'copy')).lower()
+    target_height = int(profile.get('target_resolution', 1080) or 1080)
+    bitrate_mbps = int(profile.get('bitrate_mbps', 8) or 8)
+    crf = int(profile.get('crf', 23) or 23)
+
+    source_height = _probe_height(input_path)
+    should_scale = source_height is not None and source_height > target_height
+
+    video_preset_args: list[str] = []
+    if selection.encoder in {'h264_qsv', 'hevc_qsv', 'av1_qsv'}:
+        video_preset_args = ['-preset', _qsv_preset(speed_preset)]
+    elif selection.encoder in {'h264_vaapi', 'hevc_vaapi', 'av1_vaapi'}:
+        video_preset_args = []
+    elif selection.encoder == 'libsvtav1':
+        video_preset_args = ['-preset', _svt_av1_preset(speed_preset)]
+    else:
+        video_preset_args = ['-preset', _software_preset(speed_preset)]
+
+    hw_device = str(profile.get('qsv_device') or '/dev/dri/renderD128').strip()
+
+    if selection.use_vaapi:
+        command = ['ffmpeg', '-vaapi_device', hw_device] + seek_args + ['-i', input_path]
+    elif selection.use_qsv:
+        command = [
+            'ffmpeg',
+            '-init_hw_device', f'vaapi=va:{hw_device}',
+            '-init_hw_device', 'qsv=qs@va',
+            '-filter_hw_device', 'qs',
+        ] + seek_args + ['-i', input_path]
+    else:
+        command = ['ffmpeg'] + seek_args + ['-i', input_path]
+
+    apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
+
+    if selection.use_vaapi:
+        filters = []
+        if apply_tonemap:
+            filters.extend(_HDR_TONEMAP_FILTERS)
+        filters.extend(['format=nv12', 'hwupload'])
+        if should_scale:
+            filters.append(f'scale_vaapi=-2:{target_height}')
+        command.extend(['-vf', ','.join(filters)])
+    elif selection.use_qsv:
+        filters = []
+        if apply_tonemap:
+            filters.extend(_HDR_TONEMAP_FILTERS)
+        filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
+        if should_scale:
+            filters.append(f'scale_qsv=-1:{target_height}')
+        command.extend(['-vf', ','.join(filters)])
+    else:
+        filters = []
+        if apply_tonemap:
+            filters.extend(_HDR_TONEMAP_FILTERS)
+        if should_scale:
+            filters.append(f'scale=-2:{target_height}')
+        if filters:
+            command.extend(['-vf', ','.join(filters)])
+
+    command.extend(['-c:v', selection.encoder])
+    command.extend(video_preset_args)
+    command.extend(_video_rate_args(selection.encoder, bitrate_mode, bitrate_mbps, crf, target_height))
+    command.extend(_audio_args(audio_mode))
+    command.extend(['-progress', 'pipe:1', '-nostats', output_path])
+    return command
+
+
+def _concat_partial_and_resume(
+    workspace_path: Path,
+    partial_path: Path,
+    resume_path: Path,
+    combined_path: Path,
+    job_id: int | None,
+) -> bool:
+    """Concatenate partial and resume segments into a single output file using stream copy."""
+    concat_list_path = workspace_path / 'concat_list.txt'
+    try:
+        concat_list_path.write_text(
+            f"file '{partial_path}'\nfile '{resume_path}'\n"
+        )
+    except OSError as exc:
+        logger.error('[job %s] Failed to write concat list: %s', job_id, exc)
+        return False
+
+    concat_cmd = [
+        'ffmpeg', '-y',
+        '-f', 'concat',
+        '-safe', '0',
+        '-i', str(concat_list_path),
+        '-c', 'copy',
+        str(combined_path),
+    ]
+    job_tag = f'job {job_id}' if job_id is not None else 'adhoc'
+    logger.info('[%s] Concatenating partial and resume segments', job_tag)
+    try:
+        result = subprocess.run(concat_cmd, capture_output=True, text=True, check=False)
+    except OSError as exc:
+        logger.error('[%s] Failed to run FFmpeg concat: %s', job_tag, exc)
+        return False
+
+    if result.returncode != 0:
+        logger.error('[%s] FFmpeg concat failed (rc=%s):\n%s', job_tag, result.returncode, result.stderr[-2000:])
+        return False
+
+    logger.info('[%s] Concat succeeded: %r', job_tag, str(combined_path))
+    return True
+
+
 def optimize_video(
     input_path: str,
     settings,
@@ -710,6 +854,7 @@ def optimize_video(
     progress_callback: Callable[[dict[str, float | int | None]], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
     encoder_selected_callback: Callable[[str, bool], None] | None = None,
+    resume_position_seconds: float | None = None,
 ) -> OptimizationMetrics:
     job_tag = f'job {job_id}' if job_id is not None else 'adhoc'
     profile = _profile_from_settings(settings)
@@ -757,13 +902,36 @@ def optimize_video(
             metrics.skipped_reason = 'source_height_below_target'
             return metrics
 
-    try:
-        _ensure_clean_workspace(workspace_path)
-    except OSError:
-        metrics.status = 'failed'
-        metrics.skipped_reason = 'workspace_prepare_failed'
-        metrics.error_message = 'workspace_prepare_failed'
-        return metrics
+    # Check whether we can resume from a previously saved partial output.
+    # A resume is valid when a resume position is given AND the partial file still exists.
+    existing_partial = next(workspace_path.glob('output.partial.*'), None) if workspace_path.exists() else None
+    can_resume = (
+        resume_position_seconds is not None
+        and resume_position_seconds > 0
+        and existing_partial is not None
+        and existing_partial.exists()
+    )
+
+    if can_resume:
+        logger.info(
+            '[%s] Resuming from %.1fs — partial file exists at %r',
+            job_tag, resume_position_seconds, str(existing_partial),
+        )
+        # Workspace already has the partial; no clean needed.
+    else:
+        if resume_position_seconds is not None:
+            logger.info(
+                '[%s] Resume position %.1fs requested but no partial output found; encoding from scratch',
+                job_tag, resume_position_seconds,
+            )
+            resume_position_seconds = None
+        try:
+            _ensure_clean_workspace(workspace_path)
+        except OSError:
+            metrics.status = 'failed'
+            metrics.skipped_reason = 'workspace_prepare_failed'
+            metrics.error_message = 'workspace_prepare_failed'
+            return metrics
 
     duration = _probe_duration_seconds(input_path)
     metrics.duration_seconds = duration
@@ -799,14 +967,40 @@ def optimize_video(
     if encoder_selected_callback:
         encoder_selected_callback(selection.encoder, selection.use_qsv or selection.use_vaapi)
 
-    ffmpeg_command = _build_command_with_selection(input_path, str(partial_output_path), profile, selection)
-    return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
-        job_id,
-        ffmpeg_command,
-        duration,
-        progress_callback,
-        should_cancel,
-    )
+    if can_resume:
+        # Encode only the remaining portion into a separate segment file.
+        container = _container_from_profile(profile)
+        resume_segment_path = workspace_path / f'output.resume.{container}'
+        ffmpeg_command = _build_resume_command(
+            input_path, resume_position_seconds, str(resume_segment_path), profile, selection,
+        )
+        # Wrap the progress callback to offset progress by the already-encoded portion.
+        resume_progress_callback = progress_callback
+        if progress_callback and duration and duration > 0:
+            resume_start_pct = int((resume_position_seconds / duration) * 100)
+            remaining_pct_span = 100 - resume_start_pct
+            _orig_cb = progress_callback
+            def resume_progress_callback(update: dict, _start=resume_start_pct, _span=remaining_pct_span, _cb=_orig_cb) -> None:  # type: ignore[misc]
+                pct = int(update.get('progress_percent') or 0)
+                update['progress_percent'] = min(99, _start + int(pct * _span / 100))
+                _cb(update)
+        remaining_duration = (duration - resume_position_seconds) if duration else None
+        return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+            job_id,
+            ffmpeg_command,
+            remaining_duration,
+            resume_progress_callback,
+            should_cancel,
+        )
+    else:
+        ffmpeg_command = _build_command_with_selection(input_path, str(partial_output_path), profile, selection)
+        return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+            job_id,
+            ffmpeg_command,
+            duration,
+            progress_callback,
+            should_cancel,
+        )
 
     if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv:
         vaapi_encoder = _QSV_VAAPI_FALLBACK.get(selection.encoder)
@@ -816,23 +1010,36 @@ def optimize_video(
                 '(same iGPU, no VPL runtime required)',
                 job_tag, selection.encoder, return_code, vaapi_encoder,
             )
-            try:
-                _ensure_clean_workspace(workspace_path)
-            except OSError:
-                pass
+            if not can_resume:
+                try:
+                    _ensure_clean_workspace(workspace_path)
+                except OSError:
+                    pass
             vaapi_selection = EncoderSelection(
                 codec=selection.codec, encoder=vaapi_encoder, use_qsv=False, use_vaapi=True,
             )
-            ffmpeg_command = _build_command_with_selection(
-                input_path, str(partial_output_path), profile, vaapi_selection,
-            )
-            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
-                job_id,
-                ffmpeg_command,
-                duration,
-                progress_callback,
-                should_cancel,
-            )
+            if can_resume:
+                ffmpeg_command = _build_resume_command(
+                    input_path, resume_position_seconds, str(resume_segment_path), profile, vaapi_selection,
+                )
+                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                    job_id,
+                    ffmpeg_command,
+                    remaining_duration,
+                    resume_progress_callback,
+                    should_cancel,
+                )
+            else:
+                ffmpeg_command = _build_command_with_selection(
+                    input_path, str(partial_output_path), profile, vaapi_selection,
+                )
+                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                    job_id,
+                    ffmpeg_command,
+                    duration,
+                    progress_callback,
+                    should_cancel,
+                )
             selection = vaapi_selection
             metrics.used_fallback = True
             metrics.fallback_reason = 'qsv_failed_vaapi_fallback'
@@ -854,16 +1061,39 @@ def optimize_video(
     if was_cancelled:
         metrics.status = 'cancelled'
     elif return_code == 0:
-        committed = _commit_output_file(partial_output_path, final_output_path, job_id)
-        if committed:
-            logger.info('[%s] Encoding complete; output committed to %r', job_tag, str(final_output_path))
-            metrics.status = 'complete'
-            shutil.rmtree(workspace_path, ignore_errors=True)
+        if can_resume:
+            # Concatenate the saved partial and the newly encoded resume segment.
+            container = _container_from_profile(profile)
+            combined_path = workspace_path / f'output.combined.{container}'
+            concat_ok = _concat_partial_and_resume(
+                workspace_path, existing_partial, resume_segment_path, combined_path, job_id,
+            )
+            if not concat_ok:
+                metrics.status = 'failed'
+                metrics.skipped_reason = 'concat_failed'
+                metrics.error_message = 'concat_failed'
+            else:
+                committed = _commit_output_file(combined_path, final_output_path, job_id)
+                if committed:
+                    logger.info('[%s] Resume encode complete; output committed to %r', job_tag, str(final_output_path))
+                    metrics.status = 'complete'
+                    shutil.rmtree(workspace_path, ignore_errors=True)
+                else:
+                    logger.error('[%s] Failed to commit concat output %r -> %r', job_tag, str(combined_path), str(final_output_path))
+                    metrics.status = 'failed'
+                    metrics.skipped_reason = 'commit_failed'
+                    metrics.error_message = 'commit_failed'
         else:
-            logger.error('[%s] Failed to commit output file %r -> %r', job_tag, str(partial_output_path), str(final_output_path))
-            metrics.status = 'failed'
-            metrics.skipped_reason = 'commit_failed'
-            metrics.error_message = 'commit_failed'
+            committed = _commit_output_file(partial_output_path, final_output_path, job_id)
+            if committed:
+                logger.info('[%s] Encoding complete; output committed to %r', job_tag, str(final_output_path))
+                metrics.status = 'complete'
+                shutil.rmtree(workspace_path, ignore_errors=True)
+            else:
+                logger.error('[%s] Failed to commit output file %r -> %r', job_tag, str(partial_output_path), str(final_output_path))
+                metrics.status = 'failed'
+                metrics.skipped_reason = 'commit_failed'
+                metrics.error_message = 'commit_failed'
     else:
         metrics.status = 'failed'
         if selection.use_qsv and _has_qsv_error(output_lines):
