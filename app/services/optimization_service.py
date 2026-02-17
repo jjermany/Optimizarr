@@ -382,11 +382,11 @@ def _build_command_with_selection(
     else:
         command = ['ffmpeg', '-i', input_path]
 
-    source_is_hdr = bool(profile.get('source_is_hdr'))
+    apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
 
     if selection.use_vaapi:
         filters = []
-        if source_is_hdr:
+        if apply_tonemap:
             filters.extend(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload'])
         if should_scale:
@@ -394,7 +394,7 @@ def _build_command_with_selection(
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         filters = []
-        if source_is_hdr:
+        if apply_tonemap:
             filters.extend(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
@@ -402,7 +402,7 @@ def _build_command_with_selection(
         command.extend(['-vf', ','.join(filters)])
     else:
         filters = []
-        if source_is_hdr:
+        if apply_tonemap:
             filters.extend(_HDR_TONEMAP_FILTERS)
         if should_scale:
             filters.append(f'scale=-2:{target_height}')
@@ -770,8 +770,10 @@ def optimize_video(
 
     if 'source_is_hdr' not in profile:
         profile['source_is_hdr'] = is_hdr_video(input_path)
-    if profile['source_is_hdr']:
+    if profile['source_is_hdr'] and bool(profile.get('tone_map_hdr')):
         logger.info('[%s] HDR source detected — tone mapping to SDR will be applied', job_tag)
+    elif profile['source_is_hdr']:
+        logger.info('[%s] HDR source detected — preserving HDR (tone mapping disabled)', job_tag)
 
     selection = _select_encoder(profile)
 

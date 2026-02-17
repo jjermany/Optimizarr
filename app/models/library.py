@@ -96,6 +96,7 @@ class LibraryProfile(Base):
     crf: Mapped[int | None] = mapped_column(Integer, nullable=True)
     speed_preset: Mapped[SpeedPresetEnum] = mapped_column(SqlEnum(SpeedPresetEnum), default=SpeedPresetEnum.medium, nullable=False)
     hdr_only: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    tone_map_hdr: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     max_workers: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     schedule_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     schedule_start_hour: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
