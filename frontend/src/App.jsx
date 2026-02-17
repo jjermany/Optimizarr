@@ -130,21 +130,23 @@ function libraryQueueCount(library, jobs) {
   ).length;
 }
 
-const IN_PROGRESS_STATUSES = new Set(['starting', 'running', 'preflight', 'paused', 'paused_schedule']);
+const ACTIVE_STATUSES = new Set(['starting', 'running', 'preflight']);
+const PAUSED_STATUSES = new Set(['paused', 'paused_schedule']);
 const QUEUED_STATUSES = new Set(['pending', 'queued', 'created']);
 
 function jobSortRank(job) {
   const status = job.status?.toLowerCase();
-  if (IN_PROGRESS_STATUSES.has(status)) return 0;
-  if (QUEUED_STATUSES.has(status)) return 1;
-  return 2;
+  if (ACTIVE_STATUSES.has(status)) return 0;
+  if (PAUSED_STATUSES.has(status)) return 1;
+  if (QUEUED_STATUSES.has(status)) return 2;
+  return 3;
 }
 
 function sortedJobsForDisplay(jobs) {
   return [...jobs].sort((a, b) => {
     const rankDiff = jobSortRank(a) - jobSortRank(b);
     if (rankDiff !== 0) return rankDiff;
-    if (jobSortRank(a) === 1) return a.id - b.id;
+    if (jobSortRank(a) === 2) return a.id - b.id;
     return b.id - a.id;
   });
 }
