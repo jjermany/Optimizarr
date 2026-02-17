@@ -50,10 +50,11 @@ def create_job(
     profile: LibraryProfile | None = None,
     source_resolution: int | None = None,
     source_is_hdr: bool | None = None,
+    status: str = 'queued',
 ) -> Job:
     job = Job(
         input_path=source_path,
-        status='queued',
+        status=status,
         library_id=library_id,
         profile_snapshot_json=_profile_snapshot(profile),
         source_resolution=source_resolution,

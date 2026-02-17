@@ -580,6 +580,7 @@ export default function App() {
         websocket.onerror = () => websocket.close();
         websocket.onclose = () => {
           if (intentionallyClosedRef.current) return;
+          if (wsRef.current !== websocket) return;
           scheduleFallbackPolling();
           scheduleReconnect(connectWebSocket);
         };
