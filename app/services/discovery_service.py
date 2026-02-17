@@ -310,6 +310,7 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         profile=profile,
         source_resolution=source_resolution,
         source_is_hdr=source_is_hdr,
+        status='paused' if not library.enabled else 'queued',
     )
     broker.publish_system_event(
         'discovery_job_queued',
