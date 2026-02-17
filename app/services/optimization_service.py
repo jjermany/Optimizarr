@@ -27,6 +27,13 @@ _QSV_ERROR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _FFMPEG_ERROR_PATTERN = re.compile(r'\b(error|failed|invalid|cannot|unable|no such|permission denied)\b', re.IGNORECASE)
+# Detects tonemap_vaapi filter failures — distinct from encoder-level QSV errors.
+# When this fires the VEBOX tone mapping step failed (e.g. DV/HDR10+ content),
+# but the QSV encoder itself may still be usable with software tone mapping.
+_VAAPI_TONEMAP_ERROR_PATTERN = re.compile(
+    r'tonemap_vaapi.*(failed|error|operation)',
+    re.IGNORECASE,
+)
 # HDR-to-SDR software tone mapping filter chain.
 # Converts HDR10/HLG (BT.2020 / PQ / HLG) to SDR BT.709 using zscale + tonemap.
 # Used as a fallback when VAAPI hardware tone mapping is unavailable.
@@ -90,6 +97,9 @@ class EncoderSelection:
     use_vaapi: bool = False
     is_explicit_preference: bool = False
     hw_decode: bool = False
+    # When True, skip tonemap_vaapi and use software (CPU) tone mapping instead.
+    # Set after a tonemap_vaapi failure so QSV encoding is preserved.
+    force_sw_tonemap: bool = False
 
 
 def _container_from_profile(profile: dict[str, Any]) -> str:
@@ -397,7 +407,7 @@ def _build_command_with_selection(
         # Software decode fallback — used when hw_decode is off (e.g. after hw tonemap
         # failed and the job was retried with hw_decode=False).
         command = ['ffmpeg', '-vaapi_device', hw_device, '-i', input_path]
-    elif selection.use_qsv and apply_tonemap:
+    elif selection.use_qsv and apply_tonemap and not selection.force_sw_tonemap:
         # QSV+HDR via VAAPI bridge with hardware decode for full GPU tone mapping.
         # VAAPI hardware decode produces VAAPI surfaces that tonemap_vaapi (Intel VEBOX)
         # can process directly without a CPU round-trip. After tone mapping the surface
@@ -444,13 +454,22 @@ def _build_command_with_selection(
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
-    elif selection.use_qsv and apply_tonemap:
+    elif selection.use_qsv and apply_tonemap and not selection.force_sw_tonemap:
         # Full GPU pipeline (HDR+QSV): VAAPI hardware decode → tonemap_vaapi (Intel VEBOX)
         # → optional scale_vaapi → hwmap to QSV surface → hevc_qsv/h264_qsv/av1_qsv encode.
         filters = [_VAAPI_TONEMAP_FILTER]
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         filters.extend(['hwmap=derive_device=qsv', 'format=qsv'])
+        command.extend(['-vf', ','.join(filters)])
+    elif selection.use_qsv and apply_tonemap:
+        # QSV encode with software (CPU) tone mapping — used when tonemap_vaapi (VEBOX)
+        # failed on this content (e.g. Dolby Vision / HDR10+).
+        # Software decode → CPU zscale/tonemap → NV12 → hwupload → QSV encode.
+        filters = list(_HDR_TONEMAP_FILTERS)
+        filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
+        if should_scale:
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
@@ -486,6 +505,10 @@ def build_encoder_command(input_path: str, output_path: str, profile: dict[str, 
 
 def _has_qsv_error(output_lines: list[str]) -> bool:
     return any(_QSV_ERROR_PATTERN.search(line) for line in output_lines)
+
+
+def _has_vaapi_tonemap_error(output_lines: list[str]) -> bool:
+    return any(_VAAPI_TONEMAP_ERROR_PATTERN.search(line) for line in output_lines)
 
 
 def _run_ffmpeg(
@@ -793,7 +816,7 @@ def _build_resume_command(
         ] + seek_args + ['-i', input_path]
     elif selection.use_vaapi:
         command = ['ffmpeg', '-vaapi_device', hw_device] + seek_args + ['-i', input_path]
-    elif selection.use_qsv and apply_tonemap:
+    elif selection.use_qsv and apply_tonemap and not selection.force_sw_tonemap:
         # QSV+HDR: VAAPI hardware decode so tonemap_vaapi can run on GPU (Intel VEBOX).
         command = [
             'ffmpeg',
@@ -830,12 +853,21 @@ def _build_resume_command(
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
-    elif selection.use_qsv and apply_tonemap:
+    elif selection.use_qsv and apply_tonemap and not selection.force_sw_tonemap:
         # Full GPU pipeline (HDR+QSV): tonemap_vaapi → scale_vaapi → hwmap to QSV → encode.
         filters = [_VAAPI_TONEMAP_FILTER]
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         filters.extend(['hwmap=derive_device=qsv', 'format=qsv'])
+        command.extend(['-vf', ','.join(filters)])
+    elif selection.use_qsv and apply_tonemap:
+        # QSV encode with software (CPU) tone mapping — used when tonemap_vaapi (VEBOX)
+        # failed on this content (e.g. Dolby Vision / HDR10+).
+        # Software decode → CPU zscale/tonemap → NV12 → hwupload → QSV encode.
+        filters = list(_HDR_TONEMAP_FILTERS)
+        filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
+        if should_scale:
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
@@ -1055,6 +1087,50 @@ def optimize_video(
             progress_callback,
             should_cancel,
         )
+
+    # If tonemap_vaapi (VEBOX) failed for a QSV job, retry with the same QSV encoder
+    # but swap to software (CPU) tone mapping.  This keeps GPU encoding while working
+    # around DV/HDR10+ content that VEBOX cannot process.
+    _apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
+    if (
+        return_code is not None and return_code != 0 and not was_cancelled
+        and selection.use_qsv and _apply_tonemap and not selection.force_sw_tonemap
+        and _has_vaapi_tonemap_error(output_lines)
+    ):
+        sw_tonemap_qsv_selection = EncoderSelection(
+            codec=selection.codec,
+            encoder=selection.encoder,
+            use_qsv=True,
+            use_vaapi=False,
+            force_sw_tonemap=True,
+        )
+        logger.warning(
+            '[%s] QSV hardware tone mapping (tonemap_vaapi) failed (rc=%s); '
+            'retrying with software tone mapping + %r encode',
+            job_tag, return_code, selection.encoder,
+        )
+        if not can_resume:
+            try:
+                _ensure_clean_workspace(workspace_path)
+            except OSError:
+                pass
+        if can_resume:
+            ffmpeg_command = _build_resume_command(
+                input_path, resume_position_seconds, str(resume_segment_path), profile, sw_tonemap_qsv_selection,
+            )
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+            )
+        else:
+            ffmpeg_command = _build_command_with_selection(
+                input_path, str(partial_output_path), profile, sw_tonemap_qsv_selection,
+            )
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id, ffmpeg_command, duration, progress_callback, should_cancel,
+            )
+        selection = sw_tonemap_qsv_selection
+        metrics.used_fallback = True
+        metrics.fallback_reason = 'qsv_vaapi_tonemap_failed_sw_tonemap'
 
     if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv:
         vaapi_encoder = _QSV_VAAPI_FALLBACK.get(selection.encoder)
