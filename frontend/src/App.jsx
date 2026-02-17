@@ -1296,6 +1296,13 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
+                  {pagedJobs.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-10 text-center text-sm text-slate-500">
+                        No jobs in queue.
+                      </td>
+                    </tr>
+                  )}
                   {pagedJobs.map((job) => {
                     const progress = progressFromJob(job);
                     const isRunning = job.status === 'running';

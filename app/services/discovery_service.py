@@ -312,12 +312,27 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         source_is_hdr=source_is_hdr,
         status='paused' if not library.enabled else 'queued',
     )
-    broker.publish_system_event(
-        'discovery_job_queued',
-        job_id=job.id,
-        source_path=source_path,
-        library_id=library.id,
-        library_name=library.name,
+    broker.publish_job_update(
+        {
+            'id': job.id,
+            'status': job.status,
+            'source_path': job.source_path,
+            'output_path': job.output_path,
+            'retry_count': job.retry_count,
+            'cancel_requested': job.cancel_requested,
+            'progress_percent': job.progress_percent,
+            'fps': job.fps,
+            'eta_seconds': job.eta_seconds,
+            'encoder_used': job.encoder_used,
+            'codec_used': job.codec_used,
+            'hwaccel_used': job.hwaccel_used,
+            'used_fallback': job.used_fallback,
+            'fallback_reason': job.fallback_reason,
+            'error_message': job.error_message,
+            'source_resolution': job.source_resolution,
+            'source_is_hdr': job.source_is_hdr,
+        },
+        throttle_progress=False,
     )
     return job
 
