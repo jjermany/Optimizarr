@@ -186,6 +186,10 @@ export function fetchPlexSettings() {
   return request('/plex/settings');
 }
 
+export function fetchPlexLibraries() {
+  return request('/plex/libraries');
+}
+
 export function updatePlexSettings(payload) {
   return request('/plex/settings', {
     method: 'PUT',

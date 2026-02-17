@@ -12,4 +12,3 @@ class PlexSettings(Base):
     host: Mapped[str] = mapped_column(String(255), default='http://localhost', nullable=False)
     port: Mapped[int] = mapped_column(Integer, default=32400, nullable=False)
     token: Mapped[str] = mapped_column(Text, default='', nullable=False)
-    library_ids: Mapped[str] = mapped_column(Text, default='', nullable=False)

@@ -118,6 +118,7 @@ class LibraryProfile(Base):
         default=PreferredEncoderEnum.auto,
         nullable=False,
     )
+    plex_library_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

@@ -165,5 +165,10 @@ def init_db() -> None:
             'tone_map_hdr BOOLEAN NOT NULL DEFAULT 0',
         )
 
-        # plex_settings is created fresh by Base.metadata.create_all above;
-        # add any future column migrations here.
+        # plex_settings is created fresh by Base.metadata.create_all above.
+        _add_column_if_missing(
+            connection,
+            'library_profiles',
+            'plex_library_id',
+            'plex_library_id VARCHAR(16)',
+        )
