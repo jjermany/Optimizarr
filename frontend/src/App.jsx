@@ -270,6 +270,8 @@ export default function App() {
   const [availableEncodersByCodec, setAvailableEncodersByCodec] = useState({});
   const [jobsPage, setJobsPage] = useState(1);
 
+  const [nowHour, setNowHour] = useState(() => new Date().getHours());
+
   const wsRef = useRef();
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef();
@@ -309,7 +311,6 @@ export default function App() {
   const selectedLibraryProfile = selectedLibraryId ? libraryProfiles[selectedLibraryId] : null;
 
   const libraryRuntimeStates = useMemo(() => {
-    const nowHour = new Date().getHours();
     return libraries.map((library) => {
       const profile = libraryProfiles[library.id];
       let state = 'Running';
@@ -325,7 +326,7 @@ export default function App() {
 
       return { library, state, queue: libraryQueueCount(library, jobs) };
     });
-  }, [jobs, libraries, libraryProfiles, settings]);
+  }, [jobs, libraries, libraryProfiles, nowHour]);
 
   async function refreshAll() {
     try {
@@ -426,6 +427,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const timer = setInterval(() => setNowHour(new Date().getHours()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     if (!message) {
       return undefined;
     }
@@ -515,6 +521,9 @@ export default function App() {
             clearTimeout(fallbackTimerRef.current);
             fallbackTimerRef.current = undefined;
           }
+          // Re-sync on every (re)connect to catch jobs or metrics that changed
+          // while the socket was connecting or during a reconnect gap.
+          refreshAll();
         };
 
         websocket.onmessage = (event) => {

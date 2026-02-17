@@ -274,6 +274,15 @@ def _process_job(job_id: int) -> None:
         db.commit()
         _publish_job(job, throttle_progress=False)
 
+        def on_encoder_selected(encoder_name: str, hwaccel: bool) -> None:
+            db.refresh(job)
+            if job.status in TERMINAL_STATUSES:
+                return
+            job.encoder_used = encoder_name
+            job.hwaccel_used = hwaccel
+            db.commit()
+            _publish_job(job, throttle_progress=False)
+
         def on_progress(update: dict[str, float | int | None]) -> None:
             db.refresh(job)
             if job.status in TERMINAL_STATUSES:
@@ -292,6 +301,7 @@ def _process_job(job_id: int) -> None:
             job_id=job.id,
             progress_callback=on_progress,
             should_cancel=lambda: _should_cancel(db, job_id),
+            encoder_selected_callback=on_encoder_selected,
         )
 
         db.refresh(job)
