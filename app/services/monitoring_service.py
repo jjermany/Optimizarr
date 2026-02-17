@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from typing import Any
 
 import psutil
@@ -67,26 +68,35 @@ def _extract_last_json_blob(raw_output: str) -> dict[str, Any]:
 def get_gpu_metrics() -> dict[str, float]:
     default_metrics = {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0}
 
-    raw_stdout = ''
+    # intel_gpu_top -J streams JSON objects indefinitely and buffers stdout, so
+    # subprocess.run(timeout=...) kills the process before the buffer is flushed —
+    # leaving exc.stdout empty.  Using Popen with line-by-line reading means we
+    # receive each chunk as it arrives without waiting for a buffer flush on kill.
     try:
-        # intel_gpu_top -J streams JSON indefinitely; it never exits on its own.
-        # Use a short sampling period (-s 250ms) and a 2s timeout so we capture
-        # at least a few samples before killing the process.  On TimeoutExpired the
-        # exception carries whatever stdout was captured — we use that instead of
-        # discarding it (which was the old bug that kept GPU% at 0).
-        process = subprocess.run(
+        process = subprocess.Popen(
             ['intel_gpu_top', '-J', '-s', '250'],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
-            check=False,
-            timeout=2,
         )
-        raw_stdout = process.stdout
-    except subprocess.TimeoutExpired as exc:
-        captured = exc.stdout or b''
-        raw_stdout = captured if isinstance(captured, str) else captured.decode('utf-8', errors='replace')
     except (FileNotFoundError, PermissionError):
         return default_metrics
+
+    raw_stdout = ''
+    deadline = time.monotonic() + 2.0
+    try:
+        assert process.stdout is not None
+        while time.monotonic() < deadline:
+            line = process.stdout.readline()
+            if not line:
+                break
+            raw_stdout += line
+    finally:
+        try:
+            process.kill()
+            process.wait(timeout=1)
+        except Exception:
+            pass
 
     payload = _extract_last_json_blob(raw_stdout)
     if not payload:

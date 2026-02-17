@@ -398,7 +398,7 @@ def _build_command_with_selection(
             filters.extend(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
-            filters.append(f'scale_qsv=-2:{target_height}')
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     else:
         filters = []
