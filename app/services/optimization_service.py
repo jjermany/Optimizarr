@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -11,11 +12,17 @@ from threading import Lock
 import time
 from typing import Any, Callable
 
+logger = logging.getLogger(__name__)
 
 FPS_REGEX = re.compile(r"fps\s*=\s*(?P<fps>[0-9]*\.?[0-9]+)")
 _ENCODER_CACHE: dict[str, bool] = {}
 _SUPPORTED_ENCODERS = {'h264_qsv', 'hevc_qsv', 'av1_qsv', 'libsvtav1', 'libx264', 'libx265'}
-_QSV_ERROR_PATTERN = re.compile(r'(qsv|mfx).*(init|error|failed|device)', re.IGNORECASE)
+_QSV_ERROR_PATTERN = re.compile(
+    r'(qsv|mfx|vaapi|dri|renderD|hw_device|hwdevice|hwaccel|opencl)'
+    r'.*(init|error|failed|device|open|create|alloc|load|unavailable|unsupported|permission|access)',
+    re.IGNORECASE,
+)
+_FFMPEG_ERROR_PATTERN = re.compile(r'\b(error|failed|invalid|cannot|unable|no such|permission denied)\b', re.IGNORECASE)
 ENCODER_OPTIONS_BY_CODEC = {
     'h264': ['h264_qsv', 'libx264'],
     'hevc': ['hevc_qsv', 'libx265'],
@@ -162,14 +169,20 @@ def refresh_encoder_cache() -> None:
     try:
         result = subprocess.run(['ffmpeg', '-hide_banner', '-encoders'], capture_output=True, text=True, check=False)
     except OSError:
+        logger.error('ffmpeg not found or not executable — encoder cache could not be populated')
         return
 
     if result.returncode != 0:
+        logger.error('ffmpeg -encoders exited with code %s; encoder cache not populated', result.returncode)
         return
 
     encoder_lines = result.stdout
     for name in _SUPPORTED_ENCODERS:
         _ENCODER_CACHE[name] = bool(re.search(rf"\b{re.escape(name)}\b", encoder_lines))
+
+    available = [n for n, ok in _ENCODER_CACHE.items() if ok]
+    unavailable = [n for n, ok in _ENCODER_CACHE.items() if not ok]
+    logger.info('Encoder cache refreshed — available: %s; unavailable: %s', available, unavailable)
 
 
 def _encoder_available(encoder_name: str) -> bool:
@@ -194,22 +207,27 @@ def _select_encoder(profile: dict[str, Any]) -> EncoderSelection | None:
     codec = str(profile.get('codec', 'h264')).lower()
     candidates = ENCODER_OPTIONS_BY_CODEC.get(codec, [])
     if not candidates:
+        logger.warning('No known encoder candidates for codec %r', codec)
         return None
 
     preferred_encoder = str(profile.get('preferred_video_encoder', 'auto')).lower()
     if preferred_encoder and preferred_encoder != 'auto':
         if preferred_encoder in candidates:
+            logger.debug('Using explicitly preferred encoder %r for codec %r', preferred_encoder, codec)
             return EncoderSelection(
                 codec=codec,
                 encoder=preferred_encoder,
                 use_qsv=preferred_encoder.endswith('_qsv'),
                 is_explicit_preference=True,
             )
+        logger.warning('Preferred encoder %r is not a valid candidate for codec %r; falling back to auto', preferred_encoder, codec)
 
     for candidate in candidates:
         if _encoder_available(candidate):
+            logger.debug('Auto-selected encoder %r for codec %r', candidate, codec)
             return EncoderSelection(codec=codec, encoder=candidate, use_qsv=candidate.endswith('_qsv'))
 
+    logger.warning('No available encoder found for codec %r (candidates checked: %s)', codec, candidates)
     return None
 
 
@@ -350,6 +368,8 @@ def _run_ffmpeg(
     progress_callback: Callable[[dict[str, float | int | None]], None] | None,
     should_cancel: Callable[[], bool] | None,
 ) -> tuple[int | None, float, float | None, bool, list[str]]:
+    job_tag = f'job {job_id}' if job_id is not None else 'adhoc'
+    logger.info('[%s] Running FFmpeg command: %s', job_tag, ' '.join(ffmpeg_command))
     try:
         process = subprocess.Popen(
             ffmpeg_command,
@@ -358,7 +378,8 @@ def _run_ffmpeg(
             text=True,
             bufsize=1,
         )
-    except OSError:
+    except OSError as exc:
+        logger.error('[%s] Failed to launch FFmpeg: %s', job_tag, exc)
         return None, 0.0, None, False, []
 
     if job_id is not None:
@@ -416,7 +437,20 @@ def _run_ffmpeg(
     if job_id is not None:
         with _ACTIVE_FFMPEG_LOCK:
             _ACTIVE_FFMPEG_PROCESSES.pop(job_id, None)
-    return process.returncode, processed_seconds, current_fps, was_cancelled, output_lines
+
+    rc = process.returncode
+    if rc != 0 and not was_cancelled:
+        logger.error('[%s] FFmpeg exited with return code %s', job_tag, rc)
+        # Log all lines that look like errors first, then a tail of the full output
+        error_lines = [l for l in output_lines if _FFMPEG_ERROR_PATTERN.search(l)]
+        if error_lines:
+            logger.error('[%s] FFmpeg error lines:\n%s', job_tag, '\n'.join(error_lines))
+        tail = output_lines[-40:] if len(output_lines) > 40 else output_lines
+        logger.error('[%s] FFmpeg output (last %d lines):\n%s', job_tag, len(tail), '\n'.join(tail))
+    elif rc == 0:
+        logger.info('[%s] FFmpeg completed successfully (processed %.1fs)', job_tag, processed_seconds)
+
+    return rc, processed_seconds, current_fps, was_cancelled, output_lines
 
 
 def _run_ffprobe_value(input_path: str, entry: str) -> str | None:
@@ -607,10 +641,19 @@ def optimize_video(
     progress_callback: Callable[[dict[str, float | int | None]], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> OptimizationMetrics:
+    job_tag = f'job {job_id}' if job_id is not None else 'adhoc'
     profile = _profile_from_settings(settings)
     workspace_path = _job_workspace_path(settings, job_id)
     final_output_path, partial_output_path = _output_paths(input_path, profile, workspace_path)
     metrics = OptimizationMetrics(input_path=input_path, output_path=str(final_output_path), status='pending')
+
+    logger.info(
+        '[%s] Starting optimization: file=%r codec=%r encoder_pref=%r bitrate_mode=%r',
+        job_tag, input_path,
+        profile.get('codec', 'h264'),
+        profile.get('preferred_video_encoder', 'auto'),
+        profile.get('bitrate_mode', 'cbr'),
+    )
 
     output_conflict_policy = str(profile.get('output_conflict_policy') or 'skip').lower()
     if final_output_path.exists():
@@ -657,6 +700,7 @@ def optimize_video(
     selection = _select_encoder(profile)
 
     if not selection and str(profile.get('codec', 'h264')).lower() == 'av1':
+        logger.error('[%s] AV1 encoding requested but no AV1 encoder is available on this host', job_tag)
         metrics.status = 'failed'
         metrics.skipped_reason = 'optimization_failed'
         metrics.error_message = 'AV1 not supported on this host.'
@@ -664,7 +708,15 @@ def optimize_video(
     if not selection:
         profile_codec = str(profile.get('codec', 'h264')).lower()
         fallback_encoder = 'libx264' if profile_codec == 'h264' else 'libx265'
+        logger.warning(
+            '[%s] No preferred encoder available for codec %r; falling back to software encoder %r',
+            job_tag, profile_codec, fallback_encoder,
+        )
         selection = EncoderSelection(codec=profile_codec, encoder=fallback_encoder, use_qsv=False)
+        metrics.used_fallback = True
+        metrics.fallback_reason = f'no_{profile_codec}_hw_encoder'
+    else:
+        logger.info('[%s] Encoder selected: %r (codec=%r, qsv=%s)', job_tag, selection.encoder, selection.codec, selection.use_qsv)
 
     ffmpeg_command = _build_command_with_selection(input_path, str(partial_output_path), profile, selection)
     return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
@@ -676,6 +728,7 @@ def optimize_video(
     )
 
     if return_code is None:
+        logger.error('[%s] FFmpeg could not be launched (binary missing or not executable)', job_tag)
         metrics.status = 'failed'
         metrics.skipped_reason = 'ffmpeg_unavailable'
         metrics.error_message = 'ffmpeg_unavailable'
@@ -693,25 +746,52 @@ def optimize_video(
     elif return_code == 0:
         committed = _commit_output_file(partial_output_path, final_output_path, job_id)
         if committed:
+            logger.info('[%s] Encoding complete; output committed to %r', job_tag, str(final_output_path))
             metrics.status = 'complete'
             shutil.rmtree(workspace_path, ignore_errors=True)
         else:
+            logger.error('[%s] Failed to commit output file %r -> %r', job_tag, str(partial_output_path), str(final_output_path))
             metrics.status = 'failed'
             metrics.skipped_reason = 'commit_failed'
             metrics.error_message = 'commit_failed'
     else:
         metrics.status = 'failed'
         if selection.use_qsv and _has_qsv_error(output_lines):
+            logger.error(
+                '[%s] QSV encoding failed (encoder=%r, return_code=%s); '
+                'check FFmpeg output above for hardware/driver details',
+                job_tag, selection.encoder, return_code,
+            )
+            metrics.skipped_reason = 'qsv_encode_failed'
+            metrics.error_message = 'qsv_encode_failed'
+        elif selection.use_qsv:
+            # FFmpeg failed with QSV encoder but no QSV-specific pattern was found —
+            # could be a device, driver, or filter error. Log prominently.
+            logger.error(
+                '[%s] FFmpeg failed with QSV encoder %r (return_code=%s) but no QSV error pattern matched; '
+                'check FFmpeg output above — possible device or driver issue',
+                job_tag, selection.encoder, return_code,
+            )
             metrics.skipped_reason = 'qsv_encode_failed'
             metrics.error_message = 'qsv_encode_failed'
         elif selection.codec == 'av1':
+            logger.error('[%s] AV1 encoding failed (encoder=%r, return_code=%s)', job_tag, selection.encoder, return_code)
             metrics.skipped_reason = 'av1_encode_failed'
             metrics.error_message = 'av1_encode_failed'
+        else:
+            logger.error(
+                '[%s] Encoding failed (encoder=%r, return_code=%s)',
+                job_tag, selection.encoder, return_code,
+            )
     if metrics.status == 'failed':
         if not metrics.skipped_reason:
             metrics.skipped_reason = 'optimization_failed'
         if not metrics.error_message:
             metrics.error_message = 'optimization_failed'
+        logger.error(
+            '[%s] Job marked as failed: reason=%r encoder=%r hwaccel=%s',
+            job_tag, metrics.skipped_reason, metrics.encoder_used, metrics.hwaccel_used,
+        )
 
     if progress_callback:
         progress_callback(
