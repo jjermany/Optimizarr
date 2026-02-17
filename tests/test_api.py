@@ -482,6 +482,29 @@ def test_scan_library_endpoint_honors_hdr_height_and_idempotency(monkeypatch, tm
             assert job.profile_snapshot_json == first_snapshot
 
 
+def test_scan_library_endpoint_allows_disabled_library_when_requested_manually(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'library'
+    library_path.mkdir()
+    (library_path / 'movie.mkv').write_text('video')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: True)
+
+    with TestClient(app) as client:
+        create_library = client.post('/libraries', json={'name': 'Disabled', 'path': str(library_path), 'enabled': False})
+        assert create_library.status_code == 201
+        library_id = create_library.json()['id']
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+        created_jobs = scan_response.json()['created_jobs']
+        assert len(created_jobs) == 1
+        assert created_jobs[0]['source_path'] == str(library_path / 'movie.mkv')
+
+
 def test_profile_update_rejects_min_resolution_equal_or_lower_than_target(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()
@@ -625,7 +648,7 @@ def test_scan_endpoints_pause_queue_before_queueing(monkeypatch, tmp_path):
 
     monkeypatch.setattr(worker_queue, 'pause_queue', lambda reason='manual': paused_reasons.append(reason))
     monkeypatch.setattr(routes, 'scan_enabled_libraries', lambda db: [])
-    monkeypatch.setattr(routes, 'scan_library', lambda db, library: [])
+    monkeypatch.setattr(routes, 'scan_library', lambda db, library, include_disabled=False: [])
 
     with TestClient(app) as client:
         create_library = client.post('/libraries', json={'name': 'Scan Pause', 'path': str(library_path), 'enabled': True})

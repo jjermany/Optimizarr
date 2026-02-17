@@ -705,7 +705,7 @@ def delete_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
 def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
     library = _get_library_or_404(db, library_id)
     worker_queue.pause_queue(reason='manual_scan')
-    jobs = scan_library(db, library)
+    jobs = scan_library(db, library, include_disabled=True)
     payload = [JobResponse.from_orm_job(job) for job in jobs]
     notification_service.register_scan_batch([job.id for job in jobs], library_name=library.name)
     for item in payload:

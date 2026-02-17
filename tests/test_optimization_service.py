@@ -247,6 +247,18 @@ def test_build_encoder_command_av1_uses_svt_when_qsv_unavailable(monkeypatch):
     assert '-b:a' in command and '768k' in command
 
 
+def test_select_encoder_ignores_unavailable_explicit_preference(monkeypatch):
+    profile = {'codec': 'h264', 'preferred_video_encoder': 'h264_qsv'}
+
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'libx264')
+
+    selection = optimization_service._select_encoder(profile)
+
+    assert selection is not None
+    assert selection.encoder == 'h264_qsv'
+    assert selection.is_explicit_preference is True
+
+
 def test_refresh_encoder_cache_parses_ffmpeg_encoders(monkeypatch):
     class Result:
         returncode = 0
@@ -279,7 +291,7 @@ def test_optimize_video_fails_when_av1_not_supported(monkeypatch, tmp_path):
     assert metrics.error_message == 'AV1 not supported on this host.'
 
 
-def test_optimize_video_retries_h264_qsv_failure_with_software(monkeypatch, tmp_path):
+def test_optimize_video_fails_when_h264_qsv_encode_fails(monkeypatch, tmp_path):
     input_path = tmp_path / 'movie.mkv'
     input_path.write_text('placeholder')
 
@@ -291,22 +303,18 @@ def test_optimize_video_retries_h264_qsv_failure_with_software(monkeypatch, tmp_
 
     def fake_run_ffmpeg(*args, **kwargs):
         calls['count'] += 1
-        if calls['count'] == 1:
-            return 1, 1.0, None, False, ['qsv init failed']
-        return 0, 100.0, 30.0, False, []
+        return 1, 1.0, None, False, ['qsv init failed']
 
     monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
-    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *args, **kwargs: True)
-
     metrics = optimization_service.optimize_video(str(input_path), DummySettings())
 
-    assert metrics.status == 'complete'
-    assert metrics.used_fallback is True
-    assert metrics.encoder_used == 'libx264'
-    assert metrics.fallback_reason == 'h264_qsv_failed'
+    assert calls['count'] == 1
+    assert metrics.status == 'failed'
+    assert metrics.used_fallback is False
+    assert metrics.error_message == 'qsv_encode_failed'
 
 
-def test_optimize_video_falls_back_when_av1_encode_fails(monkeypatch, tmp_path):
+def test_optimize_video_fails_when_av1_encode_fails(monkeypatch, tmp_path):
     input_path = tmp_path / 'movie.mkv'
     input_path.write_text('placeholder')
 
@@ -318,28 +326,24 @@ def test_optimize_video_falls_back_when_av1_encode_fails(monkeypatch, tmp_path):
 
     def fake_run_ffmpeg(*args, **kwargs):
         calls['count'] += 1
-        if calls['count'] == 1:
-            return 1, 10.0, None, False, ['some av1 failure']
-        return 0, 100.0, 48.0, False, []
+        return 1, 10.0, None, False, ['some av1 failure']
 
     monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
-    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *args, **kwargs: True)
-
     class AV1FallbackSettings:
         profile_snapshot_json = '{"codec":"av1","av1_fallback_codec":"hevc"}'
 
     metrics = optimization_service.optimize_video(str(input_path), AV1FallbackSettings())
 
-    assert metrics.status == 'complete'
-    assert metrics.used_fallback is True
-    assert metrics.codec_used == 'hevc'
-    assert metrics.encoder_used == 'libx265'
+    assert calls['count'] == 1
+    assert metrics.status == 'failed'
+    assert metrics.used_fallback is False
+    assert metrics.error_message == 'av1_encode_failed'
 
 
 
 
 
-def test_select_encoder_honors_explicit_preference_even_when_cache_says_unavailable(monkeypatch):
+def test_select_encoder_honors_unavailable_explicit_preference(monkeypatch):
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: False)
 
     selection = optimization_service._select_encoder({'codec': 'h264', 'preferred_video_encoder': 'h264_qsv'})
@@ -350,7 +354,7 @@ def test_select_encoder_honors_explicit_preference_even_when_cache_says_unavaila
     assert selection.is_explicit_preference is True
 
 
-def test_optimize_video_does_not_fallback_when_qsv_is_explicitly_selected(monkeypatch, tmp_path):
+def test_optimize_video_fails_without_fallback_when_qsv_is_explicitly_selected(monkeypatch, tmp_path):
     input_path = tmp_path / 'movie.mkv'
     input_path.write_text('placeholder')
 
@@ -380,6 +384,7 @@ def test_optimize_video_does_not_fallback_when_qsv_is_explicitly_selected(monkey
     assert calls['count'] == 1
     assert metrics.status == 'failed'
     assert metrics.used_fallback is False
+    assert metrics.error_message == 'qsv_encode_failed'
 
 def test_optimize_video_writes_partial_in_workspace(monkeypatch, tmp_path):
     media_dir = tmp_path / 'media'

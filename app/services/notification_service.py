@@ -32,6 +32,7 @@ class BatchTracker:
     library_name: str | None = None
     processed: int = 0
     failed: int = 0
+    failed_files: list[str] | None = None
 
 
 _stop_event = Event()
@@ -254,6 +255,16 @@ def enqueue_test_email() -> None:
 
 
 def enqueue_job_failed(job: Job) -> None:
+    file_name = Path(job.source_path).name
+    with _batch_lock:
+        for batch in _batches:
+            if job.id not in batch.pending_ids:
+                continue
+            if batch.failed_files is None:
+                batch.failed_files = []
+            batch.failed_files.append(file_name)
+            return
+
     db = SessionLocal()
     try:
         settings = get_or_create_notification_settings(db)
@@ -266,7 +277,6 @@ def enqueue_job_failed(job: Job) -> None:
     finally:
         db.close()
 
-    file_name = Path(job.source_path).name
     body = _format_notification_body(
         library_name=library_name,
         file_name=file_name,
@@ -384,8 +394,12 @@ def handle_job_terminal_state(job_id: int, status: str) -> None:
 
     body = _format_notification_body(
         library_name=completed_batch.library_name or 'multiple',
-        file_name='n/a',
-        reason=f'Batch complete. Processed: {completed_batch.processed}, Failed: {completed_batch.failed}.',
+        file_name=', '.join(completed_batch.failed_files or []) or 'n/a',
+        reason=(
+            f'Batch complete. Processed: {completed_batch.processed}, Failed: {completed_batch.failed}.'
+            if completed_batch.failed == 0
+            else f'Batch complete. Processed: {completed_batch.processed}, Failed: {completed_batch.failed} (grouped alert).'
+        ),
         suggested_action='Review failed items and retry any jobs that need another pass.',
     )
     enqueue_email(subject='Optimizarr batch complete', body=body)

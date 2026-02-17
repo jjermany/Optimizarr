@@ -222,7 +222,10 @@ def _get_or_create_library_profile(db: Session, library: Library) -> LibraryProf
     return profile
 
 
-def scan_library(db: Session, library: Library) -> list:
+def scan_library(db: Session, library: Library, include_disabled: bool = False) -> list:
+    if not include_disabled and not library.enabled:
+        return []
+
     profile = _get_or_create_library_profile(db, library)
     created_jobs = []
     library_path = Path(library.path)
