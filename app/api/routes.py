@@ -758,9 +758,9 @@ def pause_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
 
 @router.post('/jobs/{job_id}/start', response_model=JobResponse)
 def start_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
-    started = worker_queue.start_queued_job(job_id)
+    started, reason = worker_queue.start_queued_job(job_id, manual=True)
     if not started:
-        raise HTTPException(status_code=409, detail='Job cannot be started')
+        raise HTTPException(status_code=409, detail=reason or 'Job cannot be started')
 
     job = get_job(db, job_id)
     if not job:

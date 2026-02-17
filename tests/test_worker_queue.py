@@ -394,3 +394,63 @@ def test_enforce_schedule_policy_publishes_state_change(monkeypatch):
     assert events
     assert events[0][0] == 'schedule_policy_state_changed'
     assert events[0][1]['state'] == 'paused_schedule'
+
+
+def test_start_queued_job_manual_bypasses_optimizer_and_schedule(monkeypatch):
+    class DummyThread:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            return None
+
+    monkeypatch.setattr(queue, 'Thread', DummyThread)
+    monkeypatch.setattr(queue, '_library_job_can_start', lambda *_: False)
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.commit()
+
+        settings = Settings(enable_optimizer=False, max_workers=1)
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add_all([settings, library])
+        db.commit()
+        db.refresh(library)
+
+        job = Job(input_path='/media/movies/a.mkv', status='queued', library_id=library.id)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        started, reason = queue.start_queued_job(job.id, manual=True)
+
+        db.refresh(job)
+        assert started is True
+        assert reason is None
+        assert job.status == 'starting'
+
+    queue._active_workers.clear()
+
+
+def test_start_queued_job_non_manual_rejects_when_optimizer_disabled():
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.commit()
+
+        settings = Settings(enable_optimizer=False, max_workers=1)
+        db.add(settings)
+        db.commit()
+
+        job = Job(input_path='/media/movies/a.mkv', status='queued')
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        started, reason = queue.start_queued_job(job.id)
+
+        assert started is False
+        assert reason == 'Optimizer is disabled'
