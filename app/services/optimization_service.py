@@ -1075,6 +1075,7 @@ def optimize_video(
             use_qsv=True,
             use_vaapi=False,
             force_sw_tonemap=True,
+            is_explicit_preference=selection.is_explicit_preference,
         )
         logger.warning(
             '[%s] QSV vpp_qsv tonemap failed (rc=%s); retrying with CPU tone mapping + %r encode',
@@ -1103,7 +1104,7 @@ def optimize_video(
         metrics.used_fallback = True
         metrics.fallback_reason = 'qsv_vpp_tonemap_failed_sw_tonemap'
 
-    if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv:
+    if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv and not selection.is_explicit_preference:
         vaapi_encoder = _QSV_VAAPI_FALLBACK.get(selection.encoder)
         if vaapi_encoder and _encoder_available(vaapi_encoder):
             logger.warning(
