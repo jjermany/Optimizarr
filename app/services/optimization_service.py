@@ -90,6 +90,10 @@ class EncoderSelection:
     use_vaapi: bool = False
     is_explicit_preference: bool = False
     hw_decode: bool = False
+    # When True, skip vpp_qsv tonemap and fall back to CPU (zscale) tone mapping.
+    # Set after a vpp_qsv tonemap failure; QSV encoding is preserved, only the
+    # tone-mapping step moves to CPU.
+    force_sw_tonemap: bool = False
 
 
 def _container_from_profile(profile: dict[str, Any]) -> str:
@@ -397,22 +401,11 @@ def _build_command_with_selection(
         # Software decode fallback — used when hw_decode is off (e.g. after hw tonemap
         # failed and the job was retried with hw_decode=False).
         command = ['ffmpeg', '-vaapi_device', hw_device, '-i', input_path]
-    elif selection.use_qsv and apply_tonemap:
-        # QSV+HDR via VAAPI bridge with hardware decode for full GPU tone mapping.
-        # VAAPI hardware decode produces VAAPI surfaces that tonemap_vaapi (Intel VEBOX)
-        # can process directly without a CPU round-trip. After tone mapping the surface
-        # is mapped to QSV memory with hwmap for encoding.
-        command = [
-            'ffmpeg',
-            '-init_hw_device', f'vaapi=va:{hw_device}',
-            '-init_hw_device', 'qsv=qs@va',
-            '-hwaccel', 'vaapi',
-            '-hwaccel_device', 'va',
-            '-hwaccel_output_format', 'vaapi',
-            '-i', input_path,
-        ]
     elif selection.use_qsv:
-        # QSV via VAAPI bridge (SDR): software decode → hwupload → QSV encode.
+        # All QSV paths (HDR vpp_qsv, HDR CPU-tonemap fallback, SDR) use software
+        # decode via the VAAPI→QSV bridge.  The VAAPI device is needed for QSV
+        # device enumeration; actual decoding happens on the CPU so we never hit
+        # VEBOX or tonemap_vaapi here.
         command = [
             'ffmpeg',
             '-init_hw_device', f'vaapi=va:{hw_device}',
@@ -444,13 +437,24 @@ def _build_command_with_selection(
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
-    elif selection.use_qsv and apply_tonemap:
-        # Full GPU pipeline (HDR+QSV): VAAPI hardware decode → tonemap_vaapi (Intel VEBOX)
-        # → optional scale_vaapi → hwmap to QSV surface → hevc_qsv/h264_qsv/av1_qsv encode.
-        filters = [_VAAPI_TONEMAP_FILTER]
+    elif selection.use_qsv and apply_tonemap and not selection.force_sw_tonemap:
+        # QSV GPU tone mapping via Intel VPP (vpp_qsv=tonemap=1).
+        # SW decode preserves 10-bit HDR pixel data; hwupload moves frames to QSV
+        # surfaces in their native bit depth. vpp_qsv reads the stream's HDR
+        # metadata and performs tone mapping entirely within the QSV pipeline —
+        # no VEBOX (tonemap_vaapi) involved, so DV/HDR10+ content is handled.
+        filters = ['hwupload=extra_hw_frames=64', 'vpp_qsv=tonemap=1']
         if should_scale:
-            filters.append(f'scale_vaapi=-2:{target_height}')
-        filters.extend(['hwmap=derive_device=qsv', 'format=qsv'])
+            filters.append(f'scale_qsv=-1:{target_height}')
+        command.extend(['-vf', ','.join(filters)])
+    elif selection.use_qsv and apply_tonemap:
+        # QSV encode with CPU tone mapping — used when vpp_qsv=tonemap=1 failed
+        # (e.g. driver too old / pre-11th-gen Intel).
+        # SW decode → CPU zscale/tonemap → NV12 → hwupload → QSV encode.
+        filters = list(_HDR_TONEMAP_FILTERS)
+        filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
+        if should_scale:
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
@@ -793,17 +797,9 @@ def _build_resume_command(
         ] + seek_args + ['-i', input_path]
     elif selection.use_vaapi:
         command = ['ffmpeg', '-vaapi_device', hw_device] + seek_args + ['-i', input_path]
-    elif selection.use_qsv and apply_tonemap:
-        # QSV+HDR: VAAPI hardware decode so tonemap_vaapi can run on GPU (Intel VEBOX).
-        command = [
-            'ffmpeg',
-            '-init_hw_device', f'vaapi=va:{hw_device}',
-            '-init_hw_device', 'qsv=qs@va',
-            '-hwaccel', 'vaapi',
-            '-hwaccel_device', 'va',
-            '-hwaccel_output_format', 'vaapi',
-        ] + seek_args + ['-i', input_path]
     elif selection.use_qsv:
+        # All QSV paths use SW decode via the VAAPI→QSV bridge (same as SDR).
+        # vpp_qsv handles GPU tone mapping without VAAPI hw decode.
         command = [
             'ffmpeg',
             '-init_hw_device', f'vaapi=va:{hw_device}',
@@ -830,12 +826,20 @@ def _build_resume_command(
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
-    elif selection.use_qsv and apply_tonemap:
-        # Full GPU pipeline (HDR+QSV): tonemap_vaapi → scale_vaapi → hwmap to QSV → encode.
-        filters = [_VAAPI_TONEMAP_FILTER]
+    elif selection.use_qsv and apply_tonemap and not selection.force_sw_tonemap:
+        # QSV GPU tone mapping via Intel VPP.  SW decode keeps native 10-bit HDR
+        # frames; hwupload pushes them into QSV surfaces; vpp_qsv=tonemap=1 converts
+        # to SDR fully on-GPU without involving VEBOX / tonemap_vaapi.
+        filters = ['hwupload=extra_hw_frames=64', 'vpp_qsv=tonemap=1']
         if should_scale:
-            filters.append(f'scale_vaapi=-2:{target_height}')
-        filters.extend(['hwmap=derive_device=qsv', 'format=qsv'])
+            filters.append(f'scale_qsv=-1:{target_height}')
+        command.extend(['-vf', ','.join(filters)])
+    elif selection.use_qsv and apply_tonemap:
+        # CPU tone-map fallback (vpp_qsv unsupported on this host).
+        filters = list(_HDR_TONEMAP_FILTERS)
+        filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
+        if should_scale:
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
@@ -1055,6 +1059,49 @@ def optimize_video(
             progress_callback,
             should_cancel,
         )
+
+    # If the QSV+HDR vpp_qsv path failed (driver too old, unsupported content, etc.)
+    # retry with the same QSV encoder but use CPU (zscale) tone mapping instead.
+    # This is slower than vpp_qsv but still keeps QSV encoding; it is better than
+    # dropping to VAAPI entirely when QSV encoding itself is healthy.
+    _apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
+    if (
+        return_code is not None and return_code != 0 and not was_cancelled
+        and selection.use_qsv and _apply_tonemap and not selection.force_sw_tonemap
+    ):
+        sw_tonemap_selection = EncoderSelection(
+            codec=selection.codec,
+            encoder=selection.encoder,
+            use_qsv=True,
+            use_vaapi=False,
+            force_sw_tonemap=True,
+        )
+        logger.warning(
+            '[%s] QSV vpp_qsv tonemap failed (rc=%s); retrying with CPU tone mapping + %r encode',
+            job_tag, return_code, selection.encoder,
+        )
+        if not can_resume:
+            try:
+                _ensure_clean_workspace(workspace_path)
+            except OSError:
+                pass
+        if can_resume:
+            ffmpeg_command = _build_resume_command(
+                input_path, resume_position_seconds, str(resume_segment_path), profile, sw_tonemap_selection,
+            )
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+            )
+        else:
+            ffmpeg_command = _build_command_with_selection(
+                input_path, str(partial_output_path), profile, sw_tonemap_selection,
+            )
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id, ffmpeg_command, duration, progress_callback, should_cancel,
+            )
+        selection = sw_tonemap_selection
+        metrics.used_fallback = True
+        metrics.fallback_reason = 'qsv_vpp_tonemap_failed_sw_tonemap'
 
     if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv:
         vaapi_encoder = _QSV_VAAPI_FALLBACK.get(selection.encoder)
