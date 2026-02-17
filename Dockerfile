@@ -29,6 +29,7 @@ RUN set -eux; \
         ffmpeg \
         libvpl2 \
         intel-media-va-driver \
+        intel-gpu-tools \
         libva-drm2; \
     for pkg in libmfx-gen1.2 libmfx-gen1 libmfx1; do \
         if apt-cache show "$pkg" >/dev/null 2>&1; then \
