@@ -76,7 +76,7 @@ const QUALITY_PRESETS = {
     },
   },
   speed: {
-    label: 'Fast encode',
+    label: 'Fast Encode',
     profile: {
       codec: 'h264',
       bitrate_mode: 'cbr',
@@ -96,7 +96,6 @@ function progressFromJob(job) {
   if (Number.isFinite(reported) && reported >= 0) {
     return Math.max(0, Math.min(100, Math.round(reported)));
   }
-
   if (normalized === 'complete' || normalized === 'completed') return 100;
   if (normalized === 'running' || normalized === 'processing') return 0;
   if (normalized === 'failed') return 100;
@@ -145,11 +144,7 @@ function sortedJobsForDisplay(jobs) {
   return [...jobs].sort((a, b) => {
     const rankDiff = jobSortRank(a) - jobSortRank(b);
     if (rankDiff !== 0) return rankDiff;
-
-    if (jobSortRank(a) === 1) {
-      return a.id - b.id;
-    }
-
+    if (jobSortRank(a) === 1) return a.id - b.id;
     return b.id - a.id;
   });
 }
@@ -177,70 +172,159 @@ function formatEta(etaSeconds) {
 
 function validateLibraryDraft(draft, libraryEnabled) {
   const errors = {};
-
-  if (!libraryEnabled) {
-    return errors;
-  }
+  if (!libraryEnabled) return errors;
 
   if (!Number.isInteger(draft.target_resolution) || draft.target_resolution < 1) {
     errors.target_resolution = 'Target resolution must be a positive integer.';
   }
-
   if (!Number.isInteger(draft.minimum_source_resolution) || draft.minimum_source_resolution < 1) {
     errors.minimum_source_resolution = 'Minimum source resolution must be a positive integer.';
   } else if (!draft.hdr_only && Number.isInteger(draft.target_resolution) && draft.minimum_source_resolution <= draft.target_resolution) {
     errors.minimum_source_resolution = 'Minimum source resolution must be higher than target resolution.';
   }
-
   if (draft.bitrate_mode === 'vbr_crf') {
     if (!Number.isInteger(draft.crf) || draft.crf < 1) {
       errors.crf = 'CRF must be a positive integer.';
     }
   }
-
   if (draft.bitrate_mode === 'cbr') {
     if (!Number.isInteger(draft.bitrate_mbps) || draft.bitrate_mbps < 1) {
       errors.bitrate_mbps = 'Bitrate must be at least 1 Mbps.';
     }
   }
-
   if (!Number.isInteger(draft.max_workers) || draft.max_workers < 1) {
     errors.max_workers = 'Max workers must be at least 1.';
   }
-
   if (draft.schedule_enabled) {
     if (!Number.isInteger(draft.schedule_start_hour) || draft.schedule_start_hour < 0 || draft.schedule_start_hour > 23) {
       errors.schedule_start_hour = 'Schedule start must be between 0 and 23.';
     }
-
     if (!Number.isInteger(draft.schedule_end_hour) || draft.schedule_end_hour < 0 || draft.schedule_end_hour > 23) {
       errors.schedule_end_hour = 'Schedule end must be between 0 and 23.';
     }
   }
-
   if (draft.av1_fallback_codec === 'av1') {
     errors.av1_fallback_codec = 'AV1 fallback must be HEVC or H.264.';
   }
-
   return errors;
 }
 
-
 function validateLibraryForm(draft) {
   const errors = {};
-
-  if (!draft.name?.trim()) {
-    errors.name = 'Library name is required.';
-  }
-
+  if (!draft.name?.trim()) errors.name = 'Library name is required.';
   if (!draft.path?.trim()) {
     errors.path = 'Library path is required.';
   } else if (!draft.path.startsWith('/')) {
     errors.path = 'Library path must be absolute.';
   }
-
   return errors;
 }
+
+// ── Small reusable UI primitives ─────────────────────────────────────────────
+
+function SectionCard({ children, className = '' }) {
+  return (
+    <div className={`rounded-xl border border-slate-800 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/40 ${className}`}>
+      {children}
+    </div>
+  );
+}
+
+function SectionTitle({ children }) {
+  return (
+    <h2 className="mb-4 text-xs font-semibold uppercase tracking-widest text-slate-400">{children}</h2>
+  );
+}
+
+function FormField({ label, hint, error, children, span2 = false }) {
+  return (
+    <label className={`flex flex-col gap-1.5 ${span2 ? 'md:col-span-2' : ''}`}>
+      <span className="text-sm font-medium text-slate-200">{label}</span>
+      {hint && <p className="text-xs text-slate-500">{hint}</p>}
+      {children}
+      {error && <p className="text-xs text-red-400">{error}</p>}
+    </label>
+  );
+}
+
+function TextInput({ className = '', ...props }) {
+  return (
+    <input
+      className={`w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none transition-all duration-150 focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30 ${className}`}
+      {...props}
+    />
+  );
+}
+
+function SelectInput({ children, className = '', ...props }) {
+  return (
+    <select
+      className={`w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100 outline-none transition-all duration-150 focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30 ${className}`}
+      {...props}
+    >
+      {children}
+    </select>
+  );
+}
+
+function Btn({ variant = 'primary', size = 'md', className = '', children, ...props }) {
+  const base = 'inline-flex items-center justify-center rounded-lg font-semibold transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-offset-slate-900 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95';
+  const sizes = {
+    sm: 'px-3 py-1.5 text-xs',
+    md: 'px-4 py-2 text-sm',
+    lg: 'px-5 py-2.5 text-sm',
+  };
+  const variants = {
+    primary: 'bg-cyan-500 text-slate-950 hover:bg-cyan-400 focus:ring-cyan-500',
+    danger: 'bg-rose-600 text-white hover:bg-rose-500 focus:ring-rose-500',
+    warning: 'bg-amber-500 text-slate-950 hover:bg-amber-400 focus:ring-amber-500',
+    success: 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 focus:ring-emerald-500',
+    secondary: 'border border-slate-600 bg-slate-800 text-slate-100 hover:bg-slate-700 focus:ring-slate-500',
+    violet: 'bg-violet-500 text-slate-950 hover:bg-violet-400 focus:ring-violet-500',
+    indigo: 'bg-indigo-500 text-slate-950 hover:bg-indigo-400 focus:ring-indigo-500',
+  };
+  return (
+    <button type="button" className={`${base} ${sizes[size]} ${variants[variant]} ${className}`} {...props}>
+      {children}
+    </button>
+  );
+}
+
+function Toggle({ checked, onChange, label }) {
+  return (
+    <label className="flex cursor-pointer items-center gap-3">
+      <div className="relative">
+        <input type="checkbox" className="sr-only" checked={checked} onChange={onChange} />
+        <div className={`h-5 w-9 rounded-full transition-colors duration-200 ${checked ? 'bg-cyan-500' : 'bg-slate-700'}`} />
+        <div className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${checked ? 'translate-x-4' : 'translate-x-0'}`} />
+      </div>
+      {label && <span className="text-sm text-slate-200">{label}</span>}
+    </label>
+  );
+}
+
+function StatusDot({ status }) {
+  const colors = {
+    online: 'bg-emerald-400 shadow-emerald-400/50',
+    reconnecting: 'bg-amber-400 shadow-amber-400/50',
+    offline: 'bg-red-400 shadow-red-400/50',
+    connecting: 'bg-slate-400 shadow-slate-400/50',
+  };
+  const labels = {
+    online: 'Live',
+    reconnecting: 'Reconnecting',
+    offline: 'Offline (polling)',
+    connecting: 'Connecting',
+  };
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={`inline-block h-2 w-2 rounded-full shadow-sm ${colors[status] ?? colors.connecting} ${status === 'online' ? 'animate-pulse' : ''}`} />
+      <span className="text-xs text-slate-400">{labels[status] ?? status}</span>
+    </div>
+  );
+}
+
+// ── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [activePage, setActivePage] = useState('dashboard');
@@ -269,7 +353,6 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const [availableEncodersByCodec, setAvailableEncodersByCodec] = useState({});
   const [jobsPage, setJobsPage] = useState(1);
-
   const [nowHour, setNowHour] = useState(() => new Date().getHours());
 
   const wsRef = useRef();
@@ -284,7 +367,6 @@ export default function App() {
     [jobs],
   );
 
-
   const sortedJobs = useMemo(() => sortedJobsForDisplay(jobs), [jobs]);
 
   const totalJobPages = useMemo(
@@ -298,9 +380,7 @@ export default function App() {
   }, [sortedJobs, jobsPage]);
 
   useEffect(() => {
-    if (jobsPage > totalJobPages) {
-      setJobsPage(totalJobPages);
-    }
+    if (jobsPage > totalJobPages) setJobsPage(totalJobPages);
   }, [jobsPage, totalJobPages]);
 
   const selectedLibrary = useMemo(
@@ -323,7 +403,6 @@ export default function App() {
       ) {
         state = 'Paused by schedule';
       }
-
       return { library, state, queue: libraryQueueCount(library, jobs) };
     });
   }, [jobs, libraries, libraryProfiles, nowHour]);
@@ -353,18 +432,15 @@ export default function App() {
     try {
       const nextLibraries = await fetchLibraries();
       setLibraries(nextLibraries);
-
       if (!selectedLibraryId && nextLibraries.length > 0) {
         setSelectedLibraryId(nextLibraries[0].id);
       }
-
       const profileEntries = await Promise.all(
         nextLibraries.map(async (library) => {
           const profile = await fetchLibraryProfile(library.id);
           return [library.id, profile];
         }),
       );
-
       setLibraryProfiles(Object.fromEntries(profileEntries));
       setError('');
     } catch (refreshError) {
@@ -375,26 +451,18 @@ export default function App() {
   function pushToast(messageText, tone = 'info') {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setToasts((prev) => [...prev, { id, message: messageText, tone }]);
-
     const timer = window.setTimeout(() => {
       setToasts((prev) => prev.filter((toast) => toast.id !== id));
       delete toastTimersRef.current[id];
     }, 5000);
-
     toastTimersRef.current[id] = timer;
   }
 
   function mergeJobUpdate(nextJob) {
     setJobs((prevJobs) => {
-      if (isAbortedJob(nextJob)) {
-        return prevJobs.filter((job) => job.id !== nextJob.id);
-      }
-
+      if (isAbortedJob(nextJob)) return prevJobs.filter((job) => job.id !== nextJob.id);
       const existingIndex = prevJobs.findIndex((job) => job.id === nextJob.id);
-      if (existingIndex === -1) {
-        return [nextJob, ...prevJobs];
-      }
-
+      if (existingIndex === -1) return [nextJob, ...prevJobs];
       const updatedJobs = [...prevJobs];
       updatedJobs[existingIndex] = { ...updatedJobs[existingIndex], ...nextJob };
       return updatedJobs;
@@ -404,20 +472,14 @@ export default function App() {
   function wsUrlWithToken(token) {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const base = import.meta.env.VITE_API_BASE ?? '';
-
     if (base) {
       const normalizedBase = base.startsWith('http') ? base : `${window.location.origin}${base}`;
       const url = new URL(`${normalizedBase}${WS_PATH}`);
-      if (token) {
-        url.searchParams.set('token', token);
-      }
+      if (token) url.searchParams.set('token', token);
       return url.toString().replace(/^http/, 'ws');
     }
-
     const url = new URL(`${protocol}//${window.location.host}${WS_PATH}`);
-    if (token) {
-      url.searchParams.set('token', token);
-    }
+    if (token) url.searchParams.set('token', token);
     return url.toString();
   }
 
@@ -432,14 +494,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!message) {
-      return undefined;
-    }
-
-    const timer = window.setTimeout(() => {
-      setMessage('');
-    }, MESSAGE_DISMISS_MS);
-
+    if (!message) return undefined;
+    const timer = window.setTimeout(() => setMessage(''), MESSAGE_DISMISS_MS);
     return () => window.clearTimeout(timer);
   }, [message]);
 
@@ -461,10 +517,7 @@ export default function App() {
   }, [selectedLibraryId, selectedLibraryProfile]);
 
   useEffect(() => {
-    if (!fallbackPollingEnabled) {
-      return undefined;
-    }
-
+    if (!fallbackPollingEnabled) return undefined;
     const timer = setInterval(refreshAll, FALLBACK_POLL_MS);
     return () => clearInterval(timer);
   }, [fallbackPollingEnabled]);
@@ -473,21 +526,12 @@ export default function App() {
     intentionallyClosedRef.current = false;
 
     function clearTimers() {
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current);
-        reconnectTimerRef.current = undefined;
-      }
-      if (fallbackTimerRef.current) {
-        clearTimeout(fallbackTimerRef.current);
-        fallbackTimerRef.current = undefined;
-      }
+      if (reconnectTimerRef.current) { clearTimeout(reconnectTimerRef.current); reconnectTimerRef.current = undefined; }
+      if (fallbackTimerRef.current) { clearTimeout(fallbackTimerRef.current); fallbackTimerRef.current = undefined; }
     }
 
     function scheduleFallbackPolling() {
-      if (fallbackTimerRef.current) {
-        return;
-      }
-
+      if (fallbackTimerRef.current) return;
       fallbackTimerRef.current = setTimeout(() => {
         setFallbackPollingEnabled(true);
         setConnectionStatus('offline');
@@ -495,15 +539,9 @@ export default function App() {
     }
 
     function scheduleReconnect(connectFn) {
-      if (intentionallyClosedRef.current) {
-        return;
-      }
-
+      if (intentionallyClosedRef.current) return;
       reconnectAttemptsRef.current += 1;
-      const delay = Math.min(
-        RECONNECT_BASE_DELAY_MS * (2 ** (reconnectAttemptsRef.current - 1)),
-        RECONNECT_MAX_DELAY_MS,
-      );
+      const delay = Math.min(RECONNECT_BASE_DELAY_MS * (2 ** (reconnectAttemptsRef.current - 1)), RECONNECT_MAX_DELAY_MS);
       setConnectionStatus('reconnecting');
       reconnectTimerRef.current = setTimeout(connectFn, delay);
     }
@@ -518,70 +556,30 @@ export default function App() {
           reconnectAttemptsRef.current = 0;
           setConnectionStatus('online');
           setFallbackPollingEnabled(false);
-          if (fallbackTimerRef.current) {
-            clearTimeout(fallbackTimerRef.current);
-            fallbackTimerRef.current = undefined;
-          }
-          // Re-sync on every (re)connect to catch jobs or metrics that changed
-          // while the socket was connecting or during a reconnect gap.
+          if (fallbackTimerRef.current) { clearTimeout(fallbackTimerRef.current); fallbackTimerRef.current = undefined; }
           refreshAll();
         };
 
         websocket.onmessage = (event) => {
           const payload = JSON.parse(event.data);
-          if (payload.type === 'job_update') {
-            mergeJobUpdate(payload.data);
-            return;
-          }
-
-          if (payload.type === 'metrics_update') {
-            setMetrics(payload.data);
-            return;
-          }
-
-          if (payload.type === 'library_update') {
-            refreshLibrariesAndProfiles();
-            return;
-          }
-
+          if (payload.type === 'job_update') { mergeJobUpdate(payload.data); return; }
+          if (payload.type === 'metrics_update') { setMetrics(payload.data); return; }
+          if (payload.type === 'library_update') { refreshLibrariesAndProfiles(); return; }
           if (payload.type === 'notification') {
-            if (payload.data?.message === 'queue_paused_low_disk') {
-              pushToast('Queue paused due to low disk.', 'warn');
-            }
+            if (payload.data?.message === 'queue_paused_low_disk') pushToast('Queue paused due to low disk.', 'warn');
             return;
           }
-
           if (payload.type === 'system_event') {
-            if (payload.data?.event === 'job_aborted') {
-              pushToast('Aborted job.', 'error');
-              return;
-            }
-
-            if (payload.data?.event === 'queue_paused' && payload.data?.reason === 'low_disk') {
-              pushToast('Queue paused due to low disk.', 'warn');
-              return;
-            }
-
-            if (payload.data?.event === 'queue_paused') {
-              pushToast('Queue paused.', 'warn');
-              return;
-            }
-
-            if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') {
-              pushToast('Recovery ran on startup.', 'info');
-            }
+            if (payload.data?.event === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
+            if (payload.data?.event === 'queue_paused' && payload.data?.reason === 'low_disk') { pushToast('Queue paused due to low disk.', 'warn'); return; }
+            if (payload.data?.event === 'queue_paused') { pushToast('Queue paused.', 'warn'); return; }
+            if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') pushToast('Recovery ran on startup.', 'info');
           }
         };
 
-        websocket.onerror = () => {
-          websocket.close();
-        };
-
+        websocket.onerror = () => websocket.close();
         websocket.onclose = () => {
-          if (intentionallyClosedRef.current) {
-            return;
-          }
-
+          if (intentionallyClosedRef.current) return;
           scheduleFallbackPolling();
           scheduleReconnect(connectWebSocket);
         };
@@ -598,36 +596,24 @@ export default function App() {
       clearTimers();
       Object.values(toastTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
       toastTimersRef.current = {};
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = undefined;
-      }
+      if (wsRef.current) { wsRef.current.close(); wsRef.current = undefined; }
     };
   }, []);
 
   async function handleJobAction(action, jobId) {
     try {
-      if (action === 'cancel') {
-        await cancelJob(jobId);
-      } else if (action === 'retry') {
-        await retryJob(jobId);
-      } else if (action === 'pause') {
-        await pauseJob(jobId);
-      } else if (action === 'resume') {
-        await resumeJob(jobId);
-      } else if (action === 'start') {
-        await startJob(jobId);
-      } else if (action === 'abort') {
-        await abortJob(jobId);
-      } else if (action === 'remove') {
-        await deleteJob(jobId);
-      }
+      if (action === 'cancel') await cancelJob(jobId);
+      else if (action === 'retry') await retryJob(jobId);
+      else if (action === 'pause') await pauseJob(jobId);
+      else if (action === 'resume') await resumeJob(jobId);
+      else if (action === 'start') await startJob(jobId);
+      else if (action === 'abort') await abortJob(jobId);
+      else if (action === 'remove') await deleteJob(jobId);
       await refreshAll();
     } catch (actionError) {
       setError(actionError.message || 'Job action failed.');
     }
   }
-
 
   async function handleAbortAllJobs() {
     try {
@@ -639,7 +625,6 @@ export default function App() {
       setError(actionError.message || 'Abort all failed.');
     }
   }
-
 
   async function handleRemoveAllJobs() {
     try {
@@ -654,34 +639,21 @@ export default function App() {
 
   async function handleQueueAction(action) {
     try {
-      if (action === 'pause') {
-        await pauseQueue();
-        setQueuePaused(true);
-      } else {
-        await resumeQueue();
-        setQueuePaused(false);
-      }
+      if (action === 'pause') { await pauseQueue(); setQueuePaused(true); }
+      else { await resumeQueue(); setQueuePaused(false); }
       await refreshAll();
     } catch (actionError) {
       setError(actionError.message || 'Queue action failed.');
     }
   }
 
-
   async function handleCreateLibrary() {
     const nextErrors = validateLibraryForm(libraryDraft);
     setLibraryFormErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) {
-      return;
-    }
-
+    if (Object.keys(nextErrors).length > 0) return;
     setSavingLibrary(true);
     try {
-      const created = await createLibrary({
-        name: libraryDraft.name.trim(),
-        path: libraryDraft.path.trim(),
-        enabled: libraryDraft.enabled,
-      });
+      const created = await createLibrary({ name: libraryDraft.name.trim(), path: libraryDraft.path.trim(), enabled: libraryDraft.enabled });
       await refreshLibrariesAndProfiles();
       setSelectedLibraryId(created.id);
       setLibraryDraft({ name: '', path: '/media/', enabled: true });
@@ -701,12 +673,7 @@ export default function App() {
       await deleteLibrary(libraryId);
       const remaining = libraries.filter((library) => library.id !== libraryId);
       setLibraries(remaining);
-      setSelectedLibraryId((prev) => {
-        if (prev !== libraryId) {
-          return prev;
-        }
-        return remaining[0]?.id ?? null;
-      });
+      setSelectedLibraryId((prev) => prev !== libraryId ? prev : (remaining[0]?.id ?? null));
       setMessage('Library deleted.');
       setError('');
       await refreshLibrariesAndProfiles();
@@ -718,23 +685,13 @@ export default function App() {
   }
 
   async function handleSaveLibraryDetails() {
-    if (!selectedLibrary) {
-      return;
-    }
-
+    if (!selectedLibrary) return;
     const nextErrors = validateLibraryForm(selectedLibrary);
     setLibraryFormErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) {
-      return;
-    }
-
+    if (Object.keys(nextErrors).length > 0) return;
     setSavingLibrary(true);
     try {
-      const updated = await updateLibrary(selectedLibrary.id, {
-        name: selectedLibrary.name.trim(),
-        path: selectedLibrary.path.trim(),
-        enabled: selectedLibrary.enabled,
-      });
+      const updated = await updateLibrary(selectedLibrary.id, { name: selectedLibrary.name.trim(), path: selectedLibrary.path.trim(), enabled: selectedLibrary.enabled });
       setLibraries((prev) => prev.map((library) => (library.id === updated.id ? updated : library)));
       setLibraryFormErrors({});
       setMessage('Library details saved.');
@@ -773,16 +730,10 @@ export default function App() {
   }
 
   async function handleSaveLibraryProfile() {
-    if (!selectedLibrary || !profileDraft) {
-      return;
-    }
-
+    if (!selectedLibrary || !profileDraft) return;
     const nextErrors = validateLibraryDraft(profileDraft, selectedLibrary.enabled);
     setProfileErrors(nextErrors);
-    if (Object.keys(nextErrors).length > 0) {
-      return;
-    }
-
+    if (Object.keys(nextErrors).length > 0) return;
     setSavingProfile(true);
     try {
       const updated = await updateLibraryProfile(selectedLibrary.id, profileDraft);
@@ -812,9 +763,8 @@ export default function App() {
 
   async function saveNotificationSettings() {
     if (!notificationSettings) return;
-
+    setSavingSettings(true);
     try {
-      setSavingSettings(true);
       const updated = await updateNotificationSettings(notificationSettings);
       setNotificationSettings(updated);
       setMessage('Notification settings saved.');
@@ -869,25 +819,28 @@ export default function App() {
     }
   }
 
+  // ── Render ──────────────────────────────────────────────────────────────────
+
   return (
-    <main className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 p-6 text-slate-100">
-      <div className="mx-auto max-w-7xl space-y-6">
-        <header className="rounded-xl border border-slate-800 bg-slate-900/70 p-4 shadow-lg shadow-slate-950/40 backdrop-blur flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+    <main className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 p-4 md:p-6 text-slate-100">
+      <div className="mx-auto max-w-7xl space-y-5">
+
+        {/* Header */}
+        <header className="flex flex-col gap-3 rounded-2xl border border-slate-800/80 bg-slate-900/70 px-5 py-3 shadow-xl shadow-slate-950/50 backdrop-blur-sm md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
-            <img src="/api/branding/logo" alt="Optimizarr" className="h-14 w-auto" />
-            <h1 className="text-3xl font-bold text-cyan-200 sr-only">Optimizarr</h1>
+            <img src="/api/branding/logo" alt="Optimizarr" className="h-12 w-auto drop-shadow-md" />
+            <h1 className="sr-only text-2xl font-bold text-cyan-200">Optimizarr</h1>
           </div>
-          <p className="rounded border border-slate-700 px-3 py-1 text-xs text-slate-300">
-            WS: {connectionStatus}
-            {fallbackPollingEnabled ? ' (polling fallback active)' : ''}
-          </p>
-          <nav className="flex gap-2 rounded-lg border border-slate-800 bg-slate-900 p-1">
+          <StatusDot status={connectionStatus} />
+          <nav className="flex gap-1 rounded-xl border border-slate-800 bg-slate-950/60 p-1">
             {Object.entries(PAGE_KEYS).map(([key, label]) => (
               <button
                 key={key}
                 type="button"
-                className={`rounded-md px-4 py-2 text-sm ${
-                  activePage === key ? 'bg-cyan-500 text-slate-950' : 'text-slate-300 hover:bg-slate-800'
+                className={`rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${
+                  activePage === key
+                    ? 'bg-cyan-500 text-slate-950 shadow-sm shadow-cyan-500/30'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
                 }`}
                 onClick={() => setActivePage(key)}
               >
@@ -897,19 +850,29 @@ export default function App() {
           </nav>
         </header>
 
-        {error && <p className="rounded bg-red-900/50 p-3 text-red-200">{error}</p>}
-        {message && <p className="rounded bg-emerald-900/50 p-3 text-emerald-200">{message}</p>}
+        {/* Inline alerts */}
+        {error && (
+          <div className="animate-fade-in rounded-xl border border-red-800/60 bg-red-950/60 px-4 py-3 text-sm text-red-300">
+            {error}
+          </div>
+        )}
+        {message && (
+          <div className="animate-fade-in rounded-xl border border-emerald-800/60 bg-emerald-950/60 px-4 py-3 text-sm text-emerald-300">
+            {message}
+          </div>
+        )}
 
-        <div className="pointer-events-none fixed right-4 top-4 z-50 space-y-2">
+        {/* Toast stack */}
+        <div className="pointer-events-none fixed right-4 top-4 z-50 flex flex-col gap-2">
           {toasts.map((toast) => (
             <div
               key={toast.id}
-              className={`rounded border px-4 py-2 text-sm shadow-lg ${
+              className={`animate-slide-in-right rounded-xl border px-4 py-2.5 text-sm shadow-xl backdrop-blur-sm ${
                 toast.tone === 'error'
-                  ? 'border-red-700 bg-red-900/90 text-red-100'
+                  ? 'border-red-700/60 bg-red-950/90 text-red-200'
                   : toast.tone === 'warn'
-                    ? 'border-amber-600 bg-amber-900/90 text-amber-100'
-                    : 'border-cyan-700 bg-slate-900/95 text-cyan-100'
+                    ? 'border-amber-600/60 bg-amber-950/90 text-amber-200'
+                    : 'border-cyan-700/60 bg-slate-900/95 text-cyan-200'
               }`}
             >
               {toast.message}
@@ -917,244 +880,217 @@ export default function App() {
           ))}
         </div>
 
+        {/* ── Dashboard ──────────────────────────────────────────────────────── */}
         {activePage === 'dashboard' && (
-          <section className="space-y-4">
+          <section className="animate-fade-in space-y-5">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
-              <StatCard label="GPU %" value={`${metrics?.gpu_video_percent ?? 0}%`} />
-              <StatCard label="CPU %" value={`${metrics?.cpu_percent ?? 0}%`} />
-              <StatCard label="RAM %" value={`${metrics?.ram_percent ?? 0}%`} />
-              <StatCard label="Active jobs" value={metrics?.active_jobs ?? 0} />
-              <StatCard label="Queue count" value={queueCount} />
+              <StatCard label="GPU" value={`${metrics?.gpu_video_percent ?? 0}%`} />
+              <StatCard label="CPU" value={`${metrics?.cpu_percent ?? 0}%`} />
+              <StatCard label="RAM" value={`${metrics?.ram_percent ?? 0}%`} />
+              <StatCard label="Active Jobs" value={metrics?.active_jobs ?? 0} />
+              <StatCard label="Queue" value={queueCount} />
               <StatCard label="Libraries" value={libraries.length} />
             </div>
 
-            <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg shadow-slate-950/40">
-              <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Per-library runtime state</h2>
-              <div className="space-y-2 text-sm">
+            <SectionCard>
+              <SectionTitle>Library Status</SectionTitle>
+              <div className="space-y-2">
+                {libraryRuntimeStates.length === 0 && (
+                  <p className="text-sm text-slate-500">No libraries configured yet.</p>
+                )}
                 {libraryRuntimeStates.map(({ library, state, queue }) => (
-                  <div key={library.id} className="flex items-center justify-between rounded border border-slate-800 bg-slate-950/40 p-3">
+                  <div key={library.id} className="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/40 px-4 py-3 transition-colors duration-150 hover:border-slate-700/60">
                     <div>
                       <p className="font-medium text-cyan-200">{library.name}</p>
-                      <p className="text-xs text-slate-400">{library.path}</p>
+                      <p className="mt-0.5 text-xs text-slate-500">{library.path}</p>
                     </div>
                     <div className="text-right">
-                      <p>{state}</p>
-                      <p className="text-xs text-slate-400">Queue: {queue}</p>
+                      <p className="text-sm text-slate-300">{state}</p>
+                      <p className="mt-0.5 text-xs text-slate-500">Queue: {queue}</p>
                     </div>
                   </div>
                 ))}
               </div>
-            </div>
+            </SectionCard>
           </section>
         )}
 
+        {/* ── Libraries ──────────────────────────────────────────────────────── */}
         {activePage === 'libraries' && (
-          <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
-            <div className="space-y-4 rounded-xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg shadow-slate-950/40">
-              <div className="rounded border border-slate-700 bg-slate-950/50 p-3">
-                <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-300">Add library</h2>
-                <div className="grid gap-3 md:grid-cols-2">
-                  <label className="space-y-1 text-sm md:col-span-2">
-                    <span>Name</span>
-                    <input
-                      type="text"
-                      className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                      value={libraryDraft.name}
-                      onChange={(event) => setLibraryDraft((prev) => ({ ...prev, name: event.target.value }))}
-                    />
-                    {libraryFormErrors.name && <p className="text-xs text-red-300">{libraryFormErrors.name}</p>}
-                  </label>
-                  <label className="space-y-1 text-sm md:col-span-2">
-                    <span>Path</span>
-                    <input
-                      type="text"
-                      className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                      value={libraryDraft.path}
-                      onChange={(event) => setLibraryDraft((prev) => ({ ...prev, path: event.target.value }))}
-                    />
-                    {libraryFormErrors.path && <p className="text-xs text-red-300">{libraryFormErrors.path}</p>}
-                  </label>
-                  <label className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={libraryDraft.enabled}
-                      onChange={(event) => setLibraryDraft((prev) => ({ ...prev, enabled: event.target.checked }))}
-                    />
-                    Enabled
-                  </label>
-                </div>
-                <button
-                  type="button"
-                  className="mt-3 rounded bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-70"
-                  disabled={savingLibrary}
-                  onClick={handleCreateLibrary}
-                >
-                  {savingLibrary ? 'Adding…' : 'Add library'}
-                </button>
-              </div>
+          <section className="animate-fade-in grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
 
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Libraries</h2>
-              <div className="space-y-2">
-                {libraries.map((library) => (
-                  <div
-                    key={library.id}
-                    className={`rounded border p-3 ${
-                      selectedLibraryId === library.id ? 'border-cyan-500 bg-slate-950' : 'border-slate-800 bg-slate-950/40'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <button type="button" className="text-left" onClick={() => setSelectedLibraryId(library.id)}>
-                        <p className="font-medium text-cyan-200">{library.name}</p>
-                        <p className="text-xs text-slate-400">{library.path}</p>
-                        <p className="text-xs text-slate-300">Queue: {libraryQueueCount(library, jobs)}</p>
-                      </button>
-                      <div className="flex items-center gap-2">
-                        <label className="text-xs text-slate-300">
-                          <input
-                            type="checkbox"
+            {/* Left: list + add form */}
+            <div className="space-y-4">
+              <SectionCard>
+                <SectionTitle>Add Library</SectionTitle>
+                <div className="grid gap-3 md:grid-cols-2">
+                  <FormField label="Name" error={libraryFormErrors.name} span2>
+                    <TextInput
+                      type="text"
+                      value={libraryDraft.name}
+                      onChange={(e) => setLibraryDraft((prev) => ({ ...prev, name: e.target.value }))}
+                      placeholder="My Movies"
+                    />
+                  </FormField>
+                  <FormField label="Path" error={libraryFormErrors.path} span2>
+                    <TextInput
+                      type="text"
+                      value={libraryDraft.path}
+                      onChange={(e) => setLibraryDraft((prev) => ({ ...prev, path: e.target.value }))}
+                      placeholder="/media/movies"
+                    />
+                  </FormField>
+                  <div className="md:col-span-2">
+                    <Toggle
+                      checked={libraryDraft.enabled}
+                      onChange={(e) => setLibraryDraft((prev) => ({ ...prev, enabled: e.target.checked }))}
+                      label="Enabled"
+                    />
+                  </div>
+                </div>
+                <Btn variant="primary" className="mt-4" disabled={savingLibrary} onClick={handleCreateLibrary}>
+                  {savingLibrary ? 'Adding…' : 'Add Library'}
+                </Btn>
+              </SectionCard>
+
+              <SectionCard>
+                <SectionTitle>Libraries</SectionTitle>
+                <div className="space-y-2">
+                  {libraries.map((library) => (
+                    <div
+                      key={library.id}
+                      className={`rounded-lg border p-3 transition-all duration-150 ${
+                        selectedLibraryId === library.id
+                          ? 'border-cyan-500/60 bg-cyan-950/20'
+                          : 'border-slate-800/60 bg-slate-950/30 hover:border-slate-700/60'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setSelectedLibraryId(library.id)}>
+                          <p className="font-medium text-cyan-200 truncate">{library.name}</p>
+                          <p className="mt-0.5 text-xs text-slate-500 truncate">{library.path}</p>
+                          <p className="mt-0.5 text-xs text-slate-400">Queue: {libraryQueueCount(library, jobs)}</p>
+                        </button>
+                        <div className="flex shrink-0 items-center gap-2">
+                          <Toggle
                             checked={library.enabled}
-                            onChange={(event) => handleLibraryToggle(library.id, event.target.checked)}
-                            className="mr-1"
+                            onChange={(e) => handleLibraryToggle(library.id, e.target.checked)}
                           />
-                          enabled
-                        </label>
-                        <button
-                          type="button"
-                          className="rounded bg-cyan-600 px-2 py-1 text-xs font-semibold text-slate-950 hover:bg-cyan-500 disabled:opacity-60"
-                          disabled={Boolean(scanningLibraries[library.id])}
-                          onClick={() => handleLibraryScan(library.id)}
-                        >
-                          {scanningLibraries[library.id] ? 'Scanning…' : 'Scan'}
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded bg-rose-600 px-2 py-1 text-xs font-semibold text-white hover:bg-rose-500 disabled:opacity-60"
-                          disabled={deletingLibraryId === library.id}
-                          onClick={() => handleDeleteLibrary(library.id)}
-                        >
-                          {deletingLibraryId === library.id ? 'Deleting…' : 'Delete'}
-                        </button>
+                          <Btn size="sm" variant="secondary" disabled={Boolean(scanningLibraries[library.id])} onClick={() => handleLibraryScan(library.id)}>
+                            {scanningLibraries[library.id] ? 'Scanning…' : 'Scan'}
+                          </Btn>
+                          <Btn size="sm" variant="danger" disabled={deletingLibraryId === library.id} onClick={() => handleDeleteLibrary(library.id)}>
+                            {deletingLibraryId === library.id ? 'Deleting…' : 'Delete'}
+                          </Btn>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </SectionCard>
+            </div>
+
+            {/* Right: profile editor */}
+            <SectionCard>
+              {!selectedLibrary || !profileDraft ? (
+                <p className="text-sm text-slate-400">Select a library to edit its encoding profile.</p>
+              ) : (
+                <div className="space-y-5">
+                  {/* Library details */}
+                  <div>
+                    <SectionTitle>Library Details</SectionTitle>
+                    <div className="space-y-3">
+                      <FormField label="Name">
+                        <TextInput
+                          type="text"
+                          value={selectedLibrary.name}
+                          onChange={(e) => setLibraries((prev) => prev.map((lib) => lib.id === selectedLibrary.id ? { ...lib, name: e.target.value } : lib))}
+                        />
+                      </FormField>
+                      <FormField label="Path">
+                        <TextInput
+                          type="text"
+                          value={selectedLibrary.path}
+                          onChange={(e) => setLibraries((prev) => prev.map((lib) => lib.id === selectedLibrary.id ? { ...lib, path: e.target.value } : lib))}
+                        />
+                      </FormField>
+                      <p className="text-xs text-slate-400">
+                        Status: <span className="text-slate-200">{libraryRuntimeStates.find((item) => item.library.id === selectedLibrary.id)?.state}</span>
+                      </p>
+                      <div className="flex flex-wrap gap-2">
+                        <Btn variant="primary" disabled={savingLibrary} onClick={handleSaveLibraryDetails}>
+                          {savingLibrary ? 'Saving…' : 'Save Details'}
+                        </Btn>
+                        <Btn variant="danger" disabled={deletingLibraryId === selectedLibrary.id} onClick={() => handleDeleteLibrary(selectedLibrary.id)}>
+                          {deletingLibraryId === selectedLibrary.id ? 'Deleting…' : 'Delete Library'}
+                        </Btn>
                       </div>
                     </div>
                   </div>
-                ))}
-              </div>
-            </div>
 
-            <div className="rounded-xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg shadow-slate-950/40">
-              {!selectedLibrary || !profileDraft ? (
-                <p className="text-sm text-slate-300">Select a library to edit its profile.</p>
-              ) : (
-                <div className="space-y-4">
-                  <div className="space-y-3 rounded border border-slate-800 bg-slate-950/40 p-3">
-                    <h2 className="text-lg font-semibold text-cyan-200">Library details</h2>
-                    <label className="space-y-1 text-sm">
-                      <span>Name</span>
-                      <input
-                        type="text"
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={selectedLibrary.name}
-                        onChange={(event) => setLibraries((prev) => prev.map((library) => (
-                          library.id === selectedLibrary.id ? { ...library, name: event.target.value } : library
-                        )))}
-                      />
-                    </label>
-                    <label className="space-y-1 text-sm">
-                      <span>Path</span>
-                      <input
-                        type="text"
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={selectedLibrary.path}
-                        onChange={(event) => setLibraries((prev) => prev.map((library) => (
-                          library.id === selectedLibrary.id ? { ...library, path: event.target.value } : library
-                        )))}
-                      />
-                    </label>
-                    <p className="text-xs text-slate-300">Status: {libraryRuntimeStates.find((item) => item.library.id === selectedLibrary.id)?.state}</p>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        className="rounded bg-cyan-500 px-3 py-2 text-sm font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-70"
-                        disabled={savingLibrary}
-                        onClick={handleSaveLibraryDetails}
-                      >
-                        {savingLibrary ? 'Saving…' : 'Save library details'}
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded bg-rose-600 px-3 py-2 text-sm font-semibold text-white hover:bg-rose-500 disabled:opacity-70"
-                        disabled={deletingLibraryId === selectedLibrary.id}
-                        onClick={() => handleDeleteLibrary(selectedLibrary.id)}
-                      >
-                        {deletingLibraryId === selectedLibrary.id ? 'Deleting…' : 'Delete library'}
-                      </button>
-                    </div>
-                  </div>
+                  <hr className="border-slate-800" />
 
-                  <div className="rounded-xl border border-slate-700/70 bg-slate-950/40 p-4">
-                    <label className="block text-sm font-semibold text-cyan-100">Quality preset</label>
-                    <p className="mb-3 text-xs text-slate-400">Start with a preset, then fine tune below.</p>
-                    <select
-                      className="w-full rounded-lg border border-slate-700 bg-slate-800 p-2"
-                      value={selectedPreset}
-                      onChange={(event) => {
-                        const presetKey = event.target.value;
-                        setSelectedPreset(presetKey);
-                        const preset = QUALITY_PRESETS[presetKey];
-                        if (preset) {
-                          setProfileDraft((prev) => ({ ...prev, ...preset.profile }));
-                        }
-                      }}
-                    >
-                      {Object.entries(QUALITY_PRESETS).map(([key, value]) => (
-                        <option key={key} value={key}>{value.label}</option>
-                      ))}
-                    </select>
+                  {/* Quality preset */}
+                  <div>
+                    <SectionTitle>Encoding Profile</SectionTitle>
+                    <FormField label="Quality Preset" hint="Start with a preset, then fine-tune below.">
+                      <SelectInput
+                        value={selectedPreset}
+                        onChange={(e) => {
+                          const presetKey = e.target.value;
+                          setSelectedPreset(presetKey);
+                          const preset = QUALITY_PRESETS[presetKey];
+                          if (preset) setProfileDraft((prev) => ({ ...prev, ...preset.profile }));
+                        }}
+                      >
+                        {Object.entries(QUALITY_PRESETS).map(([key, value]) => (
+                          <option key={key} value={key}>{value.label}</option>
+                        ))}
+                      </SelectInput>
+                    </FormField>
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2">
-                    <label className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
-                      <span className="text-sm font-medium">Enabled</span>
-                      <p className="text-xs text-slate-400">Disable to stop optimization for this library.</p>
-                      <input
-                        type="checkbox"
+                    {/* Library enabled */}
+                    <div className="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3">
+                      <p className="mb-2 text-sm font-medium text-slate-200">Library Enabled</p>
+                      <p className="mb-3 text-xs text-slate-500">Disable to pause optimization for this library.</p>
+                      <Toggle
                         checked={selectedLibrary.enabled}
-                        onChange={(event) => handleLibraryToggle(selectedLibrary.id, event.target.checked)}
+                        onChange={(e) => handleLibraryToggle(selectedLibrary.id, e.target.checked)}
+                        label={selectedLibrary.enabled ? 'Enabled' : 'Disabled'}
                       />
-                    </label>
+                    </div>
 
-                    <label className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
-                      <span className="text-sm font-medium">HDR only</span>
-                      <p className="text-xs text-slate-400">Only process HDR media in this library.</p>
-                      <input
-                        type="checkbox"
+                    {/* HDR only */}
+                    <div className="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3">
+                      <p className="mb-2 text-sm font-medium text-slate-200">HDR Only</p>
+                      <p className="mb-3 text-xs text-slate-500">Only process HDR media in this library.</p>
+                      <Toggle
                         checked={profileDraft.hdr_only}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, hdr_only: event.target.checked }))}
+                        onChange={(e) => setProfileDraft((prev) => ({ ...prev, hdr_only: e.target.checked }))}
+                        label={profileDraft.hdr_only ? 'Enabled' : 'Disabled'}
                       />
-                    </label>
+                    </div>
 
-                    <label className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
-                      <span className="text-sm font-medium">Tone map HDR to SDR</span>
-                      <p className="text-xs text-slate-400">Strip HDR metadata and convert to SDR during encoding. Reduces playback stutters on SDR devices.</p>
-                      <input
-                        type="checkbox"
+                    {/* Tone map HDR */}
+                    <div className="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 md:col-span-2">
+                      <p className="mb-2 text-sm font-medium text-slate-200">Tone Map HDR to SDR</p>
+                      <p className="mb-3 text-xs text-slate-500">Strip HDR metadata and convert to SDR during encoding. Reduces playback stutters on SDR devices.</p>
+                      <Toggle
                         checked={profileDraft.tone_map_hdr}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, tone_map_hdr: event.target.checked }))}
+                        onChange={(e) => setProfileDraft((prev) => ({ ...prev, tone_map_hdr: e.target.checked }))}
+                        label={profileDraft.tone_map_hdr ? 'Enabled' : 'Disabled'}
                       />
-                    </label>
+                    </div>
 
-                    <label className="space-y-2 md:col-span-2">
-                      <span className="text-sm font-medium">Target resolution</span>
-                      <p className="text-xs text-slate-400">Output height. 1080p is a good default for mixed libraries.</p>
-                      <select
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    {/* Target resolution */}
+                    <FormField label="Target Resolution" hint="Output height. 1080p is recommended for mixed libraries." error={profileErrors.target_resolution} span2>
+                      <SelectInput
                         value={[2160, 1440, 1080, 720].includes(profileDraft.target_resolution) ? String(profileDraft.target_resolution) : 'custom'}
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          setProfileDraft((prev) => ({
-                            ...prev,
-                            target_resolution: value === 'custom' ? prev.target_resolution : Number(value),
-                          }));
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setProfileDraft((prev) => ({ ...prev, target_resolution: v === 'custom' ? prev.target_resolution : Number(v) }));
                         }}
                       >
                         <option value="2160">2160p (4K)</option>
@@ -1162,445 +1098,277 @@ export default function App() {
                         <option value="1080">1080p</option>
                         <option value="720">720p</option>
                         <option value="custom">Custom</option>
-                      </select>
-                      {!([2160, 1440, 1080, 720].includes(profileDraft.target_resolution)) && (
-                        <input
-                          type="number"
-                          min={1}
-                          className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                          value={profileDraft.target_resolution}
-                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, target_resolution: Number(event.target.value) }))}
-                        />
+                      </SelectInput>
+                      {![2160, 1440, 1080, 720].includes(profileDraft.target_resolution) && (
+                        <TextInput type="number" min={1} value={profileDraft.target_resolution} onChange={(e) => setProfileDraft((prev) => ({ ...prev, target_resolution: Number(e.target.value) }))} className="mt-2" />
                       )}
-                      {profileErrors.target_resolution && <p className="text-xs text-red-300">{profileErrors.target_resolution}</p>}
-                    </label>
+                    </FormField>
 
-                    <label className="space-y-2 md:col-span-2">
-                      <span className="text-sm font-medium">Minimum source resolution filter</span>
-                      <p className="text-xs text-slate-400">Only queue sources at or above this height during scans. Ignored when HDR only is enabled.</p>
-                      <select
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    {/* Minimum source resolution */}
+                    <FormField label="Minimum Source Resolution" hint="Only queue sources at or above this height. Ignored when HDR Only is enabled." error={profileErrors.minimum_source_resolution} span2>
+                      <SelectInput
                         value={[2160, 1440, 1080].includes(profileDraft.minimum_source_resolution) ? String(profileDraft.minimum_source_resolution) : 'custom'}
-                        onChange={(event) => {
-                          const value = event.target.value;
-                          setProfileDraft((prev) => ({
-                            ...prev,
-                            minimum_source_resolution: value === 'custom' ? prev.minimum_source_resolution : Number(value),
-                          }));
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setProfileDraft((prev) => ({ ...prev, minimum_source_resolution: v === 'custom' ? prev.minimum_source_resolution : Number(v) }));
                         }}
                       >
                         <option value="2160">2160p (4K)</option>
                         <option value="1440">1440p</option>
                         <option value="1080">1080p</option>
                         <option value="custom">Custom</option>
-                      </select>
-                      {!([2160, 1440, 1080].includes(profileDraft.minimum_source_resolution)) && (
-                        <input
-                          type="number"
-                          min={1}
-                          className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                          value={profileDraft.minimum_source_resolution}
-                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, minimum_source_resolution: Number(event.target.value) }))}
-                        />
+                      </SelectInput>
+                      {![2160, 1440, 1080].includes(profileDraft.minimum_source_resolution) && (
+                        <TextInput type="number" min={1} value={profileDraft.minimum_source_resolution} onChange={(e) => setProfileDraft((prev) => ({ ...prev, minimum_source_resolution: Number(e.target.value) }))} className="mt-2" />
                       )}
-                      {profileErrors.minimum_source_resolution && <p className="text-xs text-red-300">{profileErrors.minimum_source_resolution}</p>}
-                    </label>
+                    </FormField>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Codec</span>
-                      <select
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    {/* Codec */}
+                    <FormField label="Codec">
+                      <SelectInput
                         value={profileDraft.codec}
-                        onChange={(event) => setProfileDraft((prev) => { const nextCodec = event.target.value; const available = availableEncodersByCodec[nextCodec] ?? []; const preferred = available.includes(prev.preferred_video_encoder) ? prev.preferred_video_encoder : 'auto'; return { ...prev, codec: nextCodec, preferred_video_encoder: preferred }; })}
+                        onChange={(e) => setProfileDraft((prev) => {
+                          const nextCodec = e.target.value;
+                          const available = availableEncodersByCodec[nextCodec] ?? [];
+                          const preferred = available.includes(prev.preferred_video_encoder) ? prev.preferred_video_encoder : 'auto';
+                          return { ...prev, codec: nextCodec, preferred_video_encoder: preferred };
+                        })}
                       >
                         <option value="h264">H.264</option>
                         <option value="hevc">HEVC</option>
                         <option value="av1">AV1</option>
-                      </select>
-                    </label>
+                      </SelectInput>
+                    </FormField>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Preferred encoder</span>
-                      <p className="text-xs text-slate-400">Pick a detected encoder for this codec, or Auto for best available.</p>
-                      <select
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    {/* Preferred encoder */}
+                    <FormField label="Preferred Encoder" hint="Pick a detected encoder, or Auto for best available.">
+                      <SelectInput
                         value={profileDraft.preferred_video_encoder ?? 'auto'}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, preferred_video_encoder: event.target.value }))}
+                        onChange={(e) => setProfileDraft((prev) => ({ ...prev, preferred_video_encoder: e.target.value }))}
                       >
                         <option value="auto">Auto</option>
                         {(availableEncodersByCodec[profileDraft.codec] ?? []).map((encoderName) => (
                           <option key={encoderName} value={encoderName}>{encoderName}</option>
                         ))}
-                      </select>
-                    </label>
+                      </SelectInput>
+                    </FormField>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">AV1 fallback</span>
-                      <p className="text-xs text-slate-400">Used when AV1 cannot be used on your hardware.</p>
-                      <select
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                    {/* AV1 fallback */}
+                    <FormField label="AV1 Fallback Codec" hint="Used when AV1 is not available on your hardware." error={profileErrors.av1_fallback_codec}>
+                      <SelectInput
                         value={profileDraft.av1_fallback_codec}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, av1_fallback_codec: event.target.value }))}
+                        onChange={(e) => setProfileDraft((prev) => ({ ...prev, av1_fallback_codec: e.target.value }))}
                       >
                         <option value="hevc">HEVC</option>
                         <option value="h264">H.264</option>
-                      </select>
-                      {profileErrors.av1_fallback_codec && <p className="text-xs text-red-300">{profileErrors.av1_fallback_codec}</p>}
-                    </label>
+                      </SelectInput>
+                    </FormField>
 
-                    <label className="space-y-2 md:col-span-2 rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
-                      <span className="text-sm font-medium">Bitrate mode</span>
-                      <p className="text-xs text-slate-400">CRF targets visual quality (smaller is higher quality). CBR targets fixed bitrate.</p>
-                      <div className="flex gap-4 text-sm">
-                        <label>
-                          <input
-                            type="radio"
-                            name="bitrate-mode"
-                            checked={profileDraft.bitrate_mode === 'vbr_crf'}
-                            onChange={() => setProfileDraft((prev) => ({ ...prev, bitrate_mode: 'vbr_crf' }))}
-                          />
-                          {' '}CRF (quality target)
+                    {/* Bitrate mode */}
+                    <div className="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 md:col-span-2">
+                      <p className="mb-1 text-sm font-medium text-slate-200">Bitrate Mode</p>
+                      <p className="mb-3 text-xs text-slate-500">CRF targets visual quality. CBR targets a fixed bitrate.</p>
+                      <div className="flex gap-5 text-sm">
+                        <label className="flex cursor-pointer items-center gap-2">
+                          <input type="radio" name="bitrate-mode" checked={profileDraft.bitrate_mode === 'vbr_crf'} onChange={() => setProfileDraft((prev) => ({ ...prev, bitrate_mode: 'vbr_crf' }))} />
+                          <span className="text-slate-200">CRF (quality target)</span>
                         </label>
-                        <label>
-                          <input
-                            type="radio"
-                            name="bitrate-mode"
-                            checked={profileDraft.bitrate_mode === 'cbr'}
-                            onChange={() => setProfileDraft((prev) => ({ ...prev, bitrate_mode: 'cbr' }))}
-                          />
-                          {' '}CBR (size target)
+                        <label className="flex cursor-pointer items-center gap-2">
+                          <input type="radio" name="bitrate-mode" checked={profileDraft.bitrate_mode === 'cbr'} onChange={() => setProfileDraft((prev) => ({ ...prev, bitrate_mode: 'cbr' }))} />
+                          <span className="text-slate-200">CBR (size target)</span>
                         </label>
                       </div>
-                    </label>
+                    </div>
 
+                    {/* CRF */}
                     {profileDraft.bitrate_mode === 'vbr_crf' && (
-                      <label className="space-y-2 md:col-span-2">
-                        <span className="text-sm">CRF ({profileDraft.crf ?? 23})</span>
-                        <p className="text-xs text-slate-400">Typical range: 18-30. Lower = better quality/larger files, higher = smaller files.</p>
-                        <input
-                          type="range"
-                          min={1}
-                          max={40}
-                          value={profileDraft.crf ?? 23}
-                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, crf: Number(event.target.value) }))}
-                        />
-                        <input
-                          type="number"
-                          min={1}
-                          className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                          value={profileDraft.crf ?? ''}
-                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, crf: Number(event.target.value) }))}
-                        />
-                        {profileErrors.crf && <p className="text-xs text-red-300">{profileErrors.crf}</p>}
-                      </label>
+                      <FormField label={`CRF (${profileDraft.crf ?? 23})`} hint="Range 18–30. Lower = better quality / larger files." error={profileErrors.crf} span2>
+                        <input type="range" min={1} max={40} value={profileDraft.crf ?? 23} onChange={(e) => setProfileDraft((prev) => ({ ...prev, crf: Number(e.target.value) }))} className="w-full" />
+                        <TextInput type="number" min={1} value={profileDraft.crf ?? ''} onChange={(e) => setProfileDraft((prev) => ({ ...prev, crf: Number(e.target.value) }))} className="mt-2" />
+                      </FormField>
                     )}
 
+                    {/* CBR bitrate */}
                     {profileDraft.bitrate_mode === 'cbr' && (
-                      <label className="space-y-2 md:col-span-2">
-                        <span className="text-sm">Bitrate ({profileDraft.bitrate_mbps ?? 1} Mbps)</span>
-                        <input
-                          type="range"
-                          min={1}
-                          max={40}
-                          value={profileDraft.bitrate_mbps ?? 1}
-                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, bitrate_mbps: Number(event.target.value) }))}
-                        />
-                        <input
-                          type="number"
-                          min={1}
-                          className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                          value={profileDraft.bitrate_mbps ?? ''}
-                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, bitrate_mbps: Number(event.target.value) }))}
-                        />
-                        {profileErrors.bitrate_mbps && <p className="text-xs text-red-300">{profileErrors.bitrate_mbps}</p>}
-                      </label>
+                      <FormField label={`Bitrate (${profileDraft.bitrate_mbps ?? 1} Mbps)`} error={profileErrors.bitrate_mbps} span2>
+                        <input type="range" min={1} max={40} value={profileDraft.bitrate_mbps ?? 1} onChange={(e) => setProfileDraft((prev) => ({ ...prev, bitrate_mbps: Number(e.target.value) }))} className="w-full" />
+                        <TextInput type="number" min={1} value={profileDraft.bitrate_mbps ?? ''} onChange={(e) => setProfileDraft((prev) => ({ ...prev, bitrate_mbps: Number(e.target.value) }))} className="mt-2" />
+                      </FormField>
                     )}
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Speed preset</span>
-                      <select
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={profileDraft.speed_preset}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, speed_preset: event.target.value }))}
-                      >
+                    {/* Speed preset */}
+                    <FormField label="Speed Preset" hint="Slow = best compression. Fast = quickest encode.">
+                      <SelectInput value={profileDraft.speed_preset} onChange={(e) => setProfileDraft((prev) => ({ ...prev, speed_preset: e.target.value }))}>
                         <option value="slow">Slow</option>
                         <option value="medium">Medium</option>
                         <option value="fast">Fast</option>
-                      </select>
-                      <p className="text-xs text-slate-400">Slow = best compression, Fast = quickest encode.</p>
-                    </label>
+                      </SelectInput>
+                    </FormField>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Container</span>
-                      <select
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={profileDraft.container}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, container: event.target.value }))}
-                      >
-                        <option value="mkv">mkv</option>
-                        <option value="mp4">mp4</option>
-                      </select>
-                    </label>
+                    {/* Container */}
+                    <FormField label="Container">
+                      <SelectInput value={profileDraft.container} onChange={(e) => setProfileDraft((prev) => ({ ...prev, container: e.target.value }))}>
+                        <option value="mkv">MKV</option>
+                        <option value="mp4">MP4</option>
+                      </SelectInput>
+                    </FormField>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Audio</span>
-                      <select
-                        className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                        value={profileDraft.audio_mode}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, audio_mode: event.target.value }))}
-                      >
-                        <option value="copy">copy</option>
-                        <option value="aac">aac</option>
-                        <option value="ac3">ac3</option>
-                        <option value="eac3">eac3</option>
-                      </select>
-                    </label>
+                    {/* Audio */}
+                    <FormField label="Audio Mode">
+                      <SelectInput value={profileDraft.audio_mode} onChange={(e) => setProfileDraft((prev) => ({ ...prev, audio_mode: e.target.value }))}>
+                        <option value="copy">Copy (passthrough)</option>
+                        <option value="aac">AAC</option>
+                        <option value="ac3">AC3</option>
+                        <option value="eac3">EAC3</option>
+                      </SelectInput>
+                    </FormField>
 
-                    <label className="space-y-2">
-                      <span className="text-sm">Max workers ({profileDraft.max_workers})</span>
-                      <p className="text-xs text-slate-400">Per-library worker cap.</p>
-                      <input
-                        type="range"
-                        min={1}
-                        max={10}
-                        value={profileDraft.max_workers}
-                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, max_workers: Number(event.target.value) }))}
+                    {/* Max workers */}
+                    <FormField label={`Max Workers (${profileDraft.max_workers})`} hint="Per-library concurrent encoding worker cap." error={profileErrors.max_workers}>
+                      <input type="range" min={1} max={10} value={profileDraft.max_workers} onChange={(e) => setProfileDraft((prev) => ({ ...prev, max_workers: Number(e.target.value) }))} className="w-full" />
+                    </FormField>
+
+                    {/* Schedule */}
+                    <div className="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 md:col-span-2">
+                      <p className="mb-1 text-sm font-medium text-slate-200">Scheduled Run Window</p>
+                      <p className="mb-3 text-xs text-slate-500">Restrict this library to run only within a set time window. Disable to run all day.</p>
+                      <Toggle
+                        checked={profileDraft.schedule_enabled !== false}
+                        onChange={(e) => setProfileDraft((prev) => ({ ...prev, schedule_enabled: e.target.checked }))}
+                        label="Enable Schedule Window"
                       />
-                      {profileErrors.max_workers && <p className="text-xs text-red-300">{profileErrors.max_workers}</p>}
-                    </label>
-
-                    <label className="space-y-2 md:col-span-2 rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
-                      <span className="text-sm font-medium">Scheduled run window</span>
-                      <p className="text-xs text-slate-400">Turn this off to allow this library to run all day.</p>
-                      <label className="flex items-center gap-2 text-sm text-slate-200">
-                        <input
-                          type="checkbox"
-                          checked={profileDraft.schedule_enabled !== false}
-                          onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_enabled: event.target.checked }))}
-                        />
-                        Enable schedule window
-                      </label>
-                    </label>
+                    </div>
 
                     {profileDraft.schedule_enabled !== false && (
                       <>
-                        <label className="space-y-2">
-                          <span className="text-sm">Schedule start</span>
-                          <input
-                            type="time"
-                            step={3600}
-                            className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                            value={formatHour(profileDraft.schedule_start_hour)}
-                            onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_start_hour: parseHour(event.target.value) }))}
-                          />
-                          {profileErrors.schedule_start_hour && <p className="text-xs text-red-300">{profileErrors.schedule_start_hour}</p>}
-                        </label>
-
-                        <label className="space-y-2">
-                          <span className="text-sm">Schedule end</span>
-                          <input
-                            type="time"
-                            step={3600}
-                            className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                            value={formatHour(profileDraft.schedule_end_hour)}
-                            onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_end_hour: parseHour(event.target.value) }))}
-                          />
-                          {profileErrors.schedule_end_hour && <p className="text-xs text-red-300">{profileErrors.schedule_end_hour}</p>}
-                        </label>
-
-                        <label className="space-y-2 md:col-span-2">
-                          <span className="text-sm">Schedule close behavior</span>
-                          <select
-                            className="w-full rounded border border-slate-700 bg-slate-800 p-2"
+                        <FormField label="Schedule Start" error={profileErrors.schedule_start_hour}>
+                          <TextInput type="time" step={3600} value={formatHour(profileDraft.schedule_start_hour)} onChange={(e) => setProfileDraft((prev) => ({ ...prev, schedule_start_hour: parseHour(e.target.value) }))} />
+                        </FormField>
+                        <FormField label="Schedule End" error={profileErrors.schedule_end_hour}>
+                          <TextInput type="time" step={3600} value={formatHour(profileDraft.schedule_end_hour)} onChange={(e) => setProfileDraft((prev) => ({ ...prev, schedule_end_hour: parseHour(e.target.value) }))} />
+                        </FormField>
+                        <FormField label="When Schedule Closes" span2>
+                          <SelectInput
                             value={profileDraft.schedule_policy ?? 'finish_current'}
-                            onChange={(event) => setProfileDraft((prev) => ({ ...prev, schedule_policy: event.target.value }))}
+                            onChange={(e) => setProfileDraft((prev) => ({ ...prev, schedule_policy: e.target.value }))}
                           >
                             <option value="finish_current">Finish current job</option>
                             <option value="pause_current">Pause current job</option>
-                          </select>
-                        </label>
+                          </SelectInput>
+                        </FormField>
                       </>
                     )}
                   </div>
 
-                  <button
-                    type="button"
-                    className="rounded bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-70"
-                    disabled={savingProfile}
-                    onClick={handleSaveLibraryProfile}
-                  >
-                    {savingProfile ? 'Saving…' : 'Save'}
-                  </button>
+                  <Btn variant="primary" size="lg" disabled={savingProfile} onClick={handleSaveLibraryProfile} className="w-full sm:w-auto">
+                    {savingProfile ? 'Saving…' : 'Save Profile'}
+                  </Btn>
                 </div>
               )}
-            </div>
+            </SectionCard>
           </section>
         )}
 
+        {/* ── Jobs ───────────────────────────────────────────────────────────── */}
         {activePage === 'jobs' && (
-          <section className="overflow-hidden rounded-lg border border-slate-800 bg-slate-900">
-            <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-              <p className="text-sm text-slate-300">Queue controls</p>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleAbortAllJobs()}
-                  className="rounded bg-rose-600 px-3 py-1 text-xs font-medium text-white hover:bg-rose-500"
-                >
-                  Abort All
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleRemoveAllJobs()}
-                  className="rounded border border-slate-600 bg-slate-800 px-3 py-1 text-xs font-medium text-slate-100 hover:bg-slate-700"
-                >
-                  Remove All
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}
-                  className="rounded bg-amber-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-amber-400"
-                >
+          <section className="animate-fade-in overflow-hidden rounded-xl border border-slate-800 bg-slate-900/80 shadow-lg shadow-slate-950/40">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-3">
+              <p className="text-sm font-medium text-slate-300">Queue Controls</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Btn size="sm" variant="danger" onClick={handleAbortAllJobs}>Abort All</Btn>
+                <Btn size="sm" variant="secondary" onClick={handleRemoveAllJobs}>Remove All</Btn>
+                <Btn size="sm" variant="warning" onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}>
                   {queuePaused ? 'Resume Queue' : 'Pause Queue'}
-                </button>
+                </Btn>
               </div>
             </div>
-            <table className="min-w-full divide-y divide-slate-800">
-              <thead className="bg-slate-800/70">
-                <tr>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">ID</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Source</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Status</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Details</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Encoder</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Progress</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {pagedJobs.map((job) => {
-                  const progress = progressFromJob(job);
-                  const isRunning = job.status === 'running';
-                  const eta = formatEta(job.eta_seconds);
-                  return (
-                    <tr key={job.id}>
-                      <td className="px-4 py-3">{job.id}</td>
-                      <td className="max-w-xs truncate px-4 py-3 text-slate-300">{job.source_path}</td>
-                      <td className="px-4 py-3 capitalize">
-                        <span>{job.status}</span>
-                        {job.status === 'failed' && job.error_message && (
-                          <p className="mt-1 text-xs text-red-400">{job.error_message}</p>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-slate-300">
-                        <span>{formatResolution(job.source_resolution)}</span>
-                        <span className="mx-2 text-slate-500">•</span>
-                        <span>{formatHdrIndicator(job.source_is_hdr)}</span>
-                      </td>
-                      <td className="px-4 py-3 text-xs text-slate-300">
-                        {job.encoder_used ? (
-                          <>
-                            <span className={job.hwaccel_used ? 'text-cyan-400 font-medium' : ''}>{job.encoder_used}</span>
-                            {job.hwaccel_used && (
-                              <span className="ml-1 rounded bg-cyan-900/60 px-1 py-0.5 text-cyan-300">HW</span>
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-800">
+                <thead className="bg-slate-800/50">
+                  <tr>
+                    {['ID', 'Source', 'Status', 'Details', 'Encoder', 'Progress', 'Actions'].map((h) => (
+                      <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/60">
+                  {pagedJobs.map((job) => {
+                    const progress = progressFromJob(job);
+                    const isRunning = job.status === 'running';
+                    const eta = formatEta(job.eta_seconds);
+                    return (
+                      <tr key={job.id} className="transition-colors duration-100 hover:bg-slate-800/30">
+                        <td className="px-4 py-3 text-sm text-slate-400">{job.id}</td>
+                        <td className="max-w-xs truncate px-4 py-3 text-sm text-slate-300">{job.source_path}</td>
+                        <td className="px-4 py-3 text-sm capitalize">
+                          <span className={job.status === 'running' ? 'text-cyan-300' : job.status === 'failed' ? 'text-red-400' : 'text-slate-300'}>{job.status}</span>
+                          {job.status === 'failed' && job.error_message && (
+                            <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-400">
+                          <span>{formatResolution(job.source_resolution)}</span>
+                          <span className="mx-1.5 text-slate-600">·</span>
+                          <span>{formatHdrIndicator(job.source_is_hdr)}</span>
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-400">
+                          {job.encoder_used ? (
+                            <>
+                              <span className={job.hwaccel_used ? 'font-medium text-cyan-400' : ''}>{job.encoder_used}</span>
+                              {job.hwaccel_used && (
+                                <span className="ml-1.5 rounded bg-cyan-900/50 px-1.5 py-0.5 text-cyan-300">HW</span>
+                              )}
+                            </>
+                          ) : (
+                            <span className="text-slate-600">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="h-1.5 w-40 rounded-full bg-slate-700">
+                            <div
+                              className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-500"
+                              style={{ width: `${progress}%` }}
+                            />
+                          </div>
+                          <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
+                            <span>{progress}%</span>
+                            {isRunning && job.fps != null && <span>{job.fps.toFixed(1)} fps</span>}
+                            {isRunning && eta && <span>{eta}</span>}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-1.5">
+                            {job.status === 'running' && <Btn size="sm" variant="warning" onClick={() => handleJobAction('pause', job.id)}>Pause</Btn>}
+                            {job.status === 'paused' && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
+                            {job.status === 'queued' && <Btn size="sm" variant="success" onClick={() => handleJobAction('start', job.id)}>Start</Btn>}
+                            {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
+                              <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>Abort</Btn>
                             )}
-                          </>
-                        ) : (
-                          <span className="text-slate-500">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="h-2 w-44 rounded bg-slate-700">
-                          <div
-                            className="h-full rounded bg-cyan-400 transition-all"
-                            style={{ width: `${progress}%` }}
-                          />
-                        </div>
-                        <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
-                          <span>{progress}%</span>
-                          {isRunning && job.fps != null && (
-                            <span>{job.fps.toFixed(1)} fps</span>
-                          )}
-                          {isRunning && eta && (
-                            <span>{eta}</span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex gap-2">
-                          {job.status === 'running' && (
-                            <button
-                              type="button"
-                              onClick={() => handleJobAction('pause', job.id)}
-                              className="rounded bg-amber-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-amber-400"
-                            >
-                              Pause
-                            </button>
-                          )}
-                          {job.status === 'paused' && (
-                            <button
-                              type="button"
-                              onClick={() => handleJobAction('resume', job.id)}
-                              className="rounded bg-emerald-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-emerald-400"
-                            >
-                              Resume
-                            </button>
-                          )}
-                          {job.status === 'queued' && (
-                            <button
-                              type="button"
-                              onClick={() => handleJobAction('start', job.id)}
-                              className="rounded bg-emerald-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-emerald-400"
-                            >
-                              Start
-                            </button>
-                          )}
-                          {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
-                            <button
-                              type="button"
-                              onClick={() => handleJobAction('abort', job.id)}
-                              className="rounded bg-rose-500 px-3 py-1 text-xs font-medium text-white hover:bg-rose-400"
-                            >
-                              Abort
-                            </button>
-                          )}
-                          {['failed', 'cancelled'].includes(job.status) && (
-                            <button
-                              type="button"
-                              onClick={() => handleJobAction('retry', job.id)}
-                              className="rounded bg-cyan-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-cyan-400"
-                            >
-                              Retry
-                            </button>
-                          )}
-                          {['complete', 'failed', 'skipped', 'cancelled', 'interrupted'].includes(job.status) && (
-                            <button
-                              type="button"
-                              onClick={() => handleJobAction('remove', job.id)}
-                              className="rounded border border-slate-600 bg-slate-800 px-3 py-1 text-xs font-medium text-slate-100 hover:bg-slate-700"
-                            >
-                              Remove
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            <div className="flex items-center justify-between border-t border-slate-800 px-4 py-3 text-sm text-slate-300">
+                            {['failed', 'cancelled'].includes(job.status) && (
+                              <Btn size="sm" variant="primary" onClick={() => handleJobAction('retry', job.id)}>Retry</Btn>
+                            )}
+                            {['complete', 'failed', 'skipped', 'cancelled', 'interrupted'].includes(job.status) && (
+                              <Btn size="sm" variant="secondary" onClick={() => handleJobAction('remove', job.id)}>Remove</Btn>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex items-center justify-between border-t border-slate-800 px-5 py-3 text-sm text-slate-400">
               <p>Page {jobsPage} of {totalJobPages}</p>
               <div className="flex items-center gap-1">
-                {Array.from({ length: totalJobPages }, (_, index) => index + 1).map((pageNumber) => (
+                {Array.from({ length: totalJobPages }, (_, i) => i + 1).map((pageNum) => (
                   <button
-                    key={pageNumber}
+                    key={pageNum}
                     type="button"
-                    onClick={() => setJobsPage(pageNumber)}
-                    className={`rounded px-2 py-1 text-xs ${jobsPage === pageNumber ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'}`}
+                    onClick={() => setJobsPage(pageNum)}
+                    className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${jobsPage === pageNum ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
                   >
-                    {pageNumber}
+                    {pageNum}
                   </button>
                 ))}
               </div>
@@ -1608,276 +1376,157 @@ export default function App() {
           </section>
         )}
 
+        {/* ── Settings ───────────────────────────────────────────────────────── */}
         {activePage === 'settings' && settings && notificationSettings && (
-          <section className="space-y-5 rounded-lg border border-slate-800 bg-slate-900 p-6">
-            <label className="block space-y-2">
-              <span>History retention days</span>
-              <input
-                type="number"
-                min={1}
-                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                value={settings.history_retention_days}
-                onChange={(event) => setSettings((prev) => ({ ...prev, history_retention_days: Number(event.target.value) }))}
-              />
-            </label>
+          <section className="animate-fade-in space-y-5">
+            <SectionCard>
+              <SectionTitle>General Settings</SectionTitle>
+              <div className="grid gap-4 md:grid-cols-2">
+                <FormField label="History Retention (Days)" hint="How long to keep completed job history.">
+                  <TextInput type="number" min={1} value={settings.history_retention_days} onChange={(e) => setSettings((prev) => ({ ...prev, history_retention_days: Number(e.target.value) }))} />
+                </FormField>
 
-            <label className="flex items-center justify-between">
-              <span>Auto discovery enabled</span>
-              <input
-                type="checkbox"
-                checked={settings.auto_discovery_enabled}
-                onChange={(event) => setSettings((prev) => ({ ...prev, auto_discovery_enabled: event.target.checked }))}
-              />
-            </label>
+                <FormField label="Discovery Interval (Minutes)" hint="How often to scan libraries when using interval discovery.">
+                  <TextInput type="number" min={1} value={settings.discovery_interval_minutes} onChange={(e) => setSettings((prev) => ({ ...prev, discovery_interval_minutes: Number(e.target.value) }))} />
+                </FormField>
 
-            <label className="block space-y-2">
-              <span>Discovery method</span>
-              <select
-                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                value={settings.discovery_method}
-                onChange={(event) => setSettings((prev) => ({ ...prev, discovery_method: event.target.value }))}
-              >
-                <option value="interval">Interval</option>
-                <option value="startup">Startup</option>
-              </select>
-            </label>
+                <FormField label="Discovery Method" hint="When to scan libraries for new media.">
+                  <SelectInput value={settings.discovery_method} onChange={(e) => setSettings((prev) => ({ ...prev, discovery_method: e.target.value }))}>
+                    <option value="interval">On Interval</option>
+                    <option value="startup">On Startup Only</option>
+                  </SelectInput>
+                </FormField>
 
-            <label className="block space-y-2">
-              <span>Discovery interval minutes</span>
-              <input
-                type="number"
-                min={1}
-                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                value={settings.discovery_interval_minutes}
-                onChange={(event) => setSettings((prev) => ({ ...prev, discovery_interval_minutes: Number(event.target.value) }))}
-              />
-            </label>
+                <FormField label="Workspace Root" hint="Temporary directory used during encoding.">
+                  <TextInput type="text" value={settings.workspace_root} onChange={(e) => setSettings((prev) => ({ ...prev, workspace_root: e.target.value }))} />
+                </FormField>
 
-            <label className="block space-y-2">
-              <span>Workspace root</span>
-              <input
-                type="text"
-                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                value={settings.workspace_root}
-                onChange={(event) => setSettings((prev) => ({ ...prev, workspace_root: event.target.value }))}
-              />
-            </label>
+                <FormField label="Minimum Free Disk (GB)" hint="Pause the queue when free disk drops below this threshold.">
+                  <TextInput type="number" min={1} value={settings.min_free_gb} onChange={(e) => setSettings((prev) => ({ ...prev, min_free_gb: Number(e.target.value) }))} />
+                </FormField>
+              </div>
 
-            <label className="block space-y-2">
-              <span>Minimum free disk GB</span>
-              <input
-                type="number"
-                min={1}
-                className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                value={settings.min_free_gb}
-                onChange={(event) => setSettings((prev) => ({ ...prev, min_free_gb: Number(event.target.value) }))}
-              />
-            </label>
-
-            <label className="flex items-center justify-between">
-              <span>Requeue interrupted jobs on startup</span>
-              <input
-                type="checkbox"
-                checked={settings.requeue_interrupted_jobs}
-                onChange={(event) =>
-                  setSettings((prev) => ({ ...prev, requeue_interrupted_jobs: event.target.checked }))
-                }
-              />
-            </label>
-
-            <label className="flex items-center justify-between">
-              <span>Cleanup workspaces on startup</span>
-              <input
-                type="checkbox"
-                checked={settings.cleanup_workspaces_on_startup}
-                onChange={(event) =>
-                  setSettings((prev) => ({ ...prev, cleanup_workspaces_on_startup: event.target.checked }))
-                }
-              />
-            </label>
-
-            <div className="flex flex-wrap gap-3">
-              <button
-                type="button"
-                className="rounded bg-indigo-500 px-4 py-2 font-semibold text-slate-950 hover:bg-indigo-400"
-                onClick={handleRecoveryRun}
-              >
-                Run recovery now
-              </button>
-              <button
-                type="button"
-                className="rounded bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400"
-                onClick={handleCleanupRun}
-              >
-                Run workspace cleanup
-              </button>
-              <button
-                type="button"
-                className="rounded bg-amber-500 px-4 py-2 font-semibold text-slate-950 hover:bg-amber-400"
-                onClick={handleOptimizedCleanupRun}
-              >
-                Remove optimized outputs
-              </button>
-            </div>
-
-            <div className="space-y-3 rounded-lg border border-slate-700 bg-slate-800/60 p-4">
-              <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-300">Email notifications</h3>
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="space-y-1 text-sm">
-                  <span>SMTP host</span>
-                  <input
-                    type="text"
-                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                    value={notificationSettings.smtp_host}
-                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, smtp_host: event.target.value }))}
+              <div className="mt-4 space-y-3">
+                <div className="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200">Auto Discovery</p>
+                    <p className="text-xs text-slate-500">Automatically scan libraries for new media files.</p>
+                  </div>
+                  <Toggle
+                    checked={settings.auto_discovery_enabled}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, auto_discovery_enabled: e.target.checked }))}
                   />
-                </label>
-                <label className="space-y-1 text-sm">
-                  <span>SMTP port</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                    value={notificationSettings.smtp_port}
-                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, smtp_port: Number(event.target.value) }))}
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200">Requeue Interrupted Jobs on Startup</p>
+                    <p className="text-xs text-slate-500">Automatically re-add jobs that were interrupted by an unexpected shutdown.</p>
+                  </div>
+                  <Toggle
+                    checked={settings.requeue_interrupted_jobs}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, requeue_interrupted_jobs: e.target.checked }))}
                   />
-                </label>
-                <label className="space-y-1 text-sm">
-                  <span>SMTP username</span>
-                  <input
-                    type="text"
-                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                    value={notificationSettings.smtp_user}
-                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, smtp_user: event.target.value }))}
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200">Clean Up Workspaces on Startup</p>
+                    <p className="text-xs text-slate-500">Remove leftover temporary encoding directories on startup.</p>
+                  </div>
+                  <Toggle
+                    checked={settings.cleanup_workspaces_on_startup}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, cleanup_workspaces_on_startup: e.target.checked }))}
                   />
-                </label>
-                <label className="space-y-1 text-sm">
-                  <span>SMTP password</span>
-                  <input
-                    type="password"
-                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                    value={notificationSettings.smtp_password}
-                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, smtp_password: event.target.value }))}
-                  />
-                </label>
-                <label className="space-y-1 text-sm">
-                  <span>From email</span>
-                  <input
-                    type="email"
-                    className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                    value={notificationSettings.from_email}
-                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, from_email: event.target.value }))}
-                  />
-                </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <input
-                    type="checkbox"
+                </div>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Btn variant="indigo" onClick={handleRecoveryRun}>Run Recovery Now</Btn>
+                <Btn variant="primary" onClick={handleCleanupRun}>Run Workspace Cleanup</Btn>
+                <Btn variant="warning" onClick={handleOptimizedCleanupRun}>Remove Optimized Outputs</Btn>
+              </div>
+
+              <div className="mt-5">
+                <Btn variant="primary" size="lg" disabled={savingSettings} onClick={saveSettings}>
+                  {savingSettings ? 'Saving…' : 'Save Settings'}
+                </Btn>
+              </div>
+            </SectionCard>
+
+            {/* Email Notifications */}
+            <SectionCard>
+              <SectionTitle>Email Notifications</SectionTitle>
+              <div className="grid gap-4 md:grid-cols-2">
+                <FormField label="SMTP Host">
+                  <TextInput type="text" value={notificationSettings.smtp_host} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_host: e.target.value }))} placeholder="smtp.example.com" />
+                </FormField>
+                <FormField label="SMTP Port">
+                  <TextInput type="number" min={1} max={65535} value={notificationSettings.smtp_port} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_port: Number(e.target.value) }))} />
+                </FormField>
+                <FormField label="SMTP Username">
+                  <TextInput type="text" value={notificationSettings.smtp_user} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_user: e.target.value }))} />
+                </FormField>
+                <FormField label="SMTP Password">
+                  <TextInput type="password" value={notificationSettings.smtp_password} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_password: e.target.value }))} />
+                </FormField>
+                <FormField label="From Email">
+                  <TextInput type="email" value={notificationSettings.from_email} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, from_email: e.target.value }))} placeholder="noreply@example.com" />
+                </FormField>
+                <div className="flex items-end pb-1">
+                  <Toggle
                     checked={notificationSettings.smtp_tls}
-                    onChange={(event) => setNotificationSettings((prev) => ({ ...prev, smtp_tls: event.target.checked }))}
+                    onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_tls: e.target.checked }))}
+                    label="Use TLS"
                   />
-                  Use TLS
-                </label>
+                </div>
+                <FormField label="Recipient Emails" hint="Comma or newline separated." span2>
+                  <textarea
+                    className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100 outline-none transition-all duration-150 focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30"
+                    rows={3}
+                    value={notificationSettings.to_emails.join(', ')}
+                    onChange={(e) => setNotificationSettings((prev) => ({
+                      ...prev,
+                      to_emails: e.target.value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+                    }))}
+                    placeholder="user@example.com, other@example.com"
+                  />
+                </FormField>
               </div>
-              <label className="space-y-1 text-sm">
-                <span>Recipient emails (comma or newline separated)</span>
-                <textarea
-                  className="w-full rounded border border-slate-700 bg-slate-800 p-2"
-                  rows={3}
-                  value={notificationSettings.to_emails.join(', ')}
-                  onChange={(event) => setNotificationSettings((prev) => ({
-                    ...prev,
-                    to_emails: event.target.value
-                      .split(/[\n,]/)
-                      .map((item) => item.trim())
-                      .filter(Boolean),
-                  }))}
-                />
-              </label>
-              <label className="flex items-center justify-between">
-                <span>Job failed</span>
-                <input
-                  type="checkbox"
-                  checked={notificationSettings.notify_on.job_failed}
-                  onChange={(event) => setNotificationSettings((prev) => ({
-                    ...prev,
-                    notify_on: { ...prev.notify_on, job_failed: event.target.checked },
-                  }))}
-                />
-              </label>
-              <label className="flex items-center justify-between">
-                <span>Job interrupted</span>
-                <input
-                  type="checkbox"
-                  checked={notificationSettings.notify_on.job_interrupted}
-                  onChange={(event) => setNotificationSettings((prev) => ({
-                    ...prev,
-                    notify_on: { ...prev.notify_on, job_interrupted: event.target.checked },
-                  }))}
-                />
-              </label>
-              <label className="flex items-center justify-between">
-                <span>Low disk pause</span>
-                <input
-                  type="checkbox"
-                  checked={notificationSettings.notify_on.low_disk_pause}
-                  onChange={(event) => setNotificationSettings((prev) => ({
-                    ...prev,
-                    notify_on: { ...prev.notify_on, low_disk_pause: event.target.checked },
-                  }))}
-                />
-              </label>
-              <label className="flex items-center justify-between">
-                <span>Recovery ran</span>
-                <input
-                  type="checkbox"
-                  checked={notificationSettings.notify_on.recovery_ran}
-                  onChange={(event) => setNotificationSettings((prev) => ({
-                    ...prev,
-                    notify_on: { ...prev.notify_on, recovery_ran: event.target.checked },
-                  }))}
-                />
-              </label>
-              <label className="flex items-center justify-between">
-                <span>Batch complete</span>
-                <input
-                  type="checkbox"
-                  checked={notificationSettings.notify_on.batch_complete}
-                  onChange={(event) => setNotificationSettings((prev) => ({
-                    ...prev,
-                    notify_on: { ...prev.notify_on, batch_complete: event.target.checked },
-                  }))}
-                />
-              </label>
-              <div className="flex gap-3">
-                <button
-                  type="button"
-                  className="rounded bg-violet-500 px-4 py-2 font-semibold text-slate-950 hover:bg-violet-400 disabled:opacity-70"
-                  disabled={savingSettings}
-                  onClick={saveNotificationSettings}
-                >
-                  Save notification settings
-                </button>
-                <button
-                  type="button"
-                  className="rounded bg-slate-600 px-4 py-2 font-semibold text-white hover:bg-slate-500"
-                  onClick={sendNotificationTest}
-                >
-                  Send test email
-                </button>
-              </div>
-            </div>
 
-            <button
-              type="button"
-              className="rounded bg-cyan-500 px-4 py-2 font-semibold text-slate-950 hover:bg-cyan-400 disabled:opacity-70"
-              disabled={savingSettings}
-              onClick={saveSettings}
-            >
-              {savingSettings ? 'Saving...' : 'Save settings'}
-            </button>
+              <div className="mt-4">
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Notify On</p>
+                <div className="space-y-2">
+                  {[
+                    { key: 'job_failed', label: 'Job Failed' },
+                    { key: 'job_interrupted', label: 'Job Interrupted' },
+                    { key: 'low_disk_pause', label: 'Low Disk Pause' },
+                    { key: 'recovery_ran', label: 'Recovery Ran' },
+                    { key: 'batch_complete', label: 'Batch Complete' },
+                  ].map(({ key, label }) => (
+                    <div key={key} className="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-2.5">
+                      <span className="text-sm text-slate-200">{label}</span>
+                      <Toggle
+                        checked={notificationSettings.notify_on[key]}
+                        onChange={(e) => setNotificationSettings((prev) => ({ ...prev, notify_on: { ...prev.notify_on, [key]: e.target.checked } }))}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Btn variant="violet" disabled={savingSettings} onClick={saveNotificationSettings}>
+                  Save Notification Settings
+                </Btn>
+                <Btn variant="secondary" onClick={sendNotificationTest}>
+                  Send Test Email
+                </Btn>
+              </div>
+            </SectionCard>
           </section>
         )}
+
       </div>
     </main>
   );

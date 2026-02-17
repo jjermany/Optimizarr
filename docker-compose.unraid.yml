@@ -1,7 +1,9 @@
 services:
-  api:
-    image: ghcr.io/jjermany/optimizarr-api:latest
-    container_name: optimizarr-api
+  optimizarr:
+    image: ghcr.io/jjermany/optimizarr:latest
+    container_name: optimizarr
+    ports:
+      - "8080:8080"
     volumes:
       - /mnt/user/data/media:/media
       - /mnt/cache/appdata/optimizarr:/config
@@ -11,13 +13,4 @@ services:
     environment:
       - LIBVA_DRIVER_NAME=iHD
       - QSV_DEVICE=/dev/dri/renderD128
-    restart: unless-stopped
-
-  frontend:
-    image: ghcr.io/jjermany/optimizarr-frontend:latest
-    container_name: optimizarr-frontend
-    depends_on:
-      - api
-    ports:
-      - "8085:80"
     restart: unless-stopped

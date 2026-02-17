@@ -1,8 +1,10 @@
 from contextlib import asynccontextmanager
 import logging
+from pathlib import Path
 from threading import Event, Thread
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.core.database import SessionLocal, init_db
@@ -17,6 +19,9 @@ from app.workers.queue import start_worker, stop_worker
 
 logger = logging.getLogger(__name__)
 CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
+
+# Built frontend lives at /app/static when running inside the container
+FRONTEND_DIST = Path(__file__).resolve().parent.parent / 'static'
 
 
 def _cleanup_loop(stop_event: Event) -> None:
@@ -96,3 +101,9 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title='plex-optimizer', lifespan=lifespan)
 app.include_router(router)
 app.include_router(router, prefix='/api')
+
+# Serve the built React SPA for all non-API paths.
+# html=True makes StaticFiles return index.html for any path not found on disk,
+# which is the standard behaviour needed for client-side SPA routing.
+if FRONTEND_DIST.exists():
+    app.mount('/', StaticFiles(directory=str(FRONTEND_DIST), html=True), name='frontend')
