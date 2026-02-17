@@ -85,6 +85,7 @@ class EncoderSelection:
     use_qsv: bool
     use_vaapi: bool = False
     is_explicit_preference: bool = False
+    hw_decode: bool = False
 
 
 def _container_from_profile(profile: dict[str, Any]) -> str:
@@ -258,6 +259,7 @@ def _select_encoder(profile: dict[str, Any]) -> EncoderSelection | None:
                 encoder=candidate,
                 use_qsv=candidate.endswith('_qsv'),
                 use_vaapi=candidate.endswith('_vaapi'),
+                hw_decode=candidate.endswith('_vaapi'),
             )
 
     logger.warning('No available encoder found for codec %r (candidates checked: %s)', codec, candidates)
@@ -365,10 +367,21 @@ def _build_command_with_selection(
         video_preset_args = ['-preset', _software_preset(speed_preset)]
 
     hw_device = str(profile.get('qsv_device') or '/dev/dri/renderD128').strip()
+    apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
 
-    if selection.use_vaapi:
-        # VAAPI encoding — uses the iHD driver directly via libva, same path as Plex.
-        # No VPL/MFX session needed; works as long as LIBVA_DRIVER_NAME=iHD is set.
+    if selection.use_vaapi and selection.hw_decode and not apply_tonemap:
+        # Full GPU pipeline: VAAPI hardware decode keeps frames in GPU memory so
+        # the costly CPU decode + format=nv12 + hwupload step is eliminated.
+        # Only valid when there is no CPU-side tone mapping required.
+        command = [
+            'ffmpeg',
+            '-hwaccel', 'vaapi',
+            '-hwaccel_device', hw_device,
+            '-hwaccel_output_format', 'vaapi',
+            '-i', input_path,
+        ]
+    elif selection.use_vaapi:
+        # Software decode path — required when HDR tone mapping must run on CPU.
         command = ['ffmpeg', '-vaapi_device', hw_device, '-i', input_path]
     elif selection.use_qsv:
         # QSV via VAAPI bridge (required for FFmpeg built with --enable-libvpl).
@@ -382,9 +395,13 @@ def _build_command_with_selection(
     else:
         command = ['ffmpeg', '-i', input_path]
 
-    apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
-
-    if selection.use_vaapi:
+    if selection.use_vaapi and selection.hw_decode and not apply_tonemap:
+        # Hardware decode path: frames already live in VAAPI surfaces — only scale if needed.
+        filters = [f'scale_vaapi=-2:{target_height}'] if should_scale else []
+        if filters:
+            command.extend(['-vf', ','.join(filters)])
+    elif selection.use_vaapi:
+        # Software decode path (HDR tone mapping): convert to NV12 on CPU then upload.
         filters = []
         if apply_tonemap:
             filters.extend(_HDR_TONEMAP_FILTERS)
@@ -723,7 +740,14 @@ def _build_resume_command(
 
     hw_device = str(profile.get('qsv_device') or '/dev/dri/renderD128').strip()
 
-    if selection.use_vaapi:
+    if selection.use_vaapi and selection.hw_decode and not bool(profile.get('source_is_hdr') and profile.get('tone_map_hdr')):
+        command = [
+            'ffmpeg',
+            '-hwaccel', 'vaapi',
+            '-hwaccel_device', hw_device,
+            '-hwaccel_output_format', 'vaapi',
+        ] + seek_args + ['-i', input_path]
+    elif selection.use_vaapi:
         command = ['ffmpeg', '-vaapi_device', hw_device] + seek_args + ['-i', input_path]
     elif selection.use_qsv:
         command = [
@@ -737,7 +761,11 @@ def _build_resume_command(
 
     apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
 
-    if selection.use_vaapi:
+    if selection.use_vaapi and selection.hw_decode and not apply_tonemap:
+        filters = [f'scale_vaapi=-2:{target_height}'] if should_scale else []
+        if filters:
+            command.extend(['-vf', ','.join(filters)])
+    elif selection.use_vaapi:
         filters = []
         if apply_tonemap:
             filters.extend(_HDR_TONEMAP_FILTERS)
@@ -1007,6 +1035,38 @@ def optimize_video(
             selection = vaapi_selection
             metrics.used_fallback = True
             metrics.fallback_reason = 'qsv_failed_vaapi_fallback'
+
+    # If VAAPI hardware decode failed, retry with software decode + hwupload.
+    if return_code is not None and return_code != 0 and not was_cancelled and selection.use_vaapi and selection.hw_decode and _has_qsv_error(output_lines):
+        sw_decode_selection = EncoderSelection(
+            codec=selection.codec, encoder=selection.encoder, use_qsv=False, use_vaapi=True, hw_decode=False,
+        )
+        logger.warning(
+            '[%s] VAAPI hardware decode failed (rc=%s); retrying with software decode + hwupload',
+            job_tag, return_code,
+        )
+        if not can_resume:
+            try:
+                _ensure_clean_workspace(workspace_path)
+            except OSError:
+                pass
+        if can_resume:
+            ffmpeg_command = _build_resume_command(
+                input_path, resume_position_seconds, str(resume_segment_path), profile, sw_decode_selection,
+            )
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+            )
+        else:
+            ffmpeg_command = _build_command_with_selection(
+                input_path, str(partial_output_path), profile, sw_decode_selection,
+            )
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id, ffmpeg_command, duration, progress_callback, should_cancel,
+            )
+        selection = sw_decode_selection
+        metrics.used_fallback = True
+        metrics.fallback_reason = 'vaapi_hwdecode_failed_swdecode_fallback'
 
     if return_code is None:
         logger.error('[%s] FFmpeg could not be launched (binary missing or not executable)', job_tag)
