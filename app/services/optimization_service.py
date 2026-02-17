@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 
 FPS_REGEX = re.compile(r"fps\s*=\s*(?P<fps>[0-9]*\.?[0-9]+)")
 _ENCODER_CACHE: dict[str, bool] = {}
-_SUPPORTED_ENCODERS = {'h264_qsv', 'hevc_qsv', 'av1_qsv', 'libsvtav1', 'libx264', 'libx265'}
+_SUPPORTED_ENCODERS = {
+    'h264_qsv', 'hevc_qsv', 'av1_qsv',
+    'h264_vaapi', 'hevc_vaapi', 'av1_vaapi',
+    'libsvtav1', 'libx264', 'libx265',
+}
 _QSV_ERROR_PATTERN = re.compile(
     r'(qsv|mfx|vaapi|dri|renderD|hw_device|hwdevice|hwaccel|opencl)'
     r'.*(init|error|failed|device|open|create|alloc|load|unavailable|unsupported|permission|access)',
@@ -24,16 +28,22 @@ _QSV_ERROR_PATTERN = re.compile(
 )
 _FFMPEG_ERROR_PATTERN = re.compile(r'\b(error|failed|invalid|cannot|unable|no such|permission denied)\b', re.IGNORECASE)
 ENCODER_OPTIONS_BY_CODEC = {
-    'h264': ['h264_qsv', 'libx264'],
-    'hevc': ['hevc_qsv', 'libx265'],
-    'av1': ['av1_qsv', 'libsvtav1'],
+    # VAAPI is listed first: it uses the iHD driver directly (same as Plex) and
+    # works without the Intel oneVPL GPU runtime that QSV requires.  QSV remains
+    # as a secondary option so it can still be selected explicitly or used if a
+    # future image ships a working VPL runtime.
+    'h264': ['h264_vaapi', 'h264_qsv', 'libx264'],
+    'hevc': ['hevc_vaapi', 'hevc_qsv', 'libx265'],
+    'av1': ['av1_vaapi', 'av1_qsv', 'libsvtav1'],
 }
 _ACTIVE_FFMPEG_LOCK = Lock()
 _ACTIVE_FFMPEG_PROCESSES: dict[int, subprocess.Popen] = {}
-_QSV_SW_FALLBACK: dict[str, str] = {
-    'h264_qsv': 'libx264',
-    'hevc_qsv': 'libx265',
-    'av1_qsv': 'libsvtav1',
+# When QSV fails at runtime (MFX session error), try the VAAPI equivalent before
+# giving up.  VAAPI uses the iHD driver directly — no VPL runtime needed.
+_QSV_VAAPI_FALLBACK: dict[str, str] = {
+    'h264_qsv': 'h264_vaapi',
+    'hevc_qsv': 'hevc_vaapi',
+    'av1_qsv': 'av1_vaapi',
 }
 
 
@@ -61,6 +71,7 @@ class EncoderSelection:
     codec: str
     encoder: str
     use_qsv: bool
+    use_vaapi: bool = False
     is_explicit_preference: bool = False
 
 
@@ -223,6 +234,7 @@ def _select_encoder(profile: dict[str, Any]) -> EncoderSelection | None:
                 codec=codec,
                 encoder=preferred_encoder,
                 use_qsv=preferred_encoder.endswith('_qsv'),
+                use_vaapi=preferred_encoder.endswith('_vaapi'),
                 is_explicit_preference=True,
             )
         logger.warning('Preferred encoder %r is not a valid candidate for codec %r; falling back to auto', preferred_encoder, codec)
@@ -230,7 +242,12 @@ def _select_encoder(profile: dict[str, Any]) -> EncoderSelection | None:
     for candidate in candidates:
         if _encoder_available(candidate):
             logger.debug('Auto-selected encoder %r for codec %r', candidate, codec)
-            return EncoderSelection(codec=codec, encoder=candidate, use_qsv=candidate.endswith('_qsv'))
+            return EncoderSelection(
+                codec=codec,
+                encoder=candidate,
+                use_qsv=candidate.endswith('_qsv'),
+                use_vaapi=candidate.endswith('_vaapi'),
+            )
 
     logger.warning('No available encoder found for codec %r (candidates checked: %s)', codec, candidates)
     return None
@@ -300,7 +317,8 @@ def _video_rate_args(codec_impl: str, bitrate_mode: str, bitrate_mbps: int, crf:
     if codec_impl in {'libx264', 'libx265', 'libsvtav1'}:
         return ['-crf', str(crf)]
 
-    if codec_impl in {'h264_qsv', 'hevc_qsv', 'av1_qsv'}:
+    if codec_impl in {'h264_qsv', 'hevc_qsv', 'av1_qsv', 'h264_vaapi', 'hevc_vaapi', 'av1_vaapi'}:
+        # Neither QSV nor VAAPI support -crf; derive an equivalent VBR bitrate target.
         derived = _derive_qsv_bitrate_from_crf(crf, target_height)
         return ['-b:v', f'{derived}M', '-maxrate', f'{derived + 2}M', '-bufsize', f'{derived * 2}M']
 
@@ -327,27 +345,38 @@ def _build_command_with_selection(
 
     if selection.encoder in {'h264_qsv', 'hevc_qsv', 'av1_qsv'}:
         video_preset_args = ['-preset', _qsv_preset(speed_preset)]
+    elif selection.encoder in {'h264_vaapi', 'hevc_vaapi', 'av1_vaapi'}:
+        # VAAPI quality is governed by bitrate/QP, not a preset flag.
+        video_preset_args = []
     elif selection.encoder == 'libsvtav1':
         video_preset_args = ['-preset', _svt_av1_preset(speed_preset)]
     else:
         video_preset_args = ['-preset', _software_preset(speed_preset)]
 
-    command = ['ffmpeg', '-i', input_path]
-    if selection.use_qsv:
-        qsv_device = str(profile.get('qsv_device') or '/dev/dri/renderD128').strip()
-        # FFmpeg built with --enable-libvpl (Intel oneVPL) requires QSV to be
-        # initialised via a VAAPI bridge on Linux: create the VAAPI device first,
-        # then derive the QSV device from it.  The old direct
-        # "-init_hw_device qsv=hw:<dri>" syntax only works with --enable-libmfx.
+    hw_device = str(profile.get('qsv_device') or '/dev/dri/renderD128').strip()
+
+    if selection.use_vaapi:
+        # VAAPI encoding — uses the iHD driver directly via libva, same path as Plex.
+        # No VPL/MFX session needed; works as long as LIBVA_DRIVER_NAME=iHD is set.
+        command = ['ffmpeg', '-vaapi_device', hw_device, '-i', input_path]
+    elif selection.use_qsv:
+        # QSV via VAAPI bridge (required for FFmpeg built with --enable-libvpl).
         command = [
             'ffmpeg',
-            '-init_hw_device', f'vaapi=va:{qsv_device}',
+            '-init_hw_device', f'vaapi=va:{hw_device}',
             '-init_hw_device', 'qsv=qs@va',
             '-filter_hw_device', 'qs',
             '-i', input_path,
         ]
+    else:
+        command = ['ffmpeg', '-i', input_path]
 
-    if selection.use_qsv:
+    if selection.use_vaapi:
+        filters = ['format=nv12', 'hwupload']
+        if should_scale:
+            filters.append(f'scale_vaapi=-2:{target_height}')
+        command.extend(['-vf', ','.join(filters)])
+    elif selection.use_qsv:
         filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
             filters.append(f'scale_qsv=-2:{target_height}')
@@ -731,7 +760,7 @@ def optimize_video(
         metrics.used_fallback = True
         metrics.fallback_reason = f'no_{profile_codec}_hw_encoder'
     else:
-        logger.info('[%s] Encoder selected: %r (codec=%r, qsv=%s)', job_tag, selection.encoder, selection.codec, selection.use_qsv)
+        logger.info('[%s] Encoder selected: %r (codec=%r, hwaccel=%s)', job_tag, selection.encoder, selection.codec, 'qsv' if selection.use_qsv else 'vaapi' if selection.use_vaapi else 'none')
 
     ffmpeg_command = _build_command_with_selection(input_path, str(partial_output_path), profile, selection)
     return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
@@ -743,19 +772,22 @@ def optimize_video(
     )
 
     if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv:
-        sw_encoder = _QSV_SW_FALLBACK.get(selection.encoder)
-        if sw_encoder and _encoder_available(sw_encoder):
+        vaapi_encoder = _QSV_VAAPI_FALLBACK.get(selection.encoder)
+        if vaapi_encoder and _encoder_available(vaapi_encoder):
             logger.warning(
-                '[%s] QSV encoder %r failed (rc=%s); retrying with software fallback %r',
-                job_tag, selection.encoder, return_code, sw_encoder,
+                '[%s] QSV encoder %r failed (rc=%s); retrying with VAAPI encoder %r '
+                '(same iGPU, no VPL runtime required)',
+                job_tag, selection.encoder, return_code, vaapi_encoder,
             )
             try:
                 _ensure_clean_workspace(workspace_path)
             except OSError:
                 pass
-            fallback_selection = EncoderSelection(codec=selection.codec, encoder=sw_encoder, use_qsv=False)
+            vaapi_selection = EncoderSelection(
+                codec=selection.codec, encoder=vaapi_encoder, use_qsv=False, use_vaapi=True,
+            )
             ffmpeg_command = _build_command_with_selection(
-                input_path, str(partial_output_path), profile, fallback_selection,
+                input_path, str(partial_output_path), profile, vaapi_selection,
             )
             return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
                 job_id,
@@ -764,9 +796,9 @@ def optimize_video(
                 progress_callback,
                 should_cancel,
             )
-            selection = fallback_selection
+            selection = vaapi_selection
             metrics.used_fallback = True
-            metrics.fallback_reason = 'qsv_failed_sw_fallback'
+            metrics.fallback_reason = 'qsv_failed_vaapi_fallback'
 
     if return_code is None:
         logger.error('[%s] FFmpeg could not be launched (binary missing or not executable)', job_tag)
@@ -780,7 +812,7 @@ def optimize_video(
     metrics.return_code = return_code
     metrics.encoder_used = selection.encoder
     metrics.codec_used = selection.codec
-    metrics.hwaccel_used = selection.use_qsv
+    metrics.hwaccel_used = selection.use_qsv or selection.use_vaapi
 
     if was_cancelled:
         metrics.status = 'cancelled'
