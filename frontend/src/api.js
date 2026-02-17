@@ -90,6 +90,10 @@ export function resumeJob(jobId) {
   return request(`/jobs/${jobId}/resume`, { method: 'POST' });
 }
 
+export function startJob(jobId) {
+  return request(`/jobs/${jobId}/start`, { method: 'POST' });
+}
+
 export function abortJob(jobId) {
   return request(`/jobs/${jobId}/abort`, { method: 'POST' });
 }

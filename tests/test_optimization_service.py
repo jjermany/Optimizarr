@@ -337,6 +337,50 @@ def test_optimize_video_falls_back_when_av1_encode_fails(monkeypatch, tmp_path):
 
 
 
+
+
+def test_select_encoder_honors_explicit_preference_even_when_cache_says_unavailable(monkeypatch):
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: False)
+
+    selection = optimization_service._select_encoder({'codec': 'h264', 'preferred_video_encoder': 'h264_qsv'})
+
+    assert selection is not None
+    assert selection.encoder == 'h264_qsv'
+    assert selection.use_qsv is True
+    assert selection.is_explicit_preference is True
+
+
+def test_optimize_video_does_not_fallback_when_qsv_is_explicitly_selected(monkeypatch, tmp_path):
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 100.0)
+    monkeypatch.setattr(
+        optimization_service,
+        '_select_encoder',
+        lambda profile: optimization_service.EncoderSelection(
+            codec='h264',
+            encoder='h264_qsv',
+            use_qsv=True,
+            is_explicit_preference=True,
+        ),
+    )
+
+    calls = {'count': 0}
+
+    def fake_run_ffmpeg(*args, **kwargs):
+        calls['count'] += 1
+        return 1, 1.0, None, False, ['qsv init failed']
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+
+    metrics = optimization_service.optimize_video(str(input_path), DummySettings())
+
+    assert calls['count'] == 1
+    assert metrics.status == 'failed'
+    assert metrics.used_fallback is False
+
 def test_optimize_video_writes_partial_in_workspace(monkeypatch, tmp_path):
     media_dir = tmp_path / 'media'
     media_dir.mkdir()
@@ -398,8 +442,9 @@ def test_select_encoder_uses_preferred_when_available(monkeypatch):
     assert selection.use_qsv is False
 
 
-def test_select_encoder_falls_back_when_preferred_unavailable(monkeypatch):
+def test_select_encoder_honors_preferred_even_when_alternatives_available(monkeypatch):
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_qsv')
     selection = optimization_service._select_encoder({'codec': 'h264', 'preferred_video_encoder': 'libx264'})
     assert selection is not None
-    assert selection.encoder == 'h264_qsv'
+    assert selection.encoder == 'libx264'
+    assert selection.is_explicit_preference is True

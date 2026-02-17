@@ -20,6 +20,7 @@ import {
   resumeJob,
   resumeQueue,
   retryJob,
+  startJob,
   runCleanup,
   runOptimizedCleanup,
   runRecovery,
@@ -130,6 +131,39 @@ function libraryQueueCount(library, jobs) {
   ).length;
 }
 
+const IN_PROGRESS_STATUSES = new Set(['starting', 'running', 'preflight', 'paused', 'paused_schedule']);
+const QUEUED_STATUSES = new Set(['pending', 'queued', 'created']);
+
+function jobSortRank(job) {
+  const status = job.status?.toLowerCase();
+  if (IN_PROGRESS_STATUSES.has(status)) return 0;
+  if (QUEUED_STATUSES.has(status)) return 1;
+  return 2;
+}
+
+function sortedJobsForDisplay(jobs) {
+  return [...jobs].sort((a, b) => {
+    const rankDiff = jobSortRank(a) - jobSortRank(b);
+    if (rankDiff !== 0) return rankDiff;
+
+    if (jobSortRank(a) === 1) {
+      return a.id - b.id;
+    }
+
+    return b.id - a.id;
+  });
+}
+
+function formatResolution(height) {
+  return Number.isInteger(height) ? `${height}p` : 'Unknown';
+}
+
+function formatHdrIndicator(sourceIsHdr) {
+  if (sourceIsHdr === true) return 'HDR';
+  if (sourceIsHdr === false) return 'SDR';
+  return 'Unknown';
+}
+
 function validateLibraryDraft(draft, libraryEnabled) {
   const errors = {};
 
@@ -238,15 +272,17 @@ export default function App() {
   );
 
 
+  const sortedJobs = useMemo(() => sortedJobsForDisplay(jobs), [jobs]);
+
   const totalJobPages = useMemo(
-    () => Math.max(1, Math.ceil(jobs.length / JOBS_PAGE_SIZE)),
-    [jobs.length],
+    () => Math.max(1, Math.ceil(sortedJobs.length / JOBS_PAGE_SIZE)),
+    [sortedJobs.length],
   );
 
   const pagedJobs = useMemo(() => {
     const start = (jobsPage - 1) * JOBS_PAGE_SIZE;
-    return jobs.slice(start, start + JOBS_PAGE_SIZE);
-  }, [jobs, jobsPage]);
+    return sortedJobs.slice(start, start + JOBS_PAGE_SIZE);
+  }, [sortedJobs, jobsPage]);
 
   useEffect(() => {
     if (jobsPage > totalJobPages) {
@@ -500,13 +536,13 @@ export default function App() {
               return;
             }
 
-            if (payload.data?.event === 'queue_paused' && payload.data?.reason === 'schedule') {
-              pushToast('Queue paused due to schedule.', 'warn');
+            if (payload.data?.event === 'queue_paused' && payload.data?.reason === 'low_disk') {
+              pushToast('Queue paused due to low disk.', 'warn');
               return;
             }
 
-            if (payload.data?.event === 'queue_paused' && payload.data?.reason === 'low_disk') {
-              pushToast('Queue paused due to low disk.', 'warn');
+            if (payload.data?.event === 'queue_paused') {
+              pushToast('Queue paused.', 'warn');
               return;
             }
 
@@ -558,6 +594,8 @@ export default function App() {
         await pauseJob(jobId);
       } else if (action === 'resume') {
         await resumeJob(jobId);
+      } else if (action === 'start') {
+        await startJob(jobId);
       } else if (action === 'abort') {
         await abortJob(jobId);
       } else if (action === 'remove') {
@@ -1402,6 +1440,7 @@ export default function App() {
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">ID</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Source</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Status</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Source Info</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Progress</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Actions</th>
                 </tr>
@@ -1414,6 +1453,11 @@ export default function App() {
                       <td className="px-4 py-3">{job.id}</td>
                       <td className="max-w-xs truncate px-4 py-3 text-slate-300">{job.source_path}</td>
                       <td className="px-4 py-3 capitalize">{job.status}</td>
+                      <td className="px-4 py-3 text-xs text-slate-300">
+                        <span>{formatResolution(job.source_resolution)}</span>
+                        <span className="mx-2 text-slate-500">•</span>
+                        <span>{formatHdrIndicator(job.source_is_hdr)}</span>
+                      </td>
                       <td className="px-4 py-3">
                         <div className="h-2 w-44 rounded bg-slate-700">
                           <div
@@ -1441,6 +1485,15 @@ export default function App() {
                               className="rounded bg-emerald-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-emerald-400"
                             >
                               Resume
+                            </button>
+                          )}
+                          {job.status === 'queued' && (
+                            <button
+                              type="button"
+                              onClick={() => handleJobAction('start', job.id)}
+                              className="rounded bg-emerald-500 px-3 py-1 text-xs font-medium text-slate-950 hover:bg-emerald-400"
+                            >
+                              Start
                             </button>
                           )}
                           {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (

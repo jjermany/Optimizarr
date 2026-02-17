@@ -49,6 +49,7 @@ class EncoderSelection:
     codec: str
     encoder: str
     use_qsv: bool
+    is_explicit_preference: bool = False
 
 
 def _output_path_for(input_path: str) -> str:
@@ -197,8 +198,13 @@ def _select_encoder(profile: dict[str, Any]) -> EncoderSelection | None:
 
     preferred_encoder = str(profile.get('preferred_video_encoder', 'auto')).lower()
     if preferred_encoder and preferred_encoder != 'auto':
-        if preferred_encoder in candidates and _encoder_available(preferred_encoder):
-            return EncoderSelection(codec=codec, encoder=preferred_encoder, use_qsv=preferred_encoder.endswith('_qsv'))
+        if preferred_encoder in candidates:
+            return EncoderSelection(
+                codec=codec,
+                encoder=preferred_encoder,
+                use_qsv=preferred_encoder.endswith('_qsv'),
+                is_explicit_preference=True,
+            )
 
     for candidate in candidates:
         if _encoder_available(candidate):
@@ -675,7 +681,13 @@ def optimize_video(
     metrics.codec_used = selection.codec
     metrics.hwaccel_used = selection.use_qsv
 
-    if return_code != 0 and selection.use_qsv and selection.codec in {'h264', 'hevc'} and _has_qsv_error(output_lines):
+    if (
+        return_code != 0
+        and selection.use_qsv
+        and not selection.is_explicit_preference
+        and selection.codec in {'h264', 'hevc'}
+        and _has_qsv_error(output_lines)
+    ):
         software_encoder = 'libx264' if selection.codec == 'h264' else 'libx265'
         fallback_selection = EncoderSelection(codec=selection.codec, encoder=software_encoder, use_qsv=False)
         fallback_command = _build_command_with_selection(input_path, str(partial_output_path), profile, fallback_selection)

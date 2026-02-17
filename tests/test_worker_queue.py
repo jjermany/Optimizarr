@@ -26,6 +26,7 @@ def _wait_for_terminal_status(client: TestClient, job_id: int, timeout: float = 
 
 
 def test_worker_retries_a_failed_job_once(monkeypatch):
+    queue.resume_queue()
     target_input = '/media/test.mkv'
     call_count = {'count': 0}
 
