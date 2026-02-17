@@ -164,3 +164,6 @@ def init_db() -> None:
             'tone_map_hdr',
             'tone_map_hdr BOOLEAN NOT NULL DEFAULT 0',
         )
+
+        # plex_settings is created fresh by Base.metadata.create_all above;
+        # add any future column migrations here.

@@ -22,7 +22,7 @@ from app.models.library import (
     PreferredEncoderEnum,
 )
 from app.models.settings import DiscoveryMethodEnum, Settings
-from app.services import notification_service
+from app.services import notification_service, plex_service
 from app.services.job_service import (
     abort_all_jobs,
     abort_job,
@@ -293,6 +293,22 @@ class NotificationSettingsUpdateRequest(BaseModel):
     notify_on: NotificationTriggerSettings | None = None
 
 
+class PlexSettingsResponse(BaseModel):
+    enabled: bool
+    host: str
+    port: int
+    token: str
+    library_ids: list[str]
+
+
+class PlexSettingsUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    host: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+    token: str | None = None
+    library_ids: list[str] | None = None
+
+
 class LibraryBaseRequest(BaseModel):
     name: str = Field(..., min_length=1)
     path: str = Field(..., min_length=1)
@@ -541,6 +557,27 @@ def update_notification_settings(
 def send_test_notification(_: None = Depends(require_ui_auth)) -> dict[str, str]:
     notification_service.enqueue_test_email()
     return {'status': 'queued'}
+
+
+@router.get('/plex/settings', response_model=PlexSettingsResponse)
+def get_plex_settings(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> PlexSettingsResponse:
+    settings = plex_service.get_or_create_plex_settings(db)
+    return PlexSettingsResponse(**plex_service.settings_to_payload(settings))
+
+
+@router.put('/plex/settings', response_model=PlexSettingsResponse)
+def update_plex_settings(
+    payload: PlexSettingsUpdateRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> PlexSettingsResponse:
+    settings = plex_service.update_settings(db, payload.model_dump(exclude_none=True))
+    return PlexSettingsResponse(**plex_service.settings_to_payload(settings))
+
+
+@router.post('/plex/test', status_code=200)
+def test_plex_connection_endpoint(_: None = Depends(require_ui_auth)) -> dict:
+    return plex_service.test_plex_connection()
 
 
 @router.get('/libraries', response_model=list[LibraryResponse])
