@@ -608,6 +608,7 @@ export default function App() {
       else if (action === 'pause') await pauseJob(jobId);
       else if (action === 'resume') await resumeJob(jobId);
       else if (action === 'start') await startJob(jobId);
+      else if (action === 'start_paused') { await resumeJob(jobId); await startJob(jobId); }
       else if (action === 'abort') await abortJob(jobId);
       else if (action === 'remove') await deleteJob(jobId);
       await refreshAll();
@@ -1340,8 +1341,8 @@ export default function App() {
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-1.5">
                             {job.status === 'running' && <Btn size="sm" variant="warning" onClick={() => handleJobAction('pause', job.id)}>Pause</Btn>}
-                            {job.status === 'paused' && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
-                            {job.status === 'queued' && <Btn size="sm" variant="success" onClick={() => handleJobAction('start', job.id)}>Start</Btn>}
+                            {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
+                            {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && <Btn size="sm" variant="success" onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>Start</Btn>}
                             {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
                               <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>Abort</Btn>
                             )}
