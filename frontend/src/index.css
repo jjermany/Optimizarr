@@ -6,10 +6,54 @@ body {
   @apply bg-slate-950 text-slate-100 antialiased;
 }
 
-input[type='checkbox'] {
-  @apply h-4 w-4 accent-cyan-400;
+/* Smooth scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-slate-900;
+}
+::-webkit-scrollbar-thumb {
+  @apply rounded-full bg-slate-700;
+}
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-slate-600;
 }
 
+/* Form inputs */
+input[type='checkbox'] {
+  @apply h-4 w-4 rounded accent-cyan-400 cursor-pointer;
+}
+input[type='radio'] {
+  @apply accent-cyan-400 cursor-pointer;
+}
 input[type='range'] {
-  @apply accent-cyan-400;
+  @apply accent-cyan-400 cursor-pointer;
+}
+
+/* Custom range input track */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  @apply w-full rounded-full bg-slate-700;
+}
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  @apply bg-cyan-400 cursor-pointer shadow-md;
+  margin-top: -6px;
+}
+input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  @apply rounded-full bg-slate-700;
+}
+
+/* Transition defaults for interactive elements */
+button, a, select, input[type='checkbox'], input[type='radio'] {
+  @apply transition-all duration-150;
 }

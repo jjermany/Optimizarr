@@ -1,0 +1,87 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Optimizarr</Name>
+  <Repository>ghcr.io/jjermany/optimizarr:latest</Repository>
+  <Registry>https://ghcr.io/jjermany/optimizarr</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/jjermany/Optimizarr/issues</Support>
+  <Project>https://github.com/jjermany/Optimizarr</Project>
+  <Overview>Automated media library optimizer with Intel QSV / VAAPI hardware-accelerated transcoding. Monitors your media libraries, queues encoding jobs, and replaces source files with smaller, re-encoded versions — all from a single container.</Overview>
+  <Category>MediaApp:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/jjermany/Optimizarr/main/optimizarr.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/jjermany/Optimizarr/main/icon.png</Icon>
+  <ExtraParams>--device=/dev/dri:/dev/dri</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Description>Automated media library optimizer with Intel QSV / VAAPI hardware-accelerated transcoding. Monitors your media libraries, queues encoding jobs, and replaces source files with smaller, re-encoded versions — all from a single container.</Description>
+  <Networking>
+    <Mode>bridge</Mode>
+    <Publish>
+      <Port>
+        <HostPort>8080</HostPort>
+        <ContainerPort>8080</ContainerPort>
+        <Protocol>tcp</Protocol>
+      </Port>
+    </Publish>
+  </Networking>
+  <Data>
+    <Volume>
+      <HostDir>/mnt/user/data/media</HostDir>
+      <ContainerDir>/media</ContainerDir>
+      <Mode>rw</Mode>
+      <Mask>022</Mask>
+      <Name>Media</Name>
+      <Description>Path to your media libraries.</Description>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/cache/appdata/optimizarr</HostDir>
+      <ContainerDir>/config</ContainerDir>
+      <Mode>rw</Mode>
+      <Mask>022</Mask>
+      <Name>Config</Name>
+      <Description>Persistent configuration and database storage.</Description>
+    </Volume>
+    <Volume>
+      <HostDir>/mnt/cache/appdata/optimizarr/tmp</HostDir>
+      <ContainerDir>/cache</ContainerDir>
+      <Mode>rw</Mode>
+      <Mask>022</Mask>
+      <Name>Cache</Name>
+      <Description>Temporary workspace used during encoding. Should be on a fast drive.</Description>
+    </Volume>
+  </Data>
+  <Environment>
+    <Variable>
+      <Value>iHD</Value>
+      <Name>LIBVA_DRIVER_NAME</Name>
+      <Mode/>
+      <Description>VA-API driver name. Use iHD for Intel Gen 8+ (recommended) or i965 for older hardware.</Description>
+    </Variable>
+    <Variable>
+      <Value>/dev/dri/renderD128</Value>
+      <Name>QSV_DEVICE</Name>
+      <Mode/>
+      <Description>Path to the Intel render device used for QSV hardware encoding.</Description>
+    </Variable>
+    <Variable>
+      <Value/>
+      <Name>OPTIMIZARR_UI_USERNAME</Name>
+      <Mode/>
+      <Description>Optional: username for basic authentication on the web UI. Leave blank to disable auth.</Description>
+    </Variable>
+    <Variable>
+      <Value/>
+      <Name>OPTIMIZARR_UI_PASSWORD</Name>
+      <Mode/>
+      <Description>Optional: password for basic authentication on the web UI. Leave blank to disable auth.</Description>
+    </Variable>
+  </Environment>
+  <Labels/>
+</Container>
