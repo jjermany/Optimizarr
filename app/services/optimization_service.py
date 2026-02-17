@@ -335,7 +335,17 @@ def _build_command_with_selection(
     command = ['ffmpeg', '-i', input_path]
     if selection.use_qsv:
         qsv_device = str(profile.get('qsv_device') or '/dev/dri/renderD128').strip()
-        command = ['ffmpeg', '-init_hw_device', f'qsv=hw:{qsv_device}', '-filter_hw_device', 'hw', '-i', input_path]
+        # FFmpeg built with --enable-libvpl (Intel oneVPL) requires QSV to be
+        # initialised via a VAAPI bridge on Linux: create the VAAPI device first,
+        # then derive the QSV device from it.  The old direct
+        # "-init_hw_device qsv=hw:<dri>" syntax only works with --enable-libmfx.
+        command = [
+            'ffmpeg',
+            '-init_hw_device', f'vaapi=va:{qsv_device}',
+            '-init_hw_device', 'qsv=qs@va',
+            '-filter_hw_device', 'qs',
+            '-i', input_path,
+        ]
 
     if selection.use_qsv:
         filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
