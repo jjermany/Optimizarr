@@ -829,7 +829,7 @@ export default function App() {
         {/* Header */}
         <header className="flex flex-col gap-3 rounded-2xl border border-slate-800/80 bg-slate-900/70 px-5 py-3 shadow-xl shadow-slate-950/50 backdrop-blur-sm md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
-            <img src="/api/branding/logo" alt="Optimizarr" className="h-16 w-auto drop-shadow-md" />
+            <img src="/api/branding/logo" alt="Optimizarr" className="h-12 w-auto drop-shadow-md" />
             <h1 className="sr-only text-2xl font-bold text-cyan-200">Optimizarr</h1>
           </div>
           <StatusDot status={connectionStatus} />
