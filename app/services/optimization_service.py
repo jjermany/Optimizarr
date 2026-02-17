@@ -27,6 +27,17 @@ _QSV_ERROR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _FFMPEG_ERROR_PATTERN = re.compile(r'\b(error|failed|invalid|cannot|unable|no such|permission denied)\b', re.IGNORECASE)
+# HDR-to-SDR software tone mapping filter chain.
+# Converts HDR10/HLG (BT.2020 / PQ / HLG) to SDR BT.709 using zscale + tonemap.
+# Must be applied in software before hwupload for VAAPI/QSV paths.
+_HDR_TONEMAP_FILTERS = [
+    'zscale=t=linear:npl=100',
+    'format=gbrpf32le',
+    'zscale=p=bt709',
+    'tonemap=hable:desat=0',
+    'zscale=t=bt709:m=bt709:r=tv',
+    'format=yuv420p',
+]
 ENCODER_OPTIONS_BY_CODEC = {
     # VAAPI is listed first: it uses the iHD driver directly (same as Plex) and
     # works without the Intel oneVPL GPU runtime that QSV requires.  QSV remains
@@ -371,18 +382,32 @@ def _build_command_with_selection(
     else:
         command = ['ffmpeg', '-i', input_path]
 
+    source_is_hdr = bool(profile.get('source_is_hdr'))
+
     if selection.use_vaapi:
-        filters = ['format=nv12', 'hwupload']
+        filters = []
+        if source_is_hdr:
+            filters.extend(_HDR_TONEMAP_FILTERS)
+        filters.extend(['format=nv12', 'hwupload'])
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
-        filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
+        filters = []
+        if source_is_hdr:
+            filters.extend(_HDR_TONEMAP_FILTERS)
+        filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
             filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
-    elif should_scale:
-        command.extend(['-vf', f'scale=-2:{target_height}'])
+    else:
+        filters = []
+        if source_is_hdr:
+            filters.extend(_HDR_TONEMAP_FILTERS)
+        if should_scale:
+            filters.append(f'scale=-2:{target_height}')
+        if filters:
+            command.extend(['-vf', ','.join(filters)])
 
     command.extend(['-c:v', selection.encoder])
     command.extend(video_preset_args)
@@ -742,6 +767,12 @@ def optimize_video(
 
     duration = _probe_duration_seconds(input_path)
     metrics.duration_seconds = duration
+
+    if 'source_is_hdr' not in profile:
+        profile['source_is_hdr'] = is_hdr_video(input_path)
+    if profile['source_is_hdr']:
+        logger.info('[%s] HDR source detected — tone mapping to SDR will be applied', job_tag)
+
     selection = _select_encoder(profile)
 
     if not selection and str(profile.get('codec', 'h264')).lower() == 'av1':
