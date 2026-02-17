@@ -47,6 +47,7 @@ def test_optimize_video_runs_and_reports_progress(monkeypatch, tmp_path):
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
     monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 100.0)
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+    monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: False)
 
     def fake_popen(*args, **kwargs):
         return DummyPopen(
@@ -273,6 +274,110 @@ def test_build_encoder_command_av1_uses_svt_when_qsv_unavailable(monkeypatch):
     assert '-crf' in command and '30' in command
     assert '-c:a' in command and 'eac3' in command
     assert '-b:a' in command and '768k' in command
+
+
+_HDR_TONEMAP_PREFIX = (
+    'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,'
+    'tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p'
+)
+
+
+def test_build_encoder_command_hdr_software_applies_tonemap(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+        'source_is_hdr': True,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1080)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    assert '-vf' in command
+    vf = command[command.index('-vf') + 1]
+    assert vf.startswith(_HDR_TONEMAP_PREFIX)
+    assert 'scale=-2:' not in vf  # no scaling needed at same resolution
+
+
+def test_build_encoder_command_hdr_software_applies_tonemap_and_scale(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+        'source_is_hdr': True,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    assert '-vf' in command
+    vf = command[command.index('-vf') + 1]
+    assert vf.startswith(_HDR_TONEMAP_PREFIX)
+    assert vf.endswith(',scale=-2:1080')
+
+
+def test_build_encoder_command_hdr_vaapi_applies_tonemap(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+        'source_is_hdr': True,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_vaapi')
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    assert '-vf' in command
+    vf = command[command.index('-vf') + 1]
+    assert vf.startswith(_HDR_TONEMAP_PREFIX)
+    assert 'format=nv12,hwupload' in vf
+    assert vf.endswith(',scale_vaapi=-2:1080')
+
+
+def test_build_encoder_command_hdr_qsv_applies_tonemap(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+        'source_is_hdr': True,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_qsv')
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    assert '-vf' in command
+    vf = command[command.index('-vf') + 1]
+    assert vf.startswith(_HDR_TONEMAP_PREFIX)
+    assert 'format=nv12,hwupload=extra_hw_frames=64' in vf
+    assert vf.endswith(',scale_qsv=-2:1080')
 
 
 def test_select_encoder_ignores_unavailable_explicit_preference(monkeypatch):
