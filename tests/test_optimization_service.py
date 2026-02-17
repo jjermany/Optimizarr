@@ -298,10 +298,13 @@ def test_build_encoder_command_hdr_vaapi_applies_tonemap(monkeypatch):
 
     command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
 
+    # VAAPI HDR path uses hardware tonemap_vaapi (Intel VEBOX) instead of software zscale chain.
+    assert '-hwaccel' in command
+    assert 'vaapi' in command
+    assert '-hwaccel_output_format' in command
     assert '-vf' in command
     vf = command[command.index('-vf') + 1]
-    assert vf.startswith(_HDR_TONEMAP_PREFIX)
-    assert 'format=nv12,hwupload' in vf
+    assert vf.startswith('tonemap_vaapi=')
     assert vf.endswith(',scale_vaapi=-2:1080')
 
 

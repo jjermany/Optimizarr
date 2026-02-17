@@ -29,7 +29,7 @@ _QSV_ERROR_PATTERN = re.compile(
 _FFMPEG_ERROR_PATTERN = re.compile(r'\b(error|failed|invalid|cannot|unable|no such|permission denied)\b', re.IGNORECASE)
 # HDR-to-SDR software tone mapping filter chain.
 # Converts HDR10/HLG (BT.2020 / PQ / HLG) to SDR BT.709 using zscale + tonemap.
-# Must be applied in software before hwupload for VAAPI/QSV paths.
+# Used as a fallback when VAAPI hardware tone mapping is unavailable.
 _HDR_TONEMAP_FILTERS = [
     'zscale=t=linear:npl=100',
     'format=gbrpf32le',
@@ -38,6 +38,10 @@ _HDR_TONEMAP_FILTERS = [
     'zscale=t=bt709:m=bt709:r=tv',
     'format=yuv420p',
 ]
+# HDR-to-SDR hardware tone mapping via Intel VEBOX (tonemap_vaapi).
+# Requires the input to already be in a VAAPI surface (hardware decode).
+# Produces NV12 output in VAAPI memory, ready for VAAPI encode.
+_VAAPI_TONEMAP_FILTER = 'tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709'
 ENCODER_OPTIONS_BY_CODEC = {
     # VAAPI is listed first: it uses the iHD driver directly (same as Plex) and
     # works without the Intel oneVPL GPU runtime that QSV requires.  QSV remains
@@ -370,9 +374,18 @@ def _build_command_with_selection(
     apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
 
     if selection.use_vaapi and selection.hw_decode and not apply_tonemap:
-        # Full GPU pipeline: VAAPI hardware decode keeps frames in GPU memory so
-        # the costly CPU decode + format=nv12 + hwupload step is eliminated.
-        # Only valid when there is no CPU-side tone mapping required.
+        # Full GPU pipeline (SDR): VAAPI hardware decode keeps frames in GPU memory.
+        # Eliminates the costly CPU decode + format=nv12 + hwupload step.
+        command = [
+            'ffmpeg',
+            '-hwaccel', 'vaapi',
+            '-hwaccel_device', hw_device,
+            '-hwaccel_output_format', 'vaapi',
+            '-i', input_path,
+        ]
+    elif selection.use_vaapi and selection.hw_decode and apply_tonemap:
+        # Full GPU pipeline (HDR): hardware decode so tonemap_vaapi (Intel VEBOX) can
+        # operate directly on VAAPI surfaces without a CPU round-trip.
         command = [
             'ffmpeg',
             '-hwaccel', 'vaapi',
@@ -381,7 +394,8 @@ def _build_command_with_selection(
             '-i', input_path,
         ]
     elif selection.use_vaapi:
-        # Software decode path — required when HDR tone mapping must run on CPU.
+        # Software decode fallback — used when hw_decode is off (e.g. after hw tonemap
+        # failed and the job was retried with hw_decode=False).
         command = ['ffmpeg', '-vaapi_device', hw_device, '-i', input_path]
     elif selection.use_qsv:
         # QSV via VAAPI bridge (required for FFmpeg built with --enable-libvpl).
@@ -396,12 +410,19 @@ def _build_command_with_selection(
         command = ['ffmpeg', '-i', input_path]
 
     if selection.use_vaapi and selection.hw_decode and not apply_tonemap:
-        # Hardware decode path: frames already live in VAAPI surfaces — only scale if needed.
+        # Full GPU pipeline (SDR): frames already in VAAPI surfaces — only scale if needed.
         filters = [f'scale_vaapi=-2:{target_height}'] if should_scale else []
         if filters:
             command.extend(['-vf', ','.join(filters)])
+    elif selection.use_vaapi and selection.hw_decode and apply_tonemap:
+        # Full GPU pipeline (HDR): hardware decode → tonemap_vaapi (Intel VEBOX) → encode.
+        # tonemap_vaapi converts HDR10/HLG to SDR BT.709 on the GPU.
+        filters = [_VAAPI_TONEMAP_FILTER]
+        if should_scale:
+            filters.append(f'scale_vaapi=-2:{target_height}')
+        command.extend(['-vf', ','.join(filters)])
     elif selection.use_vaapi:
-        # Software decode path (HDR tone mapping): convert to NV12 on CPU then upload.
+        # Software decode fallback: CPU tone mapping → NV12 → hwupload → VAAPI encode.
         filters = []
         if apply_tonemap:
             filters.extend(_HDR_TONEMAP_FILTERS)
@@ -740,7 +761,9 @@ def _build_resume_command(
 
     hw_device = str(profile.get('qsv_device') or '/dev/dri/renderD128').strip()
 
-    if selection.use_vaapi and selection.hw_decode and not bool(profile.get('source_is_hdr') and profile.get('tone_map_hdr')):
+    if selection.use_vaapi and selection.hw_decode:
+        # Both SDR and HDR hardware paths use VAAPI hardware decode.
+        # tonemap_vaapi (VEBOX) and scale_vaapi operate on VAAPI surfaces produced here.
         command = [
             'ffmpeg',
             '-hwaccel', 'vaapi',
@@ -765,6 +788,11 @@ def _build_resume_command(
         filters = [f'scale_vaapi=-2:{target_height}'] if should_scale else []
         if filters:
             command.extend(['-vf', ','.join(filters)])
+    elif selection.use_vaapi and selection.hw_decode and apply_tonemap:
+        filters = [_VAAPI_TONEMAP_FILTER]
+        if should_scale:
+            filters.append(f'scale_vaapi=-2:{target_height}')
+        command.extend(['-vf', ','.join(filters)])
     elif selection.use_vaapi:
         filters = []
         if apply_tonemap:
