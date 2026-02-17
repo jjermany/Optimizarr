@@ -279,7 +279,7 @@ def _video_rate_args(codec_impl: str, bitrate_mode: str, bitrate_mbps: int, crf:
 
     if codec_impl in {'h264_qsv', 'hevc_qsv', 'av1_qsv'}:
         derived = _derive_qsv_bitrate_from_crf(crf, target_height)
-        return ['-rc:v', 'vbr', '-b:v', f'{derived}M', '-maxrate', f'{derived + 2}M', '-bufsize', f'{derived * 2}M']
+        return ['-b:v', f'{derived}M', '-maxrate', f'{derived + 2}M', '-bufsize', f'{derived * 2}M']
 
     return ['-crf', str(crf)]
 
