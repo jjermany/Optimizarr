@@ -67,18 +67,28 @@ def _extract_last_json_blob(raw_output: str) -> dict[str, Any]:
 def get_gpu_metrics() -> dict[str, float]:
     default_metrics = {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0}
 
+    raw_stdout = ''
     try:
+        # intel_gpu_top -J streams JSON indefinitely; it never exits on its own.
+        # Use a short sampling period (-s 250ms) and a 2s timeout so we capture
+        # at least a few samples before killing the process.  On TimeoutExpired the
+        # exception carries whatever stdout was captured — we use that instead of
+        # discarding it (which was the old bug that kept GPU% at 0).
         process = subprocess.run(
-            ['intel_gpu_top', '-J'],
+            ['intel_gpu_top', '-J', '-s', '250'],
             capture_output=True,
             text=True,
             check=False,
-            timeout=1,
+            timeout=2,
         )
-    except (FileNotFoundError, PermissionError, subprocess.TimeoutExpired):
+        raw_stdout = process.stdout
+    except subprocess.TimeoutExpired as exc:
+        captured = exc.stdout or b''
+        raw_stdout = captured if isinstance(captured, str) else captured.decode('utf-8', errors='replace')
+    except (FileNotFoundError, PermissionError):
         return default_metrics
 
-    payload = _extract_last_json_blob(process.stdout)
+    payload = _extract_last_json_blob(raw_stdout)
     if not payload:
         return default_metrics
 

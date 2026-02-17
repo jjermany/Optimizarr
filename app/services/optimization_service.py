@@ -684,6 +684,7 @@ def optimize_video(
     job_id: int | None = None,
     progress_callback: Callable[[dict[str, float | int | None]], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    encoder_selected_callback: Callable[[str, bool], None] | None = None,
 ) -> OptimizationMetrics:
     job_tag = f'job {job_id}' if job_id is not None else 'adhoc'
     profile = _profile_from_settings(settings)
@@ -761,6 +762,9 @@ def optimize_video(
         metrics.fallback_reason = f'no_{profile_codec}_hw_encoder'
     else:
         logger.info('[%s] Encoder selected: %r (codec=%r, hwaccel=%s)', job_tag, selection.encoder, selection.codec, 'qsv' if selection.use_qsv else 'vaapi' if selection.use_vaapi else 'none')
+
+    if encoder_selected_callback:
+        encoder_selected_callback(selection.encoder, selection.use_qsv or selection.use_vaapi)
 
     ffmpeg_command = _build_command_with_selection(input_path, str(partial_output_path), profile, selection)
     return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
