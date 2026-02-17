@@ -80,6 +80,28 @@ def test_format_notification_html_falls_back_to_heading_without_logo():
     assert 'Reason' in html
 
 
+def test_format_notification_body_expands_known_failure_reason():
+    body = notification_service._format_notification_body(
+        library_name='Movies',
+        file_name='film.mkv',
+        reason='qsv_encode_failed',
+        suggested_action='Retry with software encoder.',
+    )
+
+    assert 'qsv_encode_failed (Intel Quick Sync Video (QSV) failed to initialize or encode on this host.)' in body
+
+
+def test_format_notification_body_keeps_unknown_failure_reason_as_is():
+    body = notification_service._format_notification_body(
+        library_name='Movies',
+        file_name='film.mkv',
+        reason='custom_error',
+        suggested_action='Retry.',
+    )
+
+    assert 'Reason: custom_error' in body
+
+
 def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
     queued = []
     monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))

@@ -45,6 +45,15 @@ _LOGO_CANDIDATE_PATHS = (
     Path('/media/Logo/logo.png'),
     Path(__file__).resolve().parents[2] / 'media' / 'Logo' / 'logo.png',
 )
+_FAILURE_REASON_HINTS: dict[str, str] = {
+    'qsv_encode_failed': 'Intel Quick Sync Video (QSV) failed to initialize or encode on this host.',
+    'av1_encode_failed': 'The AV1 encoder failed during transcode.',
+    'ffmpeg_unavailable': 'FFmpeg is missing or unavailable to the Optimizarr process.',
+    'ffprobe_failed': 'FFprobe could not read media metadata for the source file.',
+    'workspace_prepare_failed': 'Optimizarr could not prepare its temporary workspace.',
+    'commit_failed': 'Optimizarr could not move the completed output file into the final location.',
+    'optimization_failed': 'The transcode failed for an unspecified reason.',
+}
 
 
 def _emails_to_csv(emails: Iterable[str]) -> str:
@@ -56,10 +65,12 @@ def _emails_from_csv(csv_value: str) -> list[str]:
 
 
 def _format_notification_body(*, library_name: str | None, file_name: str | None, reason: str, suggested_action: str) -> str:
+    reason_detail = _FAILURE_REASON_HINTS.get(reason)
+    reason_line = reason if reason_detail is None else f'{reason} ({reason_detail})'
     return (
         f'Library: {library_name or "unknown"}\n'
         f'File: {file_name or "n/a"}\n'
-        f'Reason: {reason}\n'
+        f'Reason: {reason_line}\n'
         f'Suggested action: {suggested_action}\n'
     )
 
