@@ -133,6 +133,8 @@ class JobResponse(BaseModel):
     error_message: str | None = None
     source_resolution: int | None = None
     source_is_hdr: bool | None = None
+    library_id: int | None = None
+    completed_at: str | None = None
 
     @classmethod
     def from_orm_job(cls, job):
@@ -154,6 +156,8 @@ class JobResponse(BaseModel):
             error_message=job.error_message,
             source_resolution=job.source_resolution,
             source_is_hdr=job.source_is_hdr,
+            library_id=job.library_id,
+            completed_at=job.completed_at.isoformat() if job.completed_at else None,
         )
 
 

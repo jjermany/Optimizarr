@@ -331,6 +331,8 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
             'error_message': job.error_message,
             'source_resolution': job.source_resolution,
             'source_is_hdr': job.source_is_hdr,
+            'library_id': job.library_id,
+            'completed_at': job.completed_at.isoformat() if job.completed_at else None,
         },
         throttle_progress=False,
     )
