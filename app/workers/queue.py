@@ -333,6 +333,19 @@ def _process_job(job_id: int) -> None:
         if job.status == 'failed':
             enqueue_job_failed(job)
         handle_job_terminal_state(job.id, job.status)
+    except Exception as exc:
+        logger.exception('Unhandled exception while processing queued job %s', job_id)
+        db.rollback()
+
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job:
+            job.status = 'failed'
+            job.error_message = str(exc) or exc.__class__.__name__
+            _mark_finished(job)
+            db.commit()
+            _publish_job(job, throttle_progress=False)
+            enqueue_job_failed(job)
+            handle_job_terminal_state(job.id, job.status)
     finally:
         db.close()
         with _pool_lock:
