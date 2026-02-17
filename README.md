@@ -1,55 +1,83 @@
 # Optimizarr
 
-Optimizarr is a FastAPI-based media optimization service designed to discover media files, queue transcoding jobs, monitor system resources, and emit real-time events for a frontend dashboard.
+Optimizarr is an automated media optimization service with a web UI. It discovers media files, queues hardware-accelerated transcoding jobs, monitors system resources, and streams real-time progress to a dashboard — all from a single Docker container.
 
 ## Features
 
 - Library management for media folders under `/media`
-- Configurable per-library optimization profiles
-- Job queue with pause/resume/cancel/retry/abort controls
+- Configurable per-library encoding profiles (codec, CRF/CBR, resolution, schedule)
+- Job queue with pause / resume / cancel / retry / abort controls
 - Manual and automatic library scanning
 - Startup and on-demand recovery workflow
-- Email notification settings + test trigger endpoint
-- Real-time websocket event stream for UI updates
-- Basic auth protection for UI/API access (optional)
+- Email notification settings + test trigger
+- Real-time WebSocket event stream for UI updates
+- Intel QSV / VAAPI hardware encoding support
+- Optional basic auth for UI / API access
 
-## Architecture at a glance
+## Architecture
 
+- **Single container** — React UI is built into the image and served by FastAPI on port `8080`. No separate nginx container required.
 - **Backend**: FastAPI + SQLAlchemy (`app/`)
-- **Worker**: background queue worker thread for optimization jobs
-- **Discovery**: discovery worker thread for interval/watcher scans
-- **Notifications**: background notification worker thread
-- **Frontend**: Vite + React app (`frontend/`)
+- **Frontend**: Vite + React (`frontend/`)
+- **Workers**: background threads for job queue, library discovery, notifications, and workspace cleanup
 
-## Requirements
+---
 
-- Docker (recommended) for containerized deployment
-- Or local Python 3.11+ for development
-- FFmpeg (for real transcoding workloads)
+## Unraid deployment
 
-## Quick start (Docker)
+### Option 1 — Add the template via terminal (recommended)
+
+Run the following in the Unraid terminal to install the template into Community Applications:
 
 ```bash
+wget -O /boot/config/plugins/dockerMan/templates-user/optimizarr.xml \
+  https://raw.githubusercontent.com/jjermany/Optimizarr/main/optimizarr.xml
+```
+
+Then go to **Docker → Add Container** and select **Optimizarr** from the template drop-down. The template pre-fills all paths, ports, GPU device passthrough, and environment variables.
+
+### Option 2 — docker compose
+
+```bash
+# Pull and start (single container, port 8080)
+docker compose -f docker-compose.unraid.yml up -d
+```
+
+The web UI will be available at `http://<unraid-ip>:8080`.
+
+---
+
+## Quick start (local / generic Docker)
+
+```bash
+# Build and run from source
 docker compose up --build
 ```
 
-## Using prebuilt GHCR images
-
-If you deploy from published container images instead of building locally, pull the API image from GitHub Container Registry:
-
 ```bash
+# Pull the published image
 docker pull ghcr.io/jjermany/optimizarr:latest
+docker run -d \
+  --name optimizarr \
+  -p 8080:8080 \
+  --device /dev/dri:/dev/dri \
+  -v /path/to/media:/media \
+  -v /path/to/config:/config \
+  -v /path/to/cache:/cache \
+  -e LIBVA_DRIVER_NAME=iHD \
+  -e QSV_DEVICE=/dev/dri/renderD128 \
+  ghcr.io/jjermany/optimizarr:latest
 ```
 
-`docker-compose.unraid.yml` is configured to use `ghcr.io/jjermany/optimizarr:latest` for the backend API service.
+Volumes:
 
-The frontend listens on `http://localhost:8085` and proxies API traffic to the backend container.
+| Host path | Container path | Purpose |
+|---|---|---|
+| `/path/to/media` | `/media` | Media libraries |
+| `/path/to/config` | `/config` | Database + settings (persistent) |
+| `/path/to/cache` | `/cache` | Temporary encode workspace |
 
-Mounted volumes in `docker-compose.yml`:
-
-- `./media:/media`
-- `./cache:/cache`
-- `./config:/config`
+---
 
 ## Local development
 
@@ -67,22 +95,27 @@ uvicorn app.main:app --host 0.0.0.0 --port 8080 --reload
 ```bash
 cd frontend
 npm install
-npm run dev
+npm run dev   # Vite dev server on :5173, proxies /api and /ws to :8080
 ```
+
+---
 
 ## Configuration
 
 Key environment variables:
 
-- `OPTIMIZARR_VERSION`: reported by `GET /version`
-- `OPTIMIZARR_UI_USERNAME`: enable basic auth username
-- `OPTIMIZARR_UI_PASSWORD`: enable basic auth password
-- `OPTIMIZARR_WS_TOKEN`: optional websocket token gate
+| Variable | Default | Description |
+|---|---|---|
+| `LIBVA_DRIVER_NAME` | `iHD` | VA-API driver. Use `iHD` for Intel Gen 8+ / Arc |
+| `QSV_DEVICE` | `/dev/dri/renderD128` | DRM render node for QSV |
+| `OPTIMIZARR_VERSION` | `0.1.0` | Reported by `GET /version` |
+| `OPTIMIZARR_UI_USERNAME` | _(unset)_ | Enable basic auth — username |
+| `OPTIMIZARR_UI_PASSWORD` | _(unset)_ | Enable basic auth — password |
+| `OPTIMIZARR_WS_TOKEN` | _(unset)_ | Optional WebSocket token gate |
 
-- `LIBVA_DRIVER_NAME`: set to `iHD` for modern Intel GPUs (including Core Ultra / Arc iGPU)
-- `QSV_DEVICE`: DRM render node used by QSV (default `/dev/dri/renderD128`)
+If both auth variables are unset, the API is open.
 
-If both UI auth variables are unset, API endpoints are open.
+---
 
 ## API endpoints
 
@@ -123,50 +156,35 @@ If both UI auth variables are unset, API endpoints are open.
 - `POST /api/jobs/{job_id}/pause`
 - `POST /api/jobs/{job_id}/resume`
 - `POST /api/jobs/{job_id}/abort`
-- `POST /api/scan` (scan all enabled libraries)
+- `POST /api/scan`
 - `POST /api/queue/pause`
 - `POST /api/queue/resume`
 
-Backward-compatible aliases also exist for:
-
-- `POST /api/jobs`
-- `GET /api/jobs`
-- `GET /api/jobs/{job_id}`
-
-### Recovery and websocket
+### Recovery and WebSocket
 
 - `POST /api/recovery/run`
-- `GET /api/auth/ws-token` (only when a websocket token is required)
+- `GET /api/auth/ws-token`
 - `WS /ws`
+
+---
 
 ## Testing
 
-Run backend tests:
-
 ```bash
+# Backend
 pytest
+
+# Frontend
+cd frontend && npm test
 ```
 
-Run frontend tests:
-
-```bash
-cd frontend
-npm test
-```
-
-## Notes
-
-- Library paths must be absolute and remain under `/media`.
-- The Docker image includes FFmpeg and installs Intel VA-API/media runtime packages when available in the base distro repositories.
-
+---
 
 ## Intel QSV troubleshooting
 
-If jobs fail with `qsv_encode_failed` but `ffmpeg -encoders` shows `*_qsv` encoders, the issue is usually runtime device initialization rather than missing encoder support.
+If jobs fail with `qsv_encode_failed` but `ffmpeg -encoders` lists `*_qsv` encoders, the issue is usually device initialisation rather than missing encoder support.
 
-1. Ensure `/dev/dri` is passed to the API container (`devices: - /dev/dri:/dev/dri`).
-2. Set `LIBVA_DRIVER_NAME=iHD` for newer Intel GPUs.
-3. Ensure the render node exists and is accessible (typically `/dev/dri/renderD128`).
-4. If your host uses a different render node, set `QSV_DEVICE`/profile `qsv_device` accordingly.
-
-Optimizarr now builds QSV pipelines with explicit QSV device initialization and hardware upload filters so encode can run on Intel Quick Sync even when hardware decode acceleration is unavailable for the input codec.
+1. Ensure `/dev/dri` is passed through (`--device /dev/dri:/dev/dri`).
+2. Set `LIBVA_DRIVER_NAME=iHD` for Intel Gen 8+ / Arc GPUs.
+3. Confirm the render node exists: `ls /dev/dri/` — typically `renderD128`.
+4. If your host uses a different node, set `QSV_DEVICE` accordingly.
