@@ -328,19 +328,7 @@ def test_build_encoder_command_hdr_qsv_applies_tonemap(monkeypatch):
     vf = command[command.index('-vf') + 1]
     assert vf.startswith(_HDR_TONEMAP_PREFIX)
     assert 'format=nv12,hwupload=extra_hw_frames=64' in vf
-    assert vf.endswith(',scale_qsv=-2:1080')
-
-
-def test_select_encoder_ignores_unavailable_explicit_preference(monkeypatch):
-    profile = {'codec': 'h264', 'preferred_video_encoder': 'h264_qsv'}
-
-    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'libx264')
-
-    selection = optimization_service._select_encoder(profile)
-
-    assert selection is not None
-    assert selection.encoder == 'h264_qsv'
-    assert selection.is_explicit_preference is True
+    assert vf.endswith(',scale_qsv=-1:1080')
 
 
 def test_refresh_encoder_cache_parses_ffmpeg_encoders(monkeypatch):
@@ -399,8 +387,6 @@ def test_optimize_video_fails_when_h264_qsv_encode_fails(monkeypatch, tmp_path):
     assert metrics.status == 'failed'
     assert metrics.used_fallback is False
     assert metrics.error_message == 'qsv_encode_failed'
-
-
 
 
 

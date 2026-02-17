@@ -461,10 +461,6 @@ def _get_settings(db: Session) -> Settings:
     return settings
 
 
-def _output_path_for(source_path: Path) -> Path:
-    return source_path.with_name(f'{source_path.stem}-1080p.mkv')
-
-
 def _get_library_or_404(db: Session, library_id: int) -> Library:
     library = db.query(Library).filter(Library.id == library_id).first()
     if not library:
