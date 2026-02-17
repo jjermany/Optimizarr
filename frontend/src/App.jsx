@@ -18,6 +18,7 @@ import {
   fetchWsToken,
   pauseJob,
   pauseQueue,
+  purgeHistory,
   removeAllJobs,
   resumeJob,
   resumeQueue,
@@ -44,6 +45,7 @@ const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const MESSAGE_DISMISS_MS = 5000;
 const JOBS_PAGE_SIZE = 50;
+const HISTORY_PAGE_SIZE = 50;
 
 const PAGE_KEYS = {
   dashboard: 'Dashboard',
@@ -127,16 +129,19 @@ function isWithinWindow(currentHour, startHour, endHour) {
   return currentHour >= startHour || currentHour <= endHour;
 }
 
-function libraryQueueCount(library, jobs) {
-  return jobs.filter(
-    (job) => ['pending', 'queued', 'created'].includes(job.status?.toLowerCase())
-      && (job.source_path === library.path || job.source_path.startsWith(`${library.path}/`)),
-  ).length;
-}
-
 const ACTIVE_STATUSES = new Set(['starting', 'running', 'preflight']);
 const PAUSED_STATUSES = new Set(['paused', 'paused_schedule']);
 const QUEUED_STATUSES = new Set(['pending', 'queued', 'created']);
+const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']);
+
+function libraryQueueCount(library, jobs) {
+  return jobs.filter((job) => {
+    if (!QUEUED_STATUSES.has(job.status?.toLowerCase())) return false;
+    // Prefer library_id match (accurate); fall back to path prefix for legacy data
+    if (job.library_id != null) return job.library_id === library.id;
+    return job.source_path === library.path || job.source_path?.startsWith(`${library.path}/`);
+  }).length;
+}
 
 function jobSortRank(job) {
   const status = job.status?.toLowerCase();
@@ -174,6 +179,27 @@ function formatEta(etaSeconds) {
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+function extractTitleYear(filePath) {
+  const fileName = (filePath || '').split('/').pop() || '';
+  const stem = fileName.replace(/\.[^.]+$/, '');
+  // Normalize dot/underscore separators to spaces
+  const spaced = stem.replace(/[._]/g, ' ').trim();
+  // Prefer year enclosed in parentheses e.g. (2019)
+  const parenMatch = spaced.match(/\(((19|20)\d{2})\)/);
+  if (parenMatch) {
+    const title = spaced.slice(0, spaced.indexOf(parenMatch[0])).replace(/\s+$/, '').trim();
+    return { title: title || spaced, year: parenMatch[1] };
+  }
+  // Fall back: first standalone 4-digit year (1900-2099)
+  const yearMatch = spaced.match(/\b((19|20)\d{2})\b/);
+  if (yearMatch) {
+    const yearIdx = spaced.indexOf(yearMatch[0]);
+    const title = spaced.slice(0, yearIdx).replace(/[\s\-]+$/, '').trim();
+    return { title: title || spaced, year: yearMatch[1] };
+  }
+  return { title: spaced, year: null };
 }
 
 function validateLibraryDraft(draft, libraryEnabled) {
@@ -364,6 +390,9 @@ export default function App() {
   const [toasts, setToasts] = useState([]);
   const [availableEncodersByCodec, setAvailableEncodersByCodec] = useState({});
   const [jobsPage, setJobsPage] = useState(1);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [queueSearch, setQueueSearch] = useState('');
+  const [historySearch, setHistorySearch] = useState('');
   const [nowHour, setNowHour] = useState(() => new Date().getHours());
 
   const wsRef = useRef();
@@ -374,25 +403,90 @@ export default function App() {
   const toastTimersRef = useRef({});
 
   const queueCount = useMemo(
-    () => jobs.filter((job) => ['pending', 'queued', 'created'].includes(job.status?.toLowerCase())).length,
+    () => jobs.filter((job) => QUEUED_STATUSES.has(job.status?.toLowerCase())).length,
     [jobs],
   );
 
-  const sortedJobs = useMemo(() => sortedJobsForDisplay(jobs), [jobs]);
+  // Build a lookup map: library id → library name
+  const libraryById = useMemo(
+    () => Object.fromEntries(libraries.map((lib) => [lib.id, lib])),
+    [libraries],
+  );
+
+  // Active queue jobs (non-terminal)
+  const activeJobs = useMemo(
+    () => jobs.filter((job) => !TERMINAL_STATUSES.has(job.status?.toLowerCase())),
+    [jobs],
+  );
+
+  // Terminal/history jobs
+  const historyJobs = useMemo(
+    () => jobs.filter((job) => TERMINAL_STATUSES.has(job.status?.toLowerCase())),
+    [jobs],
+  );
+
+  const sortedActiveJobs = useMemo(() => sortedJobsForDisplay(activeJobs), [activeJobs]);
+
+  // Sorted history: most recently completed first
+  const sortedHistoryJobs = useMemo(
+    () => [...historyJobs].sort((a, b) => {
+      if (a.completed_at && b.completed_at) return b.completed_at.localeCompare(a.completed_at);
+      return b.id - a.id;
+    }),
+    [historyJobs],
+  );
+
+  function jobMatchesSearch(job, search) {
+    if (!search) return true;
+    const lower = search.toLowerCase();
+    const { title, year } = extractTitleYear(job.source_path);
+    const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '') : '';
+    return (
+      title.toLowerCase().includes(lower)
+      || (year && year.includes(lower))
+      || libName.toLowerCase().includes(lower)
+      || job.source_path?.toLowerCase().includes(lower)
+      || String(job.id).includes(lower)
+    );
+  }
+
+  const filteredActiveJobs = useMemo(
+    () => sortedActiveJobs.filter((job) => jobMatchesSearch(job, queueSearch)),
+    [sortedActiveJobs, queueSearch, libraryById],
+  );
+
+  const filteredHistoryJobs = useMemo(
+    () => sortedHistoryJobs.filter((job) => jobMatchesSearch(job, historySearch)),
+    [sortedHistoryJobs, historySearch, libraryById],
+  );
 
   const totalJobPages = useMemo(
-    () => Math.max(1, Math.ceil(sortedJobs.length / JOBS_PAGE_SIZE)),
-    [sortedJobs.length],
+    () => Math.max(1, Math.ceil(filteredActiveJobs.length / JOBS_PAGE_SIZE)),
+    [filteredActiveJobs.length],
+  );
+
+  const totalHistoryPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredHistoryJobs.length / HISTORY_PAGE_SIZE)),
+    [filteredHistoryJobs.length],
   );
 
   const pagedJobs = useMemo(() => {
     const start = (jobsPage - 1) * JOBS_PAGE_SIZE;
-    return sortedJobs.slice(start, start + JOBS_PAGE_SIZE);
-  }, [sortedJobs, jobsPage]);
+    return filteredActiveJobs.slice(start, start + JOBS_PAGE_SIZE);
+  }, [filteredActiveJobs, jobsPage]);
+
+  const pagedHistoryJobs = useMemo(() => {
+    const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
+    return filteredHistoryJobs.slice(start, start + HISTORY_PAGE_SIZE);
+  }, [filteredHistoryJobs, historyPage]);
 
   useEffect(() => {
     if (jobsPage > totalJobPages) setJobsPage(totalJobPages);
   }, [jobsPage, totalJobPages]);
+
+  useEffect(() => {
+    if (historyPage > totalHistoryPages) setHistoryPage(totalHistoryPages);
+  }, [historyPage, totalHistoryPages]);
 
   const selectedLibrary = useMemo(
     () => libraries.find((library) => library.id === selectedLibraryId) ?? null,
@@ -652,6 +746,17 @@ export default function App() {
       await refreshAll();
     } catch (actionError) {
       setError(actionError.message || 'Remove all failed.');
+    }
+  }
+
+  async function handlePurgeHistory() {
+    try {
+      const result = await purgeHistory();
+      setMessage(`Purged ${result.removed_job_ids.length} history item(s).`);
+      setError('');
+      await refreshAll();
+    } catch (actionError) {
+      setError(actionError.message || 'Purge history failed.');
     }
   }
 
@@ -1358,115 +1463,238 @@ export default function App() {
 
         {/* ── Jobs ───────────────────────────────────────────────────────────── */}
         {activePage === 'jobs' && (
-          <section className="animate-fade-in overflow-hidden rounded-xl border border-slate-800 bg-slate-900/80 shadow-lg shadow-slate-950/40">
-            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-3">
-              <p className="text-sm font-medium text-slate-300">Queue Controls</p>
-              <div className="flex flex-wrap items-center gap-2">
-                <Btn size="sm" variant="danger" onClick={handleAbortAllJobs}>Abort All</Btn>
-                <Btn size="sm" variant="secondary" onClick={handleRemoveAllJobs}>Remove All</Btn>
-                <Btn size="sm" variant="warning" onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}>
-                  {queuePaused ? 'Resume Queue' : 'Pause Queue'}
-                </Btn>
+          <section className="animate-fade-in space-y-5">
+
+            {/* Queue section */}
+            <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/80 shadow-lg shadow-slate-950/40">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-3">
+                <div className="flex items-center gap-3">
+                  <p className="text-sm font-semibold text-slate-200">Queue</p>
+                  <span className="rounded-full bg-slate-700 px-2 py-0.5 text-xs text-slate-300">{filteredActiveJobs.length}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Search queue…"
+                    value={queueSearch}
+                    onChange={(e) => { setQueueSearch(e.target.value); setJobsPage(1); }}
+                    className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30 w-44"
+                  />
+                  <Btn size="sm" variant="danger" onClick={handleAbortAllJobs}>Abort All</Btn>
+                  <Btn size="sm" variant="warning" onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}>
+                    {queuePaused ? 'Resume Queue' : 'Pause Queue'}
+                  </Btn>
+                </div>
               </div>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-slate-800">
-                <thead className="bg-slate-800/50">
-                  <tr>
-                    {['ID', 'Source', 'Status', 'Details', 'Encoder', 'Progress', 'Actions'].map((h) => (
-                      <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60">
-                  {pagedJobs.length === 0 && (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-slate-800">
+                  <thead className="bg-slate-800/50">
                     <tr>
-                      <td colSpan={7} className="px-4 py-10 text-center text-sm text-slate-500">
-                        No jobs in queue.
-                      </td>
+                      {['ID', 'Title', 'Year', 'Library', 'Status', 'Details', 'Encoder', 'Progress', 'Actions'].map((h) => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">{h}</th>
+                      ))}
                     </tr>
-                  )}
-                  {pagedJobs.map((job) => {
-                    const progress = progressFromJob(job);
-                    const isRunning = job.status === 'running';
-                    const eta = formatEta(job.eta_seconds);
-                    return (
-                      <tr key={job.id} className="transition-colors duration-100 hover:bg-slate-800/30">
-                        <td className="px-4 py-3 text-sm text-slate-400">{job.id}</td>
-                        <td className="max-w-xs truncate px-4 py-3 text-sm text-slate-300">{job.source_path}</td>
-                        <td className="px-4 py-3 text-sm capitalize">
-                          <span className={job.status === 'running' ? 'text-cyan-300' : job.status === 'failed' ? 'text-red-400' : 'text-slate-300'}>{job.status}</span>
-                          {job.status === 'failed' && job.error_message && (
-                            <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
-                          )}
-                        </td>
-                        <td className="px-4 py-3 text-xs text-slate-400">
-                          <span>{formatResolution(job.source_resolution)}</span>
-                          <span className="mx-1.5 text-slate-600">·</span>
-                          <span>{formatHdrIndicator(job.source_is_hdr)}</span>
-                        </td>
-                        <td className="px-4 py-3 text-xs text-slate-400">
-                          {job.encoder_used ? (
-                            <>
-                              <span className={job.hwaccel_used ? 'font-medium text-cyan-400' : ''}>{job.encoder_used}</span>
-                              {job.hwaccel_used && (
-                                <span className="ml-1.5 rounded bg-cyan-900/50 px-1.5 py-0.5 text-cyan-300">HW</span>
-                              )}
-                            </>
-                          ) : (
-                            <span className="text-slate-600">—</span>
-                          )}
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="h-1.5 w-40 rounded-full bg-slate-700">
-                            <div
-                              className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-500"
-                              style={{ width: `${progress}%` }}
-                            />
-                          </div>
-                          <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
-                            <span>{progress}%</span>
-                            {isRunning && job.fps != null && <span>{job.fps.toFixed(1)} fps</span>}
-                            {isRunning && eta && <span>{eta}</span>}
-                          </div>
-                        </td>
-                        <td className="px-4 py-3">
-                          <div className="flex flex-wrap gap-1.5">
-                            {job.status === 'running' && <Btn size="sm" variant="warning" onClick={() => handleJobAction('pause', job.id)}>Pause</Btn>}
-                            {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
-                            {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && <Btn size="sm" variant="success" onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>Start</Btn>}
-                            {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
-                              <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>Abort</Btn>
-                            )}
-                            {['failed', 'cancelled'].includes(job.status) && (
-                              <Btn size="sm" variant="primary" onClick={() => handleJobAction('retry', job.id)}>Retry</Btn>
-                            )}
-                            {['complete', 'failed', 'skipped', 'cancelled', 'interrupted'].includes(job.status) && (
-                              <Btn size="sm" variant="secondary" onClick={() => handleJobAction('remove', job.id)}>Remove</Btn>
-                            )}
-                          </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {pagedJobs.length === 0 && (
+                      <tr>
+                        <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
+                          {queueSearch ? 'No matching jobs.' : 'No jobs in queue.'}
                         </td>
                       </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-            <div className="flex items-center justify-between border-t border-slate-800 px-5 py-3 text-sm text-slate-400">
-              <p>Page {jobsPage} of {totalJobPages}</p>
-              <div className="flex items-center gap-1">
-                {Array.from({ length: totalJobPages }, (_, i) => i + 1).map((pageNum) => (
-                  <button
-                    key={pageNum}
-                    type="button"
-                    onClick={() => setJobsPage(pageNum)}
-                    className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${jobsPage === pageNum ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
-                  >
-                    {pageNum}
-                  </button>
-                ))}
+                    )}
+                    {pagedJobs.map((job) => {
+                      const progress = progressFromJob(job);
+                      const isRunning = job.status === 'running';
+                      const eta = formatEta(job.eta_seconds);
+                      const { title, year } = extractTitleYear(job.source_path);
+                      const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
+                      return (
+                        <tr key={job.id} className="transition-colors duration-100 hover:bg-slate-800/30">
+                          <td className="px-4 py-3 text-xs text-slate-500">{job.id}</td>
+                          <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={job.source_path}>{title}</td>
+                          <td className="px-4 py-3 text-sm text-slate-400">{year ?? '—'}</td>
+                          <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
+                          <td className="px-4 py-3 text-sm capitalize">
+                            <span className={job.status === 'running' ? 'text-cyan-300' : job.status === 'failed' ? 'text-red-400' : 'text-slate-300'}>{job.status}</span>
+                            {job.status === 'failed' && job.error_message && (
+                              <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-slate-400">
+                            <span>{formatResolution(job.source_resolution)}</span>
+                            <span className="mx-1.5 text-slate-600">·</span>
+                            <span>{formatHdrIndicator(job.source_is_hdr)}</span>
+                          </td>
+                          <td className="px-4 py-3 text-xs text-slate-400">
+                            {job.encoder_used ? (
+                              <>
+                                <span className={job.hwaccel_used ? 'font-medium text-cyan-400' : ''}>{job.encoder_used}</span>
+                                {job.hwaccel_used && (
+                                  <span className="ml-1.5 rounded bg-cyan-900/50 px-1.5 py-0.5 text-cyan-300">HW</span>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-slate-600">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="h-1.5 w-32 rounded-full bg-slate-700">
+                              <div
+                                className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-500"
+                                style={{ width: `${progress}%` }}
+                              />
+                            </div>
+                            <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
+                              <span>{progress}%</span>
+                              {isRunning && job.fps != null && <span>{job.fps.toFixed(1)} fps</span>}
+                              {isRunning && eta && <span>{eta}</span>}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-wrap gap-1.5">
+                              {job.status === 'running' && <Btn size="sm" variant="warning" onClick={() => handleJobAction('pause', job.id)}>Pause</Btn>}
+                              {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
+                              {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && <Btn size="sm" variant="success" onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>Start</Btn>}
+                              {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
+                                <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>Abort</Btn>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
+              {totalJobPages > 1 && (
+                <div className="flex items-center justify-between border-t border-slate-800 px-5 py-3 text-sm text-slate-400">
+                  <p>Page {jobsPage} of {totalJobPages}</p>
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: totalJobPages }, (_, i) => i + 1).map((pageNum) => (
+                      <button
+                        key={pageNum}
+                        type="button"
+                        onClick={() => setJobsPage(pageNum)}
+                        className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${jobsPage === pageNum ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                      >
+                        {pageNum}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
+
+            {/* History section */}
+            <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/80 shadow-lg shadow-slate-950/40">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-3">
+                <div className="flex items-center gap-3">
+                  <p className="text-sm font-semibold text-slate-200">History</p>
+                  <span className="rounded-full bg-slate-700 px-2 py-0.5 text-xs text-slate-300">{filteredHistoryJobs.length}</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="Search history…"
+                    value={historySearch}
+                    onChange={(e) => { setHistorySearch(e.target.value); setHistoryPage(1); }}
+                    className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30 w-44"
+                  />
+                  <Btn size="sm" variant="danger" onClick={handlePurgeHistory}>Purge All</Btn>
+                </div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-slate-800">
+                  <thead className="bg-slate-800/50">
+                    <tr>
+                      {['ID', 'Title', 'Year', 'Library', 'Status', 'Details', 'Encoder', 'Completed', 'Actions'].map((h) => (
+                        <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60">
+                    {pagedHistoryJobs.length === 0 && (
+                      <tr>
+                        <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
+                          {historySearch ? 'No matching history.' : 'No completed jobs yet.'}
+                        </td>
+                      </tr>
+                    )}
+                    {pagedHistoryJobs.map((job) => {
+                      const { title, year } = extractTitleYear(job.source_path);
+                      const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
+                      const completedDate = job.completed_at
+                        ? new Date(job.completed_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                        : '—';
+                      const statusColor = job.status === 'complete'
+                        ? 'text-emerald-400'
+                        : job.status === 'failed'
+                          ? 'text-red-400'
+                          : 'text-slate-400';
+                      return (
+                        <tr key={job.id} className="transition-colors duration-100 hover:bg-slate-800/30">
+                          <td className="px-4 py-3 text-xs text-slate-500">{job.id}</td>
+                          <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={job.source_path}>{title}</td>
+                          <td className="px-4 py-3 text-sm text-slate-400">{year ?? '—'}</td>
+                          <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
+                          <td className="px-4 py-3 text-sm capitalize">
+                            <span className={statusColor}>{job.status}</span>
+                            {job.status === 'failed' && job.error_message && (
+                              <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-slate-400">
+                            <span>{formatResolution(job.source_resolution)}</span>
+                            <span className="mx-1.5 text-slate-600">·</span>
+                            <span>{formatHdrIndicator(job.source_is_hdr)}</span>
+                          </td>
+                          <td className="px-4 py-3 text-xs text-slate-400">
+                            {job.encoder_used ? (
+                              <>
+                                <span className={job.hwaccel_used ? 'font-medium text-cyan-400' : ''}>{job.encoder_used}</span>
+                                {job.hwaccel_used && (
+                                  <span className="ml-1.5 rounded bg-cyan-900/50 px-1.5 py-0.5 text-cyan-300">HW</span>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-slate-600">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-xs text-slate-400">{completedDate}</td>
+                          <td className="px-4 py-3">
+                            <div className="flex flex-wrap gap-1.5">
+                              {['failed', 'cancelled'].includes(job.status) && (
+                                <Btn size="sm" variant="primary" onClick={() => handleJobAction('retry', job.id)}>Retry</Btn>
+                              )}
+                              <Btn size="sm" variant="secondary" onClick={() => handleJobAction('remove', job.id)}>Remove</Btn>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {totalHistoryPages > 1 && (
+                <div className="flex items-center justify-between border-t border-slate-800 px-5 py-3 text-sm text-slate-400">
+                  <p>Page {historyPage} of {totalHistoryPages}</p>
+                  <div className="flex items-center gap-1">
+                    {Array.from({ length: totalHistoryPages }, (_, i) => i + 1).map((pageNum) => (
+                      <button
+                        key={pageNum}
+                        type="button"
+                        onClick={() => setHistoryPage(pageNum)}
+                        className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${historyPage === pageNum ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                      >
+                        {pageNum}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
           </section>
         )}
 

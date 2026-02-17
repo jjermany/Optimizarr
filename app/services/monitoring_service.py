@@ -66,9 +66,8 @@ def _extract_last_json_blob(raw_output: str) -> dict[str, Any]:
     return last_json
 
 
-def get_gpu_metrics() -> dict[str, float]:
-    default_metrics = {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0}
-
+def _get_intel_gpu_metrics() -> dict[str, float] | None:
+    """Try Intel GPU metrics via intel_gpu_top. Returns None if unavailable."""
     # intel_gpu_top -J streams JSON objects indefinitely.  When stdout is a pipe
     # (not a tty) the C library switches to full block-buffering, so no data is
     # flushed before we SIGKILL the process — leaving raw_stdout empty.
@@ -83,7 +82,7 @@ def get_gpu_metrics() -> dict[str, float]:
             text=True,
         )
     except (FileNotFoundError, PermissionError):
-        return default_metrics
+        return None
 
     raw_stdout = ''
     deadline = time.monotonic() + 2.0
@@ -109,12 +108,59 @@ def get_gpu_metrics() -> dict[str, float]:
 
     payload = _extract_last_json_blob(raw_stdout)
     if not payload:
-        return default_metrics
+        return None
+
+    video = _extract_percent(payload, ('video',))
+    render = _extract_percent(payload, ('render', '3d'))
+    if video == 0.0 and render == 0.0:
+        return None
 
     return {
-        'gpu_video_percent': _extract_percent(payload, ('video',)),
-        'gpu_render_percent': _extract_percent(payload, ('render', '3d')),
+        'gpu_video_percent': video,
+        'gpu_render_percent': render,
     }
+
+
+def _get_nvidia_gpu_metrics() -> dict[str, float] | None:
+    """Try NVIDIA GPU metrics via nvidia-smi. Returns None if unavailable."""
+    try:
+        result = subprocess.run(
+            [
+                'nvidia-smi',
+                '--query-gpu=utilization.gpu,utilization.memory',
+                '--format=csv,noheader,nounits',
+            ],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode != 0:
+            return None
+        lines = result.stdout.strip().split('\n')
+        if not lines or not lines[0].strip():
+            return None
+        parts = lines[0].split(',')
+        gpu_util = float(parts[0].strip())
+        return {
+            'gpu_video_percent': gpu_util,
+            'gpu_render_percent': gpu_util,
+        }
+    except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError):
+        return None
+
+
+def get_gpu_metrics() -> dict[str, float]:
+    default_metrics = {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0}
+
+    intel = _get_intel_gpu_metrics()
+    if intel is not None:
+        return intel
+
+    nvidia = _get_nvidia_gpu_metrics()
+    if nvidia is not None:
+        return nvidia
+
+    return default_metrics
 
 
 def get_system_metrics(db: Session) -> dict[str, float | int]:

@@ -124,6 +124,10 @@ export function removeAllJobs() {
   return request('/jobs/remove-all', { method: 'POST' });
 }
 
+export function purgeHistory() {
+  return request('/jobs/remove-all', { method: 'POST' });
+}
+
 export function pauseQueue() {
   return request('/queue/pause', { method: 'POST' });
 }
