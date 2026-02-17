@@ -30,6 +30,11 @@ ENCODER_OPTIONS_BY_CODEC = {
 }
 _ACTIVE_FFMPEG_LOCK = Lock()
 _ACTIVE_FFMPEG_PROCESSES: dict[int, subprocess.Popen] = {}
+_QSV_SW_FALLBACK: dict[str, str] = {
+    'h264_qsv': 'libx264',
+    'hevc_qsv': 'libx265',
+    'av1_qsv': 'libsvtav1',
+}
 
 
 @dataclass
@@ -726,6 +731,32 @@ def optimize_video(
         progress_callback,
         should_cancel,
     )
+
+    if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv:
+        sw_encoder = _QSV_SW_FALLBACK.get(selection.encoder)
+        if sw_encoder and _encoder_available(sw_encoder):
+            logger.warning(
+                '[%s] QSV encoder %r failed (rc=%s); retrying with software fallback %r',
+                job_tag, selection.encoder, return_code, sw_encoder,
+            )
+            try:
+                _ensure_clean_workspace(workspace_path)
+            except OSError:
+                pass
+            fallback_selection = EncoderSelection(codec=selection.codec, encoder=sw_encoder, use_qsv=False)
+            ffmpeg_command = _build_command_with_selection(
+                input_path, str(partial_output_path), profile, fallback_selection,
+            )
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id,
+                ffmpeg_command,
+                duration,
+                progress_callback,
+                should_cancel,
+            )
+            selection = fallback_selection
+            metrics.used_fallback = True
+            metrics.fallback_reason = 'qsv_failed_sw_fallback'
 
     if return_code is None:
         logger.error('[%s] FFmpeg could not be launched (binary missing or not executable)', job_tag)
