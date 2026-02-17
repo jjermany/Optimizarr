@@ -418,8 +418,9 @@ def test_enforce_schedule_policy_pauses_running_job(monkeypatch):
 
 
 def test_enforce_schedule_policy_requeues_paused_schedule_job_when_window_opens(monkeypatch):
-    deleted_partials = []
-    monkeypatch.setattr(queue, 'delete_partial_output', lambda settings, job_id: deleted_partials.append(job_id))
+    deleted_partials: list = []
+    # Partial outputs are preserved on schedule-resume so the job can continue
+    # from where it left off; the monkeypatch records any unexpected deletions.
 
     with SessionLocal() as db:
         db.query(Job).delete()
@@ -453,8 +454,11 @@ def test_enforce_schedule_policy_requeues_paused_schedule_job_when_window_opens(
 
         db.refresh(job)
         assert job.status == 'queued'
-        assert job.progress_percent == 0
-        assert deleted_partials == [job.id]
+        # Progress is preserved so the UI shows existing progress during resume.
+        assert job.progress_percent == 37
+        # Partial output is NOT deleted on schedule-resume; it will be used for a
+        # seek-based resume instead of re-encoding from scratch.
+        assert deleted_partials == []
 
 
 def test_pause_and_resume_queue_publish_system_events(monkeypatch):

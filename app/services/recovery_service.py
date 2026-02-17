@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import subprocess
 
 from sqlalchemy.orm import Session
 
@@ -28,6 +29,34 @@ def _workspace_path(settings: Settings, job_id: int) -> Path:
     return Path(settings.workspace_root) / str(job_id)
 
 
+def _probe_partial_duration(workspace: Path) -> float | None:
+    """Return the duration (seconds) of the partial output file in the workspace, if any."""
+    partials = list(workspace.glob('output.partial.*'))
+    if not partials:
+        return None
+    partial_path = partials[0]
+    command = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        str(partial_path),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    value = result.stdout.strip().splitlines()
+    if not value:
+        return None
+    try:
+        return float(value[-1].strip())
+    except ValueError:
+        return None
+
+
 def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
     settings = _get_or_create_settings(db)
     jobs = db.query(Job).filter(Job.status.in_(RECOVERABLE_STATUSES)).all()
@@ -46,17 +75,36 @@ def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
         job.completed_at = None
 
         workspace = _workspace_path(settings, job.id)
-        if settings.cleanup_workspaces_on_startup and workspace.exists():
-            shutil.rmtree(workspace, ignore_errors=True)
-            cleaned_workspaces += 1
+
+        # Probe the partial output for a resume position before any cleanup.
+        partial_duration: float | None = None
+        if workspace.exists():
+            partial_duration = _probe_partial_duration(workspace)
 
         if settings.requeue_interrupted_jobs:
             job.status = 'queued'
-            job.progress_percent = 0
             job.fps = None
             job.eta_seconds = None
             job.output_path = None
             requeued_jobs += 1
+
+            if partial_duration and partial_duration > 0:
+                # Keep the workspace so optimize_video can resume from the partial.
+                job.resume_position_seconds = partial_duration
+                # Leave progress_percent as-is so the UI shows existing progress.
+            else:
+                # No usable partial; reset progress and clean the workspace.
+                job.resume_position_seconds = None
+                job.progress_percent = 0
+                if workspace.exists():
+                    shutil.rmtree(workspace, ignore_errors=True)
+                    cleaned_workspaces += 1
+        else:
+            job.resume_position_seconds = None
+            job.progress_percent = 0
+            if settings.cleanup_workspaces_on_startup and workspace.exists():
+                shutil.rmtree(workspace, ignore_errors=True)
+                cleaned_workspaces += 1
 
     if recovered_jobs:
         db.commit()

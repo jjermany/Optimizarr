@@ -154,10 +154,16 @@ def pause_job(db: Session, job_id: int) -> Job | None:
     if job.status != 'running':
         return job
 
+    # Capture the current encode position before terminating FFmpeg so we can
+    # resume from that offset instead of re-encoding from the beginning.
+    current_position = optimization_service.get_active_position(job_id)
     optimization_service.stop_active_ffmpeg(job_id)
+
     job.status = 'paused'
     job.cancel_requested = False
     job.eta_seconds = None
+    if current_position is not None and current_position > 0:
+        job.resume_position_seconds = current_position
     db.commit()
     db.refresh(job)
     return job
@@ -171,16 +177,16 @@ def resume_job(db: Session, job_id: int) -> Job | None:
     if job.status != 'paused':
         return job
 
-    settings = _get_settings(db)
-    optimization_service.delete_partial_output(settings, job_id)
+    # Do NOT delete the partial output — it will be used to resume encoding from
+    # the saved position rather than starting over from the beginning.
     job.status = 'queued'
-    job.progress_percent = 0
     job.fps = None
     job.eta_seconds = None
-    job.output_path = None
     job.error_message = None
     job.cancel_requested = False
     job.completed_at = None
+    # resume_position_seconds and progress_percent are intentionally preserved so
+    # optimize_video knows where to seek and the UI shows existing progress.
     db.commit()
     db.refresh(job)
     return job

@@ -590,7 +590,9 @@ def test_pause_resume_abort_and_queue_controls(monkeypatch, tmp_path):
         resume_response = client.post(f'/jobs/{job_id}/resume')
         assert resume_response.status_code == 200
         assert resume_response.json()['status'] == 'queued'
-        assert not partial.exists()
+        # Partial output is preserved on resume so the job can seek-resume instead
+        # of re-encoding from the beginning.
+        assert partial.exists()
 
         workspace.mkdir(parents=True, exist_ok=True)
         partial.write_text('partial')
