@@ -572,7 +572,7 @@ export default function App() {
           if (payload.type === 'system_event') {
             if (payload.data?.event === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
             if (payload.data?.event === 'queue_paused' && payload.data?.reason === 'low_disk') { pushToast('Queue paused due to low disk.', 'warn'); return; }
-            if (payload.data?.event === 'queue_paused') { pushToast('Queue paused.', 'warn'); return; }
+            if (payload.data?.event === 'queue_paused' && payload.data?.reason !== 'manual_scan') { pushToast('Queue paused.', 'warn'); return; }
             if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') pushToast('Recovery ran on startup.', 'info');
           }
         };
