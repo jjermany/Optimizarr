@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import select
 import subprocess
 import time
 from typing import Any
@@ -68,13 +69,15 @@ def _extract_last_json_blob(raw_output: str) -> dict[str, Any]:
 def get_gpu_metrics() -> dict[str, float]:
     default_metrics = {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0}
 
-    # intel_gpu_top -J streams JSON objects indefinitely and buffers stdout, so
-    # subprocess.run(timeout=...) kills the process before the buffer is flushed —
-    # leaving exc.stdout empty.  Using Popen with line-by-line reading means we
-    # receive each chunk as it arrives without waiting for a buffer flush on kill.
+    # intel_gpu_top -J streams JSON objects indefinitely.  When stdout is a pipe
+    # (not a tty) the C library switches to full block-buffering, so no data is
+    # flushed before we SIGKILL the process — leaving raw_stdout empty.
+    # stdbuf -oL forces line-buffering so each JSON line is flushed immediately.
+    # select() is used instead of a bare readline() so the 2-second deadline is
+    # enforced even if the process stalls between writes.
     try:
         process = subprocess.Popen(
-            ['intel_gpu_top', '-J', '-s', '250'],
+            ['stdbuf', '-oL', 'intel_gpu_top', '-J', '-s', '250'],
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
@@ -86,7 +89,13 @@ def get_gpu_metrics() -> dict[str, float]:
     deadline = time.monotonic() + 2.0
     try:
         assert process.stdout is not None
-        while time.monotonic() < deadline:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select([process.stdout], [], [], remaining)
+            if not ready:
+                break
             line = process.stdout.readline()
             if not line:
                 break
