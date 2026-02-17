@@ -69,6 +69,34 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
     assert terminal_updates[-1] == (job_id, 'failed')
 
 
+
+
+def test_worker_marks_job_failed_when_unhandled_exception_occurs(monkeypatch):
+    queue.resume_queue()
+
+    def raise_unhandled(*args, **kwargs):
+        raise RuntimeError('boom')
+
+    monkeypatch.setattr(queue, 'optimize_video', raise_unhandled)
+    monkeypatch.setattr(queue, 'preflight_job', lambda *_: True)
+
+    with SessionLocal() as session:
+        session.query(Job).delete()
+        session.query(Settings).delete()
+        session.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        session.commit()
+
+    with TestClient(app) as client:
+        create_response = client.post('/jobs', json={'source_path': '/media/test-crash.mkv'})
+        assert create_response.status_code == 201
+        job_id = create_response.json()['id']
+
+        payload = _wait_for_terminal_status(client, job_id)
+
+    assert payload['status'] == 'failed'
+    assert payload['error_message'] == 'boom'
+
+
 def test_should_workers_run_honors_manual_pause_state():
     settings = queue.Settings(enable_optimizer=True, global_quiet_enabled=True)
 
