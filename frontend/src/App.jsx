@@ -164,6 +164,17 @@ function formatHdrIndicator(sourceIsHdr) {
   return 'Unknown';
 }
 
+function formatEta(etaSeconds) {
+  if (etaSeconds == null || etaSeconds < 0) return null;
+  if (etaSeconds === 0) return 'Done';
+  const h = Math.floor(etaSeconds / 3600);
+  const m = Math.floor((etaSeconds % 3600) / 60);
+  const s = etaSeconds % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 function validateLibraryDraft(draft, libraryEnabled) {
   const errors = {};
 
@@ -901,6 +912,7 @@ export default function App() {
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
               <StatCard label="GPU %" value={`${metrics?.gpu_video_percent ?? 0}%`} />
               <StatCard label="CPU %" value={`${metrics?.cpu_percent ?? 0}%`} />
+              <StatCard label="RAM %" value={`${metrics?.ram_percent ?? 0}%`} />
               <StatCard label="Active jobs" value={metrics?.active_jobs ?? 0} />
               <StatCard label="Queue count" value={queueCount} />
               <StatCard label="Libraries" value={libraries.length} />
@@ -1440,7 +1452,8 @@ export default function App() {
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">ID</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Source</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Status</th>
-                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Source Info</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Details</th>
+                  <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Encoder</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Progress</th>
                   <th className="px-4 py-3 text-left text-xs font-semibold uppercase text-slate-300">Actions</th>
                 </tr>
@@ -1448,15 +1461,34 @@ export default function App() {
               <tbody className="divide-y divide-slate-800">
                 {pagedJobs.map((job) => {
                   const progress = progressFromJob(job);
+                  const isRunning = job.status === 'running';
+                  const eta = formatEta(job.eta_seconds);
                   return (
                     <tr key={job.id}>
                       <td className="px-4 py-3">{job.id}</td>
                       <td className="max-w-xs truncate px-4 py-3 text-slate-300">{job.source_path}</td>
-                      <td className="px-4 py-3 capitalize">{job.status}</td>
+                      <td className="px-4 py-3 capitalize">
+                        <span>{job.status}</span>
+                        {job.status === 'failed' && job.error_message && (
+                          <p className="mt-1 text-xs text-red-400">{job.error_message}</p>
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-xs text-slate-300">
                         <span>{formatResolution(job.source_resolution)}</span>
                         <span className="mx-2 text-slate-500">•</span>
                         <span>{formatHdrIndicator(job.source_is_hdr)}</span>
+                      </td>
+                      <td className="px-4 py-3 text-xs text-slate-300">
+                        {job.encoder_used ? (
+                          <>
+                            <span className={job.hwaccel_used ? 'text-cyan-400 font-medium' : ''}>{job.encoder_used}</span>
+                            {job.hwaccel_used && (
+                              <span className="ml-1 rounded bg-cyan-900/60 px-1 py-0.5 text-cyan-300">HW</span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-slate-500">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="h-2 w-44 rounded bg-slate-700">
@@ -1465,7 +1497,15 @@ export default function App() {
                             style={{ width: `${progress}%` }}
                           />
                         </div>
-                        <span className="mt-1 inline-block text-xs text-slate-400">{progress}%</span>
+                        <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
+                          <span>{progress}%</span>
+                          {isRunning && job.fps != null && (
+                            <span>{job.fps.toFixed(1)} fps</span>
+                          )}
+                          {isRunning && eta && (
+                            <span>{eta}</span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-2">
