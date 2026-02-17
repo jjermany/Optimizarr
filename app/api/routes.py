@@ -298,7 +298,6 @@ class PlexSettingsResponse(BaseModel):
     host: str
     port: int
     token: str
-    library_ids: list[str]
 
 
 class PlexSettingsUpdateRequest(BaseModel):
@@ -306,7 +305,12 @@ class PlexSettingsUpdateRequest(BaseModel):
     host: str | None = None
     port: int | None = Field(default=None, ge=1, le=65535)
     token: str | None = None
-    library_ids: list[str] | None = None
+
+
+class PlexLibrarySection(BaseModel):
+    id: str
+    name: str
+    type: str
 
 
 class LibraryBaseRequest(BaseModel):
@@ -381,6 +385,7 @@ class LibraryProfileResponse(BaseModel):
     output_conflict_policy: OutputConflictPolicyEnum
     av1_fallback_codec: CodecEnum
     preferred_video_encoder: PreferredEncoderEnum
+    plex_library_id: str | None = None
 
     @classmethod
     def from_orm_profile(cls, profile: LibraryProfile):
@@ -405,6 +410,7 @@ class LibraryProfileResponse(BaseModel):
             output_conflict_policy=profile.output_conflict_policy,
             av1_fallback_codec=profile.av1_fallback_codec,
             preferred_video_encoder=profile.preferred_video_encoder,
+            plex_library_id=profile.plex_library_id,
         )
 
 
@@ -438,6 +444,7 @@ class LibraryProfileUpdateRequest(BaseModel):
     output_conflict_policy: OutputConflictPolicyEnum | None = None
     av1_fallback_codec: CodecEnum | None = None
     preferred_video_encoder: PreferredEncoderEnum | None = None
+    plex_library_id: str | None = None
 
     @field_validator('av1_fallback_codec')
     @classmethod
@@ -578,6 +585,12 @@ def update_plex_settings(
 @router.post('/plex/test', status_code=200)
 def test_plex_connection_endpoint(_: None = Depends(require_ui_auth)) -> dict:
     return plex_service.test_plex_connection()
+
+
+@router.get('/plex/libraries', response_model=list[PlexLibrarySection])
+def get_plex_libraries(_: None = Depends(require_ui_auth)) -> list[PlexLibrarySection]:
+    sections = plex_service.fetch_plex_libraries()
+    return [PlexLibrarySection(**s) for s in sections]
 
 
 @router.get('/libraries', response_model=list[LibraryResponse])

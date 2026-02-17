@@ -12,6 +12,8 @@ import {
   fetchJobs,
   fetchMetrics,
   fetchNotificationSettings,
+  fetchPlexLibraries,
+  fetchPlexSettings,
   fetchSettings,
   fetchWsToken,
   pauseJob,
@@ -26,9 +28,11 @@ import {
   runRecovery,
   scanLibrary,
   sendTestNotification,
+  testPlexConnection,
   updateLibrary,
   updateLibraryProfile,
   updateNotificationSettings,
+  updatePlexSettings,
   updateSettings,
 } from './api';
 import StatCard from './components/StatCard';
@@ -336,6 +340,11 @@ export default function App() {
   const [libraryProfiles, setLibraryProfiles] = useState({});
   const [settings, setSettings] = useState();
   const [notificationSettings, setNotificationSettings] = useState();
+  const [plexSettings, setPlexSettings] = useState();
+  const [plexLibraries, setPlexLibraries] = useState([]);
+  const [loadingPlexLibraries, setLoadingPlexLibraries] = useState(false);
+  const [savingPlexSettings, setSavingPlexSettings] = useState(false);
+  const [testingPlexConnection, setTestingPlexConnection] = useState(false);
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
   const [profileErrors, setProfileErrors] = useState({});
@@ -411,19 +420,24 @@ export default function App() {
 
   async function refreshAll() {
     try {
-      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextEncoders] = await Promise.all([
+      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextPlexSettings, nextEncoders] = await Promise.all([
         fetchMetrics(),
         fetchJobs(),
         fetchSettings(),
         fetchNotificationSettings(),
+        fetchPlexSettings(),
         fetchEncoders(),
       ]);
       setMetrics(nextMetrics);
       setJobs(nextJobs.filter((job) => !isAbortedJob(job)));
       setSettings(nextSettings);
       setNotificationSettings(nextNotificationSettings);
+      setPlexSettings(nextPlexSettings);
       const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
       setAvailableEncodersByCodec(encoderMap);
+      if (nextPlexSettings?.enabled && nextPlexSettings?.token) {
+        fetchPlexLibraries().then((sections) => setPlexLibraries(sections ?? [])).catch(() => {});
+      }
       setError('');
     } catch (refreshError) {
       setError(refreshError.message || 'Could not refresh data.');
@@ -787,6 +801,52 @@ export default function App() {
       setError('');
     } catch (saveError) {
       setError(saveError.message || 'Could not queue test email.');
+    }
+  }
+
+  async function savePlexSettings() {
+    if (!plexSettings) return;
+    setSavingPlexSettings(true);
+    try {
+      const updated = await updatePlexSettings(plexSettings);
+      setPlexSettings(updated);
+      setMessage('Plex settings saved.');
+      setError('');
+    } catch (saveError) {
+      setError(saveError.message || 'Could not save Plex settings.');
+    } finally {
+      setSavingPlexSettings(false);
+    }
+  }
+
+  async function loadPlexLibraries() {
+    setLoadingPlexLibraries(true);
+    try {
+      const sections = await fetchPlexLibraries();
+      setPlexLibraries(sections ?? []);
+      setError('');
+    } catch (fetchError) {
+      setError(fetchError.message || 'Could not fetch Plex library sections.');
+    } finally {
+      setLoadingPlexLibraries(false);
+    }
+  }
+
+  async function handleTestPlexConnection() {
+    setTestingPlexConnection(true);
+    try {
+      const result = await testPlexConnection();
+      if (result?.success) {
+        setMessage('Plex connection successful.');
+        setError('');
+        await loadPlexLibraries();
+      } else {
+        setError(result?.error || 'Plex connection failed.');
+      }
+    } catch (testError) {
+      setError(testError.message || 'Plex connection test failed.');
+    } finally {
+      setTestingPlexConnection(false);
     }
   }
 
@@ -1264,6 +1324,29 @@ export default function App() {
                     )}
                   </div>
 
+                  {plexSettings?.enabled && (
+                    <div>
+                      <hr className="mb-5 border-slate-800" />
+                      <SectionTitle>Plex Integration</SectionTitle>
+                      <FormField
+                        label="Plex Library Section"
+                        hint={plexLibraries.length === 0 ? 'Go to Settings → Plex Integration and click Load Sections to populate this list.' : 'Optimizarr will scan this Plex section each time a file from this library finishes encoding.'}
+                      >
+                        <SelectInput
+                          value={profileDraft.plex_library_id ?? ''}
+                          onChange={(e) => setProfileDraft((prev) => ({ ...prev, plex_library_id: e.target.value || null }))}
+                        >
+                          <option value="">— No Plex scan —</option>
+                          {plexLibraries.map((section) => (
+                            <option key={section.id} value={section.id}>
+                              {section.name} ({section.type})
+                            </option>
+                          ))}
+                        </SelectInput>
+                      </FormField>
+                    </div>
+                  )}
+
                   <Btn variant="primary" size="lg" disabled={savingProfile} onClick={handleSaveLibraryProfile} className="w-full sm:w-auto">
                     {savingProfile ? 'Saving…' : 'Save Profile'}
                   </Btn>
@@ -1388,7 +1471,7 @@ export default function App() {
         )}
 
         {/* ── Settings ───────────────────────────────────────────────────────── */}
-        {activePage === 'settings' && settings && notificationSettings && (
+        {activePage === 'settings' && settings && notificationSettings && plexSettings && (
           <section className="animate-fade-in space-y-5">
             <SectionCard>
               <SectionTitle>General Settings</SectionTitle>
@@ -1532,6 +1615,74 @@ export default function App() {
                 </Btn>
                 <Btn variant="secondary" onClick={sendNotificationTest}>
                   Send Test Email
+                </Btn>
+              </div>
+            </SectionCard>
+
+            {/* Plex Integration */}
+            <SectionCard>
+              <SectionTitle>Plex Integration</SectionTitle>
+              <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium text-slate-200">Enable Plex Scan</p>
+                  <p className="text-xs text-slate-500">Trigger a Plex library scan after each file finishes encoding.</p>
+                </div>
+                <Toggle
+                  checked={plexSettings.enabled}
+                  onChange={(e) => setPlexSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
+                />
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <FormField label="Plex Host" hint="Protocol and hostname, e.g. http://192.168.1.100">
+                  <TextInput
+                    type="text"
+                    value={plexSettings.host}
+                    onChange={(e) => setPlexSettings((prev) => ({ ...prev, host: e.target.value }))}
+                    placeholder="http://localhost"
+                  />
+                </FormField>
+                <FormField label="Port">
+                  <TextInput
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={plexSettings.port}
+                    onChange={(e) => setPlexSettings((prev) => ({ ...prev, port: Number(e.target.value) }))}
+                  />
+                </FormField>
+                <FormField label="Plex Token" hint="Found in Plex account settings under Authorized Devices." span2>
+                  <TextInput
+                    type="password"
+                    value={plexSettings.token}
+                    onChange={(e) => setPlexSettings((prev) => ({ ...prev, token: e.target.value }))}
+                    placeholder="xxxxxxxxxxxxxxxxxxxx"
+                  />
+                </FormField>
+              </div>
+              {plexLibraries.length > 0 && (
+                <div className="mt-4">
+                  <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">Discovered Sections</p>
+                  <div className="space-y-1">
+                    {plexLibraries.map((section) => (
+                      <div key={section.id} className="flex items-center gap-2 rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-2 text-sm">
+                        <span className="rounded bg-slate-700 px-1.5 py-0.5 text-xs font-mono text-slate-300">{section.id}</span>
+                        <span className="text-slate-200">{section.name}</span>
+                        <span className="ml-auto text-xs text-slate-500">{section.type}</span>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">Assign sections to each library in the Libraries tab.</p>
+                </div>
+              )}
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Btn variant="violet" disabled={savingPlexSettings} onClick={savePlexSettings}>
+                  {savingPlexSettings ? 'Saving…' : 'Save Plex Settings'}
+                </Btn>
+                <Btn variant="secondary" disabled={testingPlexConnection} onClick={handleTestPlexConnection}>
+                  {testingPlexConnection ? 'Testing…' : 'Test Connection'}
+                </Btn>
+                <Btn variant="secondary" disabled={loadingPlexLibraries} onClick={loadPlexLibraries}>
+                  {loadingPlexLibraries ? 'Loading…' : 'Load Sections'}
                 </Btn>
               </div>
             </SectionCard>

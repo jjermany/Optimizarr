@@ -181,3 +181,22 @@ export function runCleanup() {
 export function runOptimizedCleanup() {
   return request('/cleanup/optimized', { method: 'POST' });
 }
+
+export function fetchPlexSettings() {
+  return request('/plex/settings');
+}
+
+export function fetchPlexLibraries() {
+  return request('/plex/libraries');
+}
+
+export function updatePlexSettings(payload) {
+  return request('/plex/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function testPlexConnection() {
+  return request('/plex/test', { method: 'POST' });
+}

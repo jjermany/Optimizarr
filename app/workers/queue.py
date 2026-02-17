@@ -357,7 +357,7 @@ def _process_job(job_id: int) -> None:
         db.commit()
         _publish_job(job, throttle_progress=False)
         if job.status == 'complete':
-            trigger_scan_after_job()
+            trigger_scan_after_job(job.library_id)
         if job.status == 'failed':
             enqueue_job_failed(job)
         handle_job_terminal_state(job.id, job.status)
