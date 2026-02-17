@@ -1,5 +1,6 @@
 from datetime import datetime
 import json
+import shutil
 import time
 
 from fastapi.testclient import TestClient
@@ -173,7 +174,7 @@ def test_preflight_job_uses_profile_minimum_source_resolution(monkeypatch, tmp_p
     )
 
     monkeypatch.setattr(queue, 'probe_video_height', lambda _: 1080)
-    monkeypatch.setattr(queue, '_cache_free_bytes', lambda: 100 * queue.BYTES_PER_GB)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda _: 100 * queue.BYTES_PER_GB)
 
     passed = queue.preflight_job(job, queue.Settings(min_free_gb=25))
 
@@ -192,7 +193,9 @@ def test_preflight_job_sets_output_from_snapshot_and_checks_cache(monkeypatch, t
 
     monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
     settings = queue.Settings(min_free_gb=25)
-    monkeypatch.setattr(queue, '_cache_free_bytes', lambda: (settings.min_free_gb * queue.BYTES_PER_GB) - 1)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda _: (settings.min_free_gb * queue.BYTES_PER_GB) - 1)
+    monkeypatch.setattr(queue, 'enqueue_low_disk_space_alert', lambda **_: None)
+    monkeypatch.setattr(queue.broker, 'publish_notification', lambda *_: None)
 
     passed = queue.preflight_job(job, settings)
 
@@ -215,7 +218,7 @@ def test_preflight_job_applies_output_conflict_policy_rename(monkeypatch, tmp_pa
     )
 
     monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
-    monkeypatch.setattr(queue, '_cache_free_bytes', lambda: 100 * queue.BYTES_PER_GB)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda _: 100 * queue.BYTES_PER_GB)
 
     passed = queue.preflight_job(job, queue.Settings(min_free_gb=25))
 
@@ -236,7 +239,7 @@ def test_preflight_job_low_disk_pauses_queue_and_alerts(monkeypatch, tmp_path):
     alerts = []
     notifications = []
     monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
-    monkeypatch.setattr(queue, '_cache_free_bytes', lambda: (settings.min_free_gb * queue.BYTES_PER_GB) - 1)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda _: (settings.min_free_gb * queue.BYTES_PER_GB) - 1)
     monkeypatch.setattr(queue, 'enqueue_low_disk_space_alert', lambda **kwargs: alerts.append(kwargs))
     monkeypatch.setattr(queue.broker, 'publish_notification', lambda event: notifications.append(event))
 
@@ -252,6 +255,87 @@ def test_preflight_job_low_disk_pauses_queue_and_alerts(monkeypatch, tmp_path):
 
     queue.resume_queue()
     queue._clear_low_disk_alert()
+
+
+def test_cache_free_bytes_uses_workspace_root_parent_when_path_missing(monkeypatch, tmp_path):
+    workspace_parent = tmp_path / 'workspace-mount'
+    workspace_parent.mkdir()
+    workspace_root = workspace_parent / 'nested' / 'child'
+    settings = queue.Settings(workspace_root=str(workspace_root))
+
+    called = []
+
+    def fake_disk_usage(path):
+        called.append(str(path))
+        return shutil._ntuple_diskusage(total=100, used=10, free=90)
+
+    monkeypatch.setattr(queue.shutil, 'disk_usage', fake_disk_usage)
+
+    free_bytes = queue._cache_free_bytes(settings)
+
+    assert free_bytes == 90
+    assert called == [str(workspace_parent)]
+
+
+def test_preflight_job_low_space_uses_workspace_root_path(monkeypatch, tmp_path):
+    media = tmp_path / 'movie.mkv'
+    media.write_text('x')
+    workspace_root = tmp_path / 'workspaces'
+    workspace_root.mkdir()
+    job = Job(
+        input_path=str(media),
+        status='queued',
+        profile_snapshot_json=json.dumps({'output_suffix': '-opt', 'container': 'mkv'}),
+    )
+
+    settings = queue.Settings(min_free_gb=25, workspace_root=str(workspace_root))
+    checked_paths = []
+
+    def fake_disk_usage(path):
+        checked_paths.append(str(path))
+        if str(path) == str(workspace_root):
+            return shutil._ntuple_diskusage(total=100, used=90, free=(settings.min_free_gb * queue.BYTES_PER_GB) - 1)
+        return shutil._ntuple_diskusage(total=100, used=10, free=100 * queue.BYTES_PER_GB)
+
+    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(queue.shutil, 'disk_usage', fake_disk_usage)
+    monkeypatch.setattr(queue, 'enqueue_low_disk_space_alert', lambda **_: None)
+    monkeypatch.setattr(queue.broker, 'publish_notification', lambda *_: None)
+
+    passed = queue.preflight_job(job, settings)
+
+    assert passed is False
+    assert job.status == 'failed'
+    assert str(workspace_root) in checked_paths
+
+
+def test_preflight_job_does_not_fail_when_root_low_and_workspace_has_capacity(monkeypatch, tmp_path):
+    media = tmp_path / 'movie.mkv'
+    media.write_text('x')
+    workspace_root = tmp_path / 'workspaces'
+    workspace_root.mkdir()
+    job = Job(
+        input_path=str(media),
+        status='queued',
+        profile_snapshot_json=json.dumps({'output_suffix': '-opt', 'container': 'mkv'}),
+    )
+
+    settings = queue.Settings(min_free_gb=25, workspace_root=str(workspace_root))
+
+    def fake_disk_usage(path):
+        if str(path) == '/':
+            return shutil._ntuple_diskusage(total=100, used=99, free=1)
+        if str(path) == str(workspace_root):
+            return shutil._ntuple_diskusage(total=100, used=10, free=100 * queue.BYTES_PER_GB)
+        raise AssertionError(f'unexpected path checked: {path}')
+
+    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(queue.shutil, 'disk_usage', fake_disk_usage)
+
+    passed = queue.preflight_job(job, settings)
+
+    assert passed is True
+    assert job.status == 'queued'
 
 
 def test_should_workers_run_honors_manual_pause():

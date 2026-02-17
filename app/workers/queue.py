@@ -108,9 +108,20 @@ def _preflight_output_path(job: Job, snapshot: dict) -> str:
     return str(source.with_name(f'{source.stem}{output_suffix}.{extension}'))
 
 
-def _cache_free_bytes() -> int:
-    cache_path = '/cache' if Path('/cache').exists() else '/'
-    return shutil.disk_usage(cache_path).free
+def _cache_free_bytes(settings: Settings) -> int:
+    workspace_root = str(getattr(settings, 'workspace_root', '') or '').strip()
+    workspace_path = Path(workspace_root).expanduser() if workspace_root else None
+
+    probe_path = workspace_path
+    while probe_path and not probe_path.exists():
+        parent = probe_path.parent
+        if parent == probe_path:
+            probe_path = None
+            break
+        probe_path = parent
+
+    target_path = probe_path if probe_path else Path('/')
+    return shutil.disk_usage(target_path).free
 
 
 def _required_cache_free_bytes(settings: Settings) -> int:
@@ -212,7 +223,7 @@ def preflight_job(job: Job, settings: Settings) -> bool:
     if not _apply_output_conflict_policy(job, snapshot):
         return False
 
-    free_bytes = _cache_free_bytes()
+    free_bytes = _cache_free_bytes(settings)
     if free_bytes < _required_cache_free_bytes(settings):
         _pause_queue_for_low_disk_space(settings, free_bytes, job)
         job.status = 'failed'
