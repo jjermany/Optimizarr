@@ -165,7 +165,26 @@ def init_db() -> None:
             'tone_map_hdr BOOLEAN NOT NULL DEFAULT 0',
         )
 
-        # plex_settings is created fresh by Base.metadata.create_all above.
+        # plex_settings: remove legacy library_ids NOT NULL column if present.
+        # SQLite doesn't support DROP COLUMN reliably across versions, so we
+        # recreate the table without it.
+        if 'library_ids' in _table_columns(connection, 'plex_settings'):
+            connection.execute(text(
+                'CREATE TABLE plex_settings_v2 ('
+                '  id INTEGER NOT NULL PRIMARY KEY,'
+                '  enabled BOOLEAN NOT NULL DEFAULT 0,'
+                "  host VARCHAR(255) NOT NULL DEFAULT 'http://localhost',"
+                '  port INTEGER NOT NULL DEFAULT 32400,'
+                "  token TEXT NOT NULL DEFAULT ''"
+                ')'
+            ))
+            connection.execute(text(
+                'INSERT INTO plex_settings_v2 (id, enabled, host, port, token)'
+                ' SELECT id, enabled, host, port, token FROM plex_settings'
+            ))
+            connection.execute(text('DROP TABLE plex_settings'))
+            connection.execute(text('ALTER TABLE plex_settings_v2 RENAME TO plex_settings'))
+
         _add_column_if_missing(
             connection,
             'library_profiles',
