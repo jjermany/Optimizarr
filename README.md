@@ -79,6 +79,9 @@ Key environment variables:
 - `OPTIMIZARR_UI_PASSWORD`: enable basic auth password
 - `OPTIMIZARR_WS_TOKEN`: optional websocket token gate
 
+- `LIBVA_DRIVER_NAME`: set to `iHD` for modern Intel GPUs (including Core Ultra / Arc iGPU)
+- `QSV_DEVICE`: DRM render node used by QSV (default `/dev/dri/renderD128`)
+
 If both UI auth variables are unset, API endpoints are open.
 
 ## API endpoints
@@ -155,3 +158,15 @@ npm test
 
 - Library paths must be absolute and remain under `/media`.
 - The Docker image includes FFmpeg and installs Intel VA-API/media runtime packages when available in the base distro repositories.
+
+
+## Intel QSV troubleshooting
+
+If jobs fail with `qsv_encode_failed` but `ffmpeg -encoders` shows `*_qsv` encoders, the issue is usually runtime device initialization rather than missing encoder support.
+
+1. Ensure `/dev/dri` is passed to the API container (`devices: - /dev/dri:/dev/dri`).
+2. Set `LIBVA_DRIVER_NAME=iHD` for newer Intel GPUs.
+3. Ensure the render node exists and is accessible (typically `/dev/dri/renderD128`).
+4. If your host uses a different render node, set `QSV_DEVICE`/profile `qsv_device` accordingly.
+
+Optimizarr now builds QSV pipelines with explicit QSV device initialization and hardware upload filters so encode can run on Intel Quick Sync even when hardware decode acceleration is unavailable for the input codec.
