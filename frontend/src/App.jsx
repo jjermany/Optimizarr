@@ -12,6 +12,7 @@ import {
   fetchJobs,
   fetchMetrics,
   fetchNotificationSettings,
+  fetchPlexSettings,
   fetchSettings,
   fetchWsToken,
   pauseJob,
@@ -26,9 +27,11 @@ import {
   runRecovery,
   scanLibrary,
   sendTestNotification,
+  testPlexConnection,
   updateLibrary,
   updateLibraryProfile,
   updateNotificationSettings,
+  updatePlexSettings,
   updateSettings,
 } from './api';
 import StatCard from './components/StatCard';
@@ -336,6 +339,9 @@ export default function App() {
   const [libraryProfiles, setLibraryProfiles] = useState({});
   const [settings, setSettings] = useState();
   const [notificationSettings, setNotificationSettings] = useState();
+  const [plexSettings, setPlexSettings] = useState();
+  const [savingPlexSettings, setSavingPlexSettings] = useState(false);
+  const [testingPlexConnection, setTestingPlexConnection] = useState(false);
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
   const [profileErrors, setProfileErrors] = useState({});
@@ -411,17 +417,19 @@ export default function App() {
 
   async function refreshAll() {
     try {
-      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextEncoders] = await Promise.all([
+      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextPlexSettings, nextEncoders] = await Promise.all([
         fetchMetrics(),
         fetchJobs(),
         fetchSettings(),
         fetchNotificationSettings(),
+        fetchPlexSettings(),
         fetchEncoders(),
       ]);
       setMetrics(nextMetrics);
       setJobs(nextJobs.filter((job) => !isAbortedJob(job)));
       setSettings(nextSettings);
       setNotificationSettings(nextNotificationSettings);
+      setPlexSettings(nextPlexSettings);
       const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
       setAvailableEncodersByCodec(encoderMap);
       setError('');
@@ -787,6 +795,38 @@ export default function App() {
       setError('');
     } catch (saveError) {
       setError(saveError.message || 'Could not queue test email.');
+    }
+  }
+
+  async function savePlexSettings() {
+    if (!plexSettings) return;
+    setSavingPlexSettings(true);
+    try {
+      const updated = await updatePlexSettings(plexSettings);
+      setPlexSettings(updated);
+      setMessage('Plex settings saved.');
+      setError('');
+    } catch (saveError) {
+      setError(saveError.message || 'Could not save Plex settings.');
+    } finally {
+      setSavingPlexSettings(false);
+    }
+  }
+
+  async function handleTestPlexConnection() {
+    setTestingPlexConnection(true);
+    try {
+      const result = await testPlexConnection();
+      if (result?.success) {
+        setMessage('Plex connection successful.');
+        setError('');
+      } else {
+        setError(result?.error || 'Plex connection failed.');
+      }
+    } catch (testError) {
+      setError(testError.message || 'Plex connection test failed.');
+    } finally {
+      setTestingPlexConnection(false);
     }
   }
 
@@ -1388,7 +1428,7 @@ export default function App() {
         )}
 
         {/* ── Settings ───────────────────────────────────────────────────────── */}
-        {activePage === 'settings' && settings && notificationSettings && (
+        {activePage === 'settings' && settings && notificationSettings && plexSettings && (
           <section className="animate-fade-in space-y-5">
             <SectionCard>
               <SectionTitle>General Settings</SectionTitle>
@@ -1532,6 +1572,67 @@ export default function App() {
                 </Btn>
                 <Btn variant="secondary" onClick={sendNotificationTest}>
                   Send Test Email
+                </Btn>
+              </div>
+            </SectionCard>
+
+            {/* Plex Integration */}
+            <SectionCard>
+              <SectionTitle>Plex Integration</SectionTitle>
+              <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                <div>
+                  <p className="text-sm font-medium text-slate-200">Enable Plex Scan</p>
+                  <p className="text-xs text-slate-500">Trigger a Plex library scan after each file finishes encoding.</p>
+                </div>
+                <Toggle
+                  checked={plexSettings.enabled}
+                  onChange={(e) => setPlexSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
+                />
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <FormField label="Plex Host" hint="Protocol and hostname, e.g. http://192.168.1.100">
+                  <TextInput
+                    type="text"
+                    value={plexSettings.host}
+                    onChange={(e) => setPlexSettings((prev) => ({ ...prev, host: e.target.value }))}
+                    placeholder="http://localhost"
+                  />
+                </FormField>
+                <FormField label="Port">
+                  <TextInput
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={plexSettings.port}
+                    onChange={(e) => setPlexSettings((prev) => ({ ...prev, port: Number(e.target.value) }))}
+                  />
+                </FormField>
+                <FormField label="Plex Token" hint="Found in Plex account settings under Authorized Devices." span2>
+                  <TextInput
+                    type="password"
+                    value={plexSettings.token}
+                    onChange={(e) => setPlexSettings((prev) => ({ ...prev, token: e.target.value }))}
+                    placeholder="xxxxxxxxxxxxxxxxxxxx"
+                  />
+                </FormField>
+                <FormField label="Library Section IDs" hint="Comma-separated Plex library section IDs to refresh, e.g. 1, 2" span2>
+                  <TextInput
+                    type="text"
+                    value={plexSettings.library_ids.join(', ')}
+                    onChange={(e) => setPlexSettings((prev) => ({
+                      ...prev,
+                      library_ids: e.target.value.split(',').map((id) => id.trim()).filter(Boolean),
+                    }))}
+                    placeholder="1, 2"
+                  />
+                </FormField>
+              </div>
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Btn variant="violet" disabled={savingPlexSettings} onClick={savePlexSettings}>
+                  {savingPlexSettings ? 'Saving…' : 'Save Plex Settings'}
+                </Btn>
+                <Btn variant="secondary" disabled={testingPlexConnection} onClick={handleTestPlexConnection}>
+                  {testingPlexConnection ? 'Testing…' : 'Test Connection'}
                 </Btn>
               </div>
             </SectionCard>
