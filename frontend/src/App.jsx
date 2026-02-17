@@ -453,6 +453,7 @@ export default function App() {
       schedule_enabled: true,
       preferred_video_encoder: 'auto',
       hdr_only: true,
+      tone_map_hdr: false,
       minimum_source_resolution: 2160,
       ...selectedLibraryProfile,
     });
@@ -1129,6 +1130,16 @@ export default function App() {
                         type="checkbox"
                         checked={profileDraft.hdr_only}
                         onChange={(event) => setProfileDraft((prev) => ({ ...prev, hdr_only: event.target.checked }))}
+                      />
+                    </label>
+
+                    <label className="space-y-2 rounded-lg border border-slate-700/60 bg-slate-950/40 p-3">
+                      <span className="text-sm font-medium">Tone map HDR to SDR</span>
+                      <p className="text-xs text-slate-400">Strip HDR metadata and convert to SDR during encoding. Reduces playback stutters on SDR devices.</p>
+                      <input
+                        type="checkbox"
+                        checked={profileDraft.tone_map_hdr}
+                        onChange={(event) => setProfileDraft((prev) => ({ ...prev, tone_map_hdr: event.target.checked }))}
                       />
                     </label>
 

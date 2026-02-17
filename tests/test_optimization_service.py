@@ -293,6 +293,7 @@ def test_build_encoder_command_hdr_software_applies_tonemap(monkeypatch):
         'bitrate_mbps': 8,
         'crf': 23,
         'source_is_hdr': True,
+        'tone_map_hdr': True,
     }
 
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1080)
@@ -317,6 +318,7 @@ def test_build_encoder_command_hdr_software_applies_tonemap_and_scale(monkeypatc
         'bitrate_mbps': 8,
         'crf': 23,
         'source_is_hdr': True,
+        'tone_map_hdr': True,
     }
 
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
@@ -341,6 +343,7 @@ def test_build_encoder_command_hdr_vaapi_applies_tonemap(monkeypatch):
         'bitrate_mbps': 8,
         'crf': 23,
         'source_is_hdr': True,
+        'tone_map_hdr': True,
     }
 
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
@@ -366,6 +369,7 @@ def test_build_encoder_command_hdr_qsv_applies_tonemap(monkeypatch):
         'bitrate_mbps': 8,
         'crf': 23,
         'source_is_hdr': True,
+        'tone_map_hdr': True,
     }
 
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)

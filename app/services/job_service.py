@@ -29,6 +29,7 @@ def _profile_snapshot(profile: LibraryProfile | None) -> str | None:
             'crf': profile.crf,
             'speed_preset': profile.speed_preset.value,
             'hdr_only': profile.hdr_only,
+            'tone_map_hdr': profile.tone_map_hdr,
             'max_workers': profile.max_workers,
             'schedule_enabled': profile.schedule_enabled,
             'schedule_start_hour': profile.schedule_start_hour,

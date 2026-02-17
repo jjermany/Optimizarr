@@ -157,3 +157,9 @@ def init_db() -> None:
             'preferred_video_encoder',
             "preferred_video_encoder VARCHAR(8) NOT NULL DEFAULT 'auto'",
         )
+        _add_column_if_missing(
+            connection,
+            'library_profiles',
+            'tone_map_hdr',
+            'tone_map_hdr BOOLEAN NOT NULL DEFAULT 0',
+        )

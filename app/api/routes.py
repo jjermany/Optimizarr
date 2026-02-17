@@ -355,6 +355,7 @@ class LibraryProfileResponse(BaseModel):
     crf: int | None
     speed_preset: SpeedPresetEnum
     hdr_only: bool
+    tone_map_hdr: bool
     max_workers: int
     schedule_enabled: bool
     schedule_start_hour: int
@@ -378,6 +379,7 @@ class LibraryProfileResponse(BaseModel):
             crf=profile.crf,
             speed_preset=profile.speed_preset,
             hdr_only=profile.hdr_only,
+            tone_map_hdr=profile.tone_map_hdr,
             max_workers=profile.max_workers,
             schedule_enabled=profile.schedule_enabled,
             schedule_start_hour=profile.schedule_start_hour,
@@ -410,6 +412,7 @@ class LibraryProfileUpdateRequest(BaseModel):
     crf: int | None = Field(default=None, ge=1)
     speed_preset: SpeedPresetEnum | None = None
     hdr_only: bool | None = None
+    tone_map_hdr: bool | None = None
     max_workers: int | None = Field(default=None, ge=1)
     schedule_enabled: bool | None = None
     schedule_start_hour: int | None = Field(default=None, ge=0, le=23)
