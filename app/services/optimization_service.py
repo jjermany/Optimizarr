@@ -397,8 +397,22 @@ def _build_command_with_selection(
         # Software decode fallback — used when hw_decode is off (e.g. after hw tonemap
         # failed and the job was retried with hw_decode=False).
         command = ['ffmpeg', '-vaapi_device', hw_device, '-i', input_path]
+    elif selection.use_qsv and apply_tonemap:
+        # QSV+HDR via VAAPI bridge with hardware decode for full GPU tone mapping.
+        # VAAPI hardware decode produces VAAPI surfaces that tonemap_vaapi (Intel VEBOX)
+        # can process directly without a CPU round-trip. After tone mapping the surface
+        # is mapped to QSV memory with hwmap for encoding.
+        command = [
+            'ffmpeg',
+            '-init_hw_device', f'vaapi=va:{hw_device}',
+            '-init_hw_device', 'qsv=qs@va',
+            '-hwaccel', 'vaapi',
+            '-hwaccel_device', 'va',
+            '-hwaccel_output_format', 'vaapi',
+            '-i', input_path,
+        ]
     elif selection.use_qsv:
-        # QSV via VAAPI bridge (required for FFmpeg built with --enable-libvpl).
+        # QSV via VAAPI bridge (SDR): software decode → hwupload → QSV encode.
         command = [
             'ffmpeg',
             '-init_hw_device', f'vaapi=va:{hw_device}',
@@ -430,11 +444,17 @@ def _build_command_with_selection(
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
+    elif selection.use_qsv and apply_tonemap:
+        # Full GPU pipeline (HDR+QSV): VAAPI hardware decode → tonemap_vaapi (Intel VEBOX)
+        # → optional scale_vaapi → hwmap to QSV surface → hevc_qsv/h264_qsv/av1_qsv encode.
+        filters = [_VAAPI_TONEMAP_FILTER]
+        if should_scale:
+            filters.append(f'scale_vaapi=-2:{target_height}')
+        filters.extend(['hwmap=derive_device=qsv', 'format=qsv'])
+        command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
-        filters = []
-        if apply_tonemap:
-            filters.extend(_HDR_TONEMAP_FILTERS)
-        filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
+        # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
+        filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
             filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
@@ -760,6 +780,7 @@ def _build_resume_command(
         video_preset_args = ['-preset', _software_preset(speed_preset)]
 
     hw_device = str(profile.get('qsv_device') or '/dev/dri/renderD128').strip()
+    apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
 
     if selection.use_vaapi and selection.hw_decode:
         # Both SDR and HDR hardware paths use VAAPI hardware decode.
@@ -772,6 +793,16 @@ def _build_resume_command(
         ] + seek_args + ['-i', input_path]
     elif selection.use_vaapi:
         command = ['ffmpeg', '-vaapi_device', hw_device] + seek_args + ['-i', input_path]
+    elif selection.use_qsv and apply_tonemap:
+        # QSV+HDR: VAAPI hardware decode so tonemap_vaapi can run on GPU (Intel VEBOX).
+        command = [
+            'ffmpeg',
+            '-init_hw_device', f'vaapi=va:{hw_device}',
+            '-init_hw_device', 'qsv=qs@va',
+            '-hwaccel', 'vaapi',
+            '-hwaccel_device', 'va',
+            '-hwaccel_output_format', 'vaapi',
+        ] + seek_args + ['-i', input_path]
     elif selection.use_qsv:
         command = [
             'ffmpeg',
@@ -781,8 +812,6 @@ def _build_resume_command(
         ] + seek_args + ['-i', input_path]
     else:
         command = ['ffmpeg'] + seek_args + ['-i', input_path]
-
-    apply_tonemap = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
 
     if selection.use_vaapi and selection.hw_decode and not apply_tonemap:
         filters = [f'scale_vaapi=-2:{target_height}'] if should_scale else []
@@ -801,11 +830,16 @@ def _build_resume_command(
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
+    elif selection.use_qsv and apply_tonemap:
+        # Full GPU pipeline (HDR+QSV): tonemap_vaapi → scale_vaapi → hwmap to QSV → encode.
+        filters = [_VAAPI_TONEMAP_FILTER]
+        if should_scale:
+            filters.append(f'scale_vaapi=-2:{target_height}')
+        filters.extend(['hwmap=derive_device=qsv', 'format=qsv'])
+        command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
-        filters = []
-        if apply_tonemap:
-            filters.extend(_HDR_TONEMAP_FILTERS)
-        filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
+        # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
+        filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
             filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])

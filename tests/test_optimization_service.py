@@ -327,11 +327,18 @@ def test_build_encoder_command_hdr_qsv_applies_tonemap(monkeypatch):
 
     command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
 
+    # QSV+HDR must now use VAAPI hardware decode so tone mapping happens on the GPU.
+    assert '-hwaccel' in command
+    assert command[command.index('-hwaccel') + 1] == 'vaapi'
+    assert '-hwaccel_output_format' in command
+    assert command[command.index('-hwaccel_output_format') + 1] == 'vaapi'
+
+    # Filter chain: tonemap_vaapi (Intel VEBOX) → scale on GPU → hwmap to QSV surface.
     assert '-vf' in command
     vf = command[command.index('-vf') + 1]
-    assert vf.startswith(_HDR_TONEMAP_PREFIX)
-    assert 'format=nv12,hwupload=extra_hw_frames=64' in vf
-    assert vf.endswith(',scale_qsv=-1:1080')
+    assert vf.startswith('tonemap_vaapi=')
+    assert 'scale_vaapi=-2:1080' in vf
+    assert vf.endswith(',hwmap=derive_device=qsv,format=qsv')
 
 
 def test_refresh_encoder_cache_parses_ffmpeg_encoders(monkeypatch):
