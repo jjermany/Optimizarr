@@ -49,11 +49,17 @@ class OutputConflictPolicyEnum(str, Enum):
 
 class PreferredEncoderEnum(str, Enum):
     auto = 'auto'
+    # QSV (Intel oneVPL — requires VPL GPU runtime in container)
     h264_qsv = 'h264_qsv'
-    libx264 = 'libx264'
     hevc_qsv = 'hevc_qsv'
-    libx265 = 'libx265'
     av1_qsv = 'av1_qsv'
+    # VAAPI (Intel iHD driver — same path as Plex, no VPL runtime needed)
+    h264_vaapi = 'h264_vaapi'
+    hevc_vaapi = 'hevc_vaapi'
+    av1_vaapi = 'av1_vaapi'
+    # Software
+    libx264 = 'libx264'
+    libx265 = 'libx265'
     libsvtav1 = 'libsvtav1'
 
 
