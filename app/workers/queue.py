@@ -477,7 +477,7 @@ def is_queue_paused() -> bool:
     return _queue_paused
 
 
-def start_queued_job(job_id: int) -> bool:
+def start_queued_job(job_id: int, *, manual: bool = False) -> tuple[bool, str | None]:
     db = SessionLocal()
     try:
         settings = _get_settings(db)
@@ -489,25 +489,25 @@ def start_queued_job(job_id: int) -> bool:
             .first()
         )
         if row is None:
-            return False
+            return False, 'Job not found'
 
         job, library, profile = row
         if job.status != 'queued':
-            return False
+            return False, f'Job status is {job.status}'
 
-        if not bool(settings.enable_optimizer):
-            return False
+        if not bool(settings.enable_optimizer) and not manual:
+            return False, 'Optimizer is disabled'
 
-        if not _library_job_can_start(settings, datetime.now(), library, profile):
-            return False
+        if not manual and not _library_job_can_start(settings, datetime.now(), library, profile):
+            return False, 'Library schedule or availability prevents start'
 
         with _pool_lock:
             if job_id in _active_workers:
-                return False
+                return False, 'Job is already active'
 
             max_workers = max(1, int(settings.max_workers))
             if len(_active_workers) >= max_workers:
-                return False
+                return False, 'Maximum workers already running'
 
             job.status = 'starting'
             db.commit()
@@ -516,7 +516,7 @@ def start_queued_job(job_id: int) -> bool:
             worker = Thread(target=_process_job, args=(job_id,), daemon=True, name=f'optimizer-job-{job_id}')
             worker.start()
             _active_workers[job_id] = worker
-        return True
+        return True, None
     finally:
         db.close()
 

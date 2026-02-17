@@ -621,7 +621,7 @@ def test_start_job_endpoint(monkeypatch, tmp_path):
 
     from app.workers import queue as worker_queue
 
-    monkeypatch.setattr(worker_queue, 'start_queued_job', lambda job_id: called.append(job_id) or True)
+    monkeypatch.setattr(worker_queue, 'start_queued_job', lambda job_id, manual=False: (called.append((job_id, manual)) or (True, None)))
 
     with TestClient(app) as client:
         create_response = client.post('/jobs', json={'source_path': '/media/start-me.mkv'})
@@ -632,7 +632,22 @@ def test_start_job_endpoint(monkeypatch, tmp_path):
         assert response.status_code == 200
         assert response.json()['id'] == job_id
 
-    assert called == [job_id]
+    assert called == [(job_id, True)]
+
+
+def test_start_job_endpoint_returns_reason_when_rejected(monkeypatch):
+    from app.workers import queue as worker_queue
+
+    monkeypatch.setattr(worker_queue, 'start_queued_job', lambda job_id, manual=False: (False, 'Maximum workers already running'))
+
+    with TestClient(app) as client:
+        create_response = client.post('/jobs', json={'source_path': '/media/start-me-too.mkv'})
+        assert create_response.status_code == 201
+        job_id = create_response.json()['id']
+
+        response = client.post(f'/jobs/{job_id}/start')
+        assert response.status_code == 409
+        assert response.json()['detail'] == 'Maximum workers already running'
 
 
 def test_scan_endpoints_pause_queue_before_queueing(monkeypatch, tmp_path):
