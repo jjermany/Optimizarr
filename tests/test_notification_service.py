@@ -28,13 +28,9 @@ class DummySMTP:
         DummySMTP.sent_messages.append(message)
 
 
-def test_send_via_smtp_builds_html_email_with_inline_logo(monkeypatch, tmp_path):
+def test_send_via_smtp_builds_html_email(monkeypatch):
     DummySMTP.sent_messages.clear()
 
-    logo_path = tmp_path / 'logo.png'
-    logo_path.write_bytes(b'\x89PNG\r\n\x1a\nlogo')
-
-    monkeypatch.setattr(notification_service, '_LOGO_CANDIDATE_PATHS', (logo_path,))
     monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
 
     settings = NotificationSettings(
@@ -59,22 +55,21 @@ def test_send_via_smtp_builds_html_email_with_inline_logo(monkeypatch, tmp_path)
     rendered = sent.as_string()
     assert 'Content-Type: text/plain' in rendered
     assert 'Content-Type: text/html' in rendered
-    assert 'optimizarr-logo' in rendered
-    assert 'Content-ID: <optimizarr-logo>' in rendered
+    assert 'optimizarr-logo' not in rendered
 
     html_parts = [part for part in sent.walk() if part.get_content_type() == 'text/html']
     assert len(html_parts) == 1
     assert 'Automated notification from Optimizarr.' in html_parts[0].get_content()
 
 
-def test_format_notification_html_falls_back_to_heading_without_logo():
+def test_format_notification_html_renders_text_branding():
     html = notification_service._format_notification_html(
         subject='Optimizarr notification test',
         body='Library: Movies\nReason: test',
-        include_logo=False,
     )
 
     assert 'cid:optimizarr-logo' not in html
+    assert 'OPTIMIZARR' in html
     assert 'Optimizarr notification test' in html
     assert 'Library' in html
     assert 'Reason' in html
