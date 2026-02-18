@@ -167,6 +167,7 @@ def settings_to_payload(settings: NotificationSettings) -> dict:
         'from_email': settings.from_email,
         'to_emails': _emails_from_csv(settings.to_emails_csv),
         'notify_on': {
+            'job_complete': settings.notify_on_job_complete,
             'job_failed': settings.notify_on_job_failed,
             'job_interrupted': settings.notify_on_job_interrupted,
             'low_disk_pause': settings.notify_on_low_disk_pause,
@@ -187,6 +188,8 @@ def update_settings(db: Session, payload: dict) -> NotificationSettings:
         settings.to_emails_csv = _emails_to_csv(payload['to_emails'])
 
     notify_on = payload.get('notify_on') or {}
+    if 'job_complete' in notify_on:
+        settings.notify_on_job_complete = bool(notify_on['job_complete'])
     if 'job_failed' in notify_on:
         settings.notify_on_job_failed = bool(notify_on['job_failed'])
     if 'job_interrupted' in notify_on:
@@ -269,6 +272,28 @@ def enqueue_email(subject: str, body: str) -> None:
 
 def enqueue_test_email() -> None:
     enqueue_email('Optimizarr notification test', 'This is a test email from Optimizarr notifications.')
+
+
+def enqueue_job_complete(job: Job) -> None:
+    db = SessionLocal()
+    try:
+        settings = get_or_create_notification_settings(db)
+        if not settings.notify_on_job_complete:
+            return
+        library_name = None
+        if job.library_id:
+            library = db.query(Library).filter(Library.id == job.library_id).first()
+            library_name = library.name if library else None
+    finally:
+        db.close()
+
+    file_name = format_display_name(job.source_path)
+    body = (
+        f'Library: {library_name or "unknown"}\n'
+        f'File: {file_name}\n'
+        f'Status: Completed successfully.\n'
+    )
+    enqueue_email(subject='Optimizarr job complete', body=body)
 
 
 def enqueue_job_failed(job: Job) -> None:

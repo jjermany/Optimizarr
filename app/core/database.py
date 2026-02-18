@@ -114,6 +114,12 @@ def init_db() -> None:
         _add_column_if_missing(
             connection,
             'notification_settings',
+            'notify_on_job_complete',
+            'notify_on_job_complete BOOLEAN NOT NULL DEFAULT 0',
+        )
+        _add_column_if_missing(
+            connection,
+            'notification_settings',
             'notify_on_job_interrupted',
             'notify_on_job_interrupted BOOLEAN NOT NULL DEFAULT 1',
         )

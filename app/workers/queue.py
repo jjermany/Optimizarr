@@ -15,7 +15,7 @@ from app.models.job import Job
 from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
 from app.models.settings import Settings
 from app.services.job_service import prune_job_history
-from app.services.notification_service import enqueue_job_failed, enqueue_low_disk_space_alert, format_display_name, handle_job_terminal_state
+from app.services.notification_service import enqueue_job_complete, enqueue_job_failed, enqueue_low_disk_space_alert, format_display_name, handle_job_terminal_state
 from app.services.plex_service import trigger_scan_after_job
 from app.services.optimization_service import (
     delete_partial_output,
@@ -358,6 +358,7 @@ def _process_job(job_id: int) -> None:
         _publish_job(job, throttle_progress=False)
         if job.status == 'complete':
             trigger_scan_after_job(job.library_id)
+            enqueue_job_complete(job)
         if job.status == 'failed':
             enqueue_job_failed(job)
         handle_job_terminal_state(job.id, job.status)

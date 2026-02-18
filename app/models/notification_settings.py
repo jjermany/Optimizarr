@@ -15,6 +15,7 @@ class NotificationSettings(Base):
     smtp_tls: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     from_email: Mapped[str] = mapped_column(String(255), default='', nullable=False)
     to_emails_csv: Mapped[str] = mapped_column(Text, default='', nullable=False)
+    notify_on_job_complete: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     notify_on_job_failed: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notify_on_job_interrupted: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notify_on_low_disk_pause: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
