@@ -38,6 +38,7 @@ from app.services.job_service import (
     retry_job,
 )
 from app.services.monitoring_service import (
+    _extract_last_json_blob,
     _get_intel_gpu_metrics,
     _get_intel_gpu_metrics_sysfs,
     _get_nvidia_gpu_metrics,
@@ -749,6 +750,7 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
 
     # ── intel_gpu_top (raw) ────────────────────────────────────────────────────
     raw = _intel_gpu_top_raw()
+    last_blob = _extract_last_json_blob(raw['stdout'])
 
     # ── nvidia-smi ─────────────────────────────────────────────────────────────
     nvidia_result = _get_nvidia_gpu_metrics()
@@ -761,7 +763,12 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
         },
         'intel_gpu_top': {
             'parsed_result': intel_result,
-            'raw_stdout_first_512': raw['stdout'][:512],
+            # Last complete JSON sample — shows exact engine names and busy% values.
+            # "rc6" = % of time the GPU spent in power-save sleep during this sample.
+            # All engines at 0 + rc6 near 100 means the GPU was genuinely idle.
+            'last_sample_engines': last_blob.get('engines'),
+            'last_sample_rc6_pct': last_blob.get('rc6', {}).get('value'),
+            'last_sample_period_ms': last_blob.get('period', {}).get('duration'),
             'raw_stderr': raw['stderr'][:512],
             'launch_error': raw['error'],
         },
