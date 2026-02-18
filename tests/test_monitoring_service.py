@@ -47,6 +47,22 @@ def test_get_gpu_metrics_parses_intel_gpu_top_output(monkeypatch):
     assert metrics['gpu_render_percent'] == 67.5
 
 
+def test_get_gpu_metrics_returns_zero_when_intel_gpu_idle(monkeypatch):
+    """Intel GPU at 0% utilisation should return 0.0, not fall back to defaults."""
+    mock_stdout = '{"engines": {"Render/3D": {"busy": 0.0}, "Video": {"busy": 0.0}}}\n'
+
+    monkeypatch.setattr(
+        monitoring_service.subprocess,
+        'Popen',
+        lambda *args, **kwargs: _FakePopen(mock_stdout),
+    )
+
+    metrics = monitoring_service.get_gpu_metrics()
+
+    assert metrics['gpu_video_percent'] == 0.0
+    assert metrics['gpu_render_percent'] == 0.0
+
+
 def test_get_gpu_metrics_defaults_when_command_fails(monkeypatch):
     def fake_popen(*args, **kwargs):
         raise FileNotFoundError
