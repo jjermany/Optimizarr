@@ -68,6 +68,58 @@ def _extract_last_json_blob(raw_output: str) -> dict[str, Any]:
     return last_json
 
 
+def _intel_gpu_top_raw() -> dict[str, str]:
+    """Run intel_gpu_top -J for 2 seconds and return raw stdout + stderr.
+
+    Used by the debug endpoint only — not in the hot metrics path.
+    """
+    try:
+        process = subprocess.Popen(
+            ['stdbuf', '-oL', 'intel_gpu_top', '-J', '-s', '250'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError:
+        return {'stdout': '', 'stderr': '', 'error': 'intel_gpu_top not found'}
+    except PermissionError as exc:
+        return {'stdout': '', 'stderr': '', 'error': f'permission error: {exc}'}
+
+    stdout_chunks: list[str] = []
+    stderr_chunks: list[str] = []
+    deadline = time.monotonic() + 2.5
+    try:
+        assert process.stdout is not None
+        assert process.stderr is not None
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            readable, _, _ = select.select([process.stdout, process.stderr], [], [], remaining)
+            if not readable:
+                break
+            for fd in readable:
+                line = fd.readline()
+                if not line:
+                    break
+                if fd is process.stdout:
+                    stdout_chunks.append(line)
+                else:
+                    stderr_chunks.append(line)
+    finally:
+        try:
+            process.kill()
+            process.wait(timeout=1)
+        except Exception:
+            pass
+
+    return {
+        'stdout': ''.join(stdout_chunks),
+        'stderr': ''.join(stderr_chunks),
+        'error': '',
+    }
+
+
 def _get_intel_gpu_metrics() -> dict[str, float] | None:
     """Try Intel GPU metrics via intel_gpu_top. Returns None if unavailable."""
     # intel_gpu_top -J streams JSON objects indefinitely.  When stdout is a pipe
