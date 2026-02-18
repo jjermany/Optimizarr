@@ -90,6 +90,50 @@ def test_get_gpu_metrics_defaults_when_process_outputs_nothing(monkeypatch):
     assert metrics == {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0}
 
 
+def test_get_intel_gpu_metrics_sysfs_returns_none_when_paths_absent(monkeypatch):
+    """Returns None when no engine directories exist under /sys/class/drm/."""
+    monkeypatch.setattr(monitoring_service.glob, 'glob', lambda _: [])
+    result = monitoring_service._get_intel_gpu_metrics_sysfs()
+    assert result is None
+
+
+def test_get_gpu_metrics_uses_sysfs_when_available(monkeypatch):
+    """sysfs-based metrics are preferred over intel_gpu_top."""
+    monkeypatch.setattr(
+        monitoring_service,
+        '_get_intel_gpu_metrics_sysfs',
+        lambda: {'gpu_video_percent': 55.0, 'gpu_render_percent': 10.0},
+    )
+    popen_called = []
+    monkeypatch.setattr(
+        monitoring_service.subprocess,
+        'Popen',
+        lambda *a, **k: popen_called.append(True) or _FakePopen(''),
+    )
+
+    metrics = monitoring_service.get_gpu_metrics()
+
+    assert metrics['gpu_video_percent'] == 55.0
+    assert metrics['gpu_render_percent'] == 10.0
+    assert not popen_called, 'intel_gpu_top should not be invoked when sysfs succeeds'
+
+
+def test_get_gpu_metrics_falls_back_to_intel_gpu_top_when_sysfs_absent(monkeypatch):
+    """intel_gpu_top is tried when sysfs engine paths do not exist."""
+    monkeypatch.setattr(monitoring_service, '_get_intel_gpu_metrics_sysfs', lambda: None)
+    mock_stdout = '{"engines": {"Video": {"busy": 30.0}, "Render/3D": {"busy": 5.0}}}\n'
+    monkeypatch.setattr(
+        monitoring_service.subprocess,
+        'Popen',
+        lambda *args, **kwargs: _FakePopen(mock_stdout),
+    )
+
+    metrics = monitoring_service.get_gpu_metrics()
+
+    assert metrics['gpu_video_percent'] == 30.0
+    assert metrics['gpu_render_percent'] == 5.0
+
+
 def test_get_system_metrics_includes_cpu_ram_and_active_jobs(monkeypatch):
     monkeypatch.setattr(
         monitoring_service,

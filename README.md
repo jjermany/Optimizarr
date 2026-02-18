@@ -188,3 +188,25 @@ If jobs fail with `qsv_encode_failed` but `ffmpeg -encoders` lists `*_qsv` encod
 2. Set `LIBVA_DRIVER_NAME=iHD` for Intel Gen 8+ / Arc GPUs.
 3. Confirm the render node exists: `ls /dev/dri/` — typically `renderD128`.
 4. If your host uses a different node, set `QSV_DEVICE` accordingly.
+
+---
+
+## GPU dashboard percentage
+
+The GPU% stat on the dashboard is collected using the following priority order:
+
+1. **sysfs engine stats** (`/sys/class/drm/card*/engine/*/busy_time_ms`) — the preferred method. Works inside Docker without any extra capabilities. Requires Linux kernel 5.11 or newer (all current Unraid versions qualify).
+2. **`intel_gpu_top`** — fallback for older kernels. Inside Docker this tool needs access to the kernel perf interface, which is blocked by Docker's default seccomp profile. To enable it add to your container:
+   ```
+   --cap-add=SYS_ADMIN --security-opt seccomp=unconfined
+   ```
+   or set `Privileged: true` in your Unraid template.
+3. **`nvidia-smi`** — used automatically for NVIDIA GPUs if present.
+
+If GPU% shows 0% while encoding, the most common cause on Unraid is that the sysfs paths aren't exposed inside the container. Verify with:
+
+```bash
+docker exec optimizarr ls /sys/class/drm/card0/engine/
+```
+
+If the directory is empty or missing, add `--privileged` (or the cap-add/seccomp options above) to your container's extra parameters.
