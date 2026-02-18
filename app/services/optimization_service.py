@@ -1125,6 +1125,8 @@ def optimize_video(
             vaapi_selection = EncoderSelection(
                 codec=selection.codec, encoder=vaapi_encoder, use_qsv=False, use_vaapi=True,
             )
+            if encoder_selected_callback:
+                encoder_selected_callback(vaapi_encoder, True)
             if can_resume:
                 ffmpeg_command = _build_resume_command(
                     input_path, resume_position_seconds, str(resume_segment_path), profile, vaapi_selection,
