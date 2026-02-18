@@ -128,6 +128,20 @@ def run_workspace_cleanup(db: Session) -> dict[str, int | list[int]]:
         for (job_id,) in db.query(Job.id).filter(Job.status.in_(ACTIVE_WORKSPACE_STATUSES)).all()
     }
 
+    # Queued jobs that have a saved resume position must also keep their workspace:
+    # it contains the partial output file that optimize_video needs to seek past
+    # on resume.  Without this guard the partial written during recovery is deleted
+    # before the worker thread picks the job up, forcing a full re-encode.
+    resumable_queued_ids = {
+        job_id
+        for (job_id,) in db.query(Job.id).filter(
+            Job.status == 'queued',
+            Job.resume_position_seconds.isnot(None),
+        ).all()
+    }
+
+    protected_job_ids = active_job_ids | resumable_queued_ids
+
     cleaned_workspaces = 0
     cleaned_workspace_job_ids: list[int] = []
     for workspace in workspace_root.iterdir():
@@ -137,7 +151,7 @@ def run_workspace_cleanup(db: Session) -> dict[str, int | list[int]]:
             continue
 
         job_id = int(workspace.name)
-        if job_id in active_job_ids:
+        if job_id in protected_job_ids:
             continue
 
         shutil.rmtree(workspace, ignore_errors=True)
