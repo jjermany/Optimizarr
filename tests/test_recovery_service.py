@@ -75,3 +75,276 @@ def test_startup_recovery_preserves_partial_resume_state_when_available(monkeypa
         assert job.progress_percent == 61
         assert job.resume_position_seconds == 123.4
         assert workspace.exists()
+
+
+# ---------------------------------------------------------------------------
+# run_workspace_cleanup edge cases
+# ---------------------------------------------------------------------------
+
+def test_workspace_cleanup_preserves_queued_job_with_resume_position(tmp_path):
+    """A queued job with resume_position_seconds must keep its workspace (partial inside)."""
+    workspace_root = tmp_path / 'workspaces'
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root)
+
+        job = Job(input_path='/media/resume-me.mkv', status='queued', resume_position_seconds=77.5)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = workspace_root / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / 'output.partial.mkv').write_text('partial')
+
+        summary = recovery_service.run_workspace_cleanup(db)
+
+        assert summary['cleaned_workspaces'] == 0
+        assert job.id not in summary['cleaned_workspace_job_ids']
+        assert workspace.exists(), 'Workspace must survive for the resume to work'
+
+
+def test_workspace_cleanup_removes_queued_job_workspace_without_resume_position(tmp_path):
+    """A queued job without resume_position_seconds has no valid partial; clean it up."""
+    workspace_root = tmp_path / 'workspaces'
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root)
+
+        job = Job(input_path='/media/no-resume.mkv', status='queued', resume_position_seconds=None)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = workspace_root / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / 'stale_output.mkv').write_text('stale')
+
+        summary = recovery_service.run_workspace_cleanup(db)
+
+        assert summary['cleaned_workspaces'] == 1
+        assert job.id in summary['cleaned_workspace_job_ids']
+        assert not workspace.exists()
+
+
+def test_workspace_cleanup_removes_terminal_job_workspace_even_with_resume_position(tmp_path):
+    """A completed/failed job should never keep a workspace regardless of resume_position_seconds."""
+    workspace_root = tmp_path / 'workspaces'
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root)
+
+        # Simulate an unlikely data inconsistency: terminal job still has a resume position.
+        job = Job(input_path='/media/done.mkv', status='complete', resume_position_seconds=50.0)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = workspace_root / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / 'output.partial.mkv').write_text('stale')
+
+        summary = recovery_service.run_workspace_cleanup(db)
+
+        assert summary['cleaned_workspaces'] == 1
+        assert not workspace.exists()
+
+
+def test_workspace_cleanup_preserves_active_status_workspaces(tmp_path):
+    """Jobs in ACTIVE_WORKSPACE_STATUSES always keep their workspaces."""
+    workspace_root = tmp_path / 'workspaces'
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root)
+
+        active_jobs = []
+        for status in ('running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'):
+            job = Job(input_path=f'/media/{status}.mkv', status=status)
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            workspace = workspace_root / str(job.id)
+            workspace.mkdir(parents=True, exist_ok=True)
+            (workspace / 'output.partial.mkv').write_text('active')
+            active_jobs.append(job)
+
+        summary = recovery_service.run_workspace_cleanup(db)
+
+        assert summary['cleaned_workspaces'] == 0
+        for job in active_jobs:
+            assert (workspace_root / str(job.id)).exists(), f'Workspace for {job.status} job must survive'
+
+
+def test_workspace_cleanup_ignores_non_numeric_directories(tmp_path):
+    """Non-numeric directories under the workspace root are left untouched."""
+    workspace_root = tmp_path / 'workspaces'
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root)
+
+        oddball = workspace_root / 'lost+found'
+        oddball.mkdir()
+        (oddball / 'junk').write_text('junk')
+
+        summary = recovery_service.run_workspace_cleanup(db)
+
+        assert summary['cleaned_workspaces'] == 0
+        assert oddball.exists()
+
+
+def test_workspace_cleanup_removes_orphaned_workspace_for_unknown_job_id(tmp_path):
+    """A workspace whose job ID does not exist in the DB is cleaned up."""
+    workspace_root = tmp_path / 'workspaces'
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root)
+
+        orphan = workspace_root / '99999'
+        orphan.mkdir()
+        (orphan / 'output.partial.mkv').write_text('orphan')
+
+        summary = recovery_service.run_workspace_cleanup(db)
+
+        assert summary['cleaned_workspaces'] == 1
+        assert not orphan.exists()
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: startup recovery → workspace cleanup (the original bug scenario)
+# ---------------------------------------------------------------------------
+
+def test_startup_recovery_then_cleanup_preserves_partial_for_resume(monkeypatch, tmp_path):
+    """
+    Full restart sequence: recovery re-queues an interrupted job that has a
+    valid partial; the subsequent workspace cleanup must NOT delete it.
+
+    This is the core regression test for the bug where run_workspace_cleanup
+    immediately wiped the partial that run_startup_recovery had just preserved.
+    """
+    workspace_root = tmp_path / 'workspaces'
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root, requeue=True)
+
+        job = Job(input_path='/media/interrupted.mkv', status='running', progress_percent=42)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = workspace_root / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / 'output.partial.mkv').write_text('partial-data')
+
+        monkeypatch.setattr(recovery_service, '_probe_partial_duration', lambda *_: 99.9)
+
+        recovery_summary = recovery_service.run_startup_recovery(db)
+        cleanup_summary = recovery_service.run_workspace_cleanup(db)
+
+        db.refresh(job)
+        assert job.status == 'queued'
+        assert job.resume_position_seconds == 99.9
+        assert workspace.exists(), 'Partial workspace must survive cleanup so the job can resume'
+        assert cleanup_summary['cleaned_workspaces'] == 0
+        assert job.id not in cleanup_summary['cleaned_workspace_job_ids']
+        # Recovery counters
+        assert recovery_summary['recovered_jobs'] == 1
+        assert recovery_summary['requeued_jobs'] == 1
+        assert recovery_summary['cleaned_workspaces'] == 0
+
+
+def test_startup_recovery_then_cleanup_removes_workspace_when_no_partial(monkeypatch, tmp_path):
+    """
+    When there is no usable partial (ffprobe returns None), recovery resets the
+    job to queued-from-scratch and deletes the workspace itself.  The subsequent
+    cleanup should find nothing left to do.
+    """
+    workspace_root = tmp_path / 'workspaces'
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root, requeue=True)
+
+        job = Job(input_path='/media/no-partial.mkv', status='running', progress_percent=10)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = workspace_root / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / 'output.partial.mkv').write_text('broken')
+
+        monkeypatch.setattr(recovery_service, '_probe_partial_duration', lambda *_: None)
+
+        recovery_service.run_startup_recovery(db)
+        cleanup_summary = recovery_service.run_workspace_cleanup(db)
+
+        db.refresh(job)
+        assert job.status == 'queued'
+        assert job.resume_position_seconds is None
+        assert not workspace.exists()
+        # Workspace was already cleaned during recovery; cleanup has nothing to do.
+        assert cleanup_summary['cleaned_workspaces'] == 0
+
+
+def test_startup_recovery_then_cleanup_mixed_jobs(monkeypatch, tmp_path):
+    """
+    Multiple interrupted jobs in a single restart:
+    - one with a valid partial → workspace preserved
+    - one without a partial → workspace cleaned
+    Both are re-queued; only the one with the partial keeps its workspace.
+    """
+    workspace_root = tmp_path / 'workspaces'
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root, requeue=True)
+
+        job_with = Job(input_path='/media/with-partial.mkv', status='running', progress_percent=55)
+        job_without = Job(input_path='/media/without-partial.mkv', status='running', progress_percent=20)
+        db.add(job_with)
+        db.add(job_without)
+        db.commit()
+        db.refresh(job_with)
+        db.refresh(job_without)
+
+        ws_with = workspace_root / str(job_with.id)
+        ws_with.mkdir(parents=True, exist_ok=True)
+        (ws_with / 'output.partial.mkv').write_text('good-partial')
+
+        ws_without = workspace_root / str(job_without.id)
+        ws_without.mkdir(parents=True, exist_ok=True)
+        (ws_without / 'output.partial.mkv').write_text('bad-partial')
+
+        def fake_probe(workspace: 'Path') -> 'float | None':
+            if workspace == ws_with:
+                return 88.0
+            return None
+
+        monkeypatch.setattr(recovery_service, '_probe_partial_duration', fake_probe)
+
+        recovery_service.run_startup_recovery(db)
+        cleanup_summary = recovery_service.run_workspace_cleanup(db)
+
+        db.refresh(job_with)
+        db.refresh(job_without)
+
+        assert job_with.status == 'queued'
+        assert job_with.resume_position_seconds == 88.0
+        assert ws_with.exists(), 'Workspace with valid partial must survive cleanup'
+
+        assert job_without.status == 'queued'
+        assert job_without.resume_position_seconds is None
+        assert not ws_without.exists()
+
+        # Only the workspace that was already cleaned by recovery counts as cleaned there;
+        # the post-recovery cleanup should see zero additional workspaces to remove.
+        assert cleanup_summary['cleaned_workspaces'] == 0
