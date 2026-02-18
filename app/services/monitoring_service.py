@@ -110,10 +110,14 @@ def _get_intel_gpu_metrics() -> dict[str, float] | None:
     if not payload:
         return None
 
+    # Only trust this output if intel_gpu_top produced recognisable engine data.
+    # Checking for the "engines" key avoids incorrectly falling back to NVIDIA
+    # (or the 0% default) when the Intel GPU is merely idle.
+    if 'engines' not in payload:
+        return None
+
     video = _extract_percent(payload, ('video',))
     render = _extract_percent(payload, ('render', '3d'))
-    if video == 0.0 and render == 0.0:
-        return None
 
     return {
         'gpu_video_percent': video,
