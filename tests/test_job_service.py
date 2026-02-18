@@ -3,7 +3,8 @@ from datetime import datetime, timedelta
 from app.core.database import SessionLocal
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile
-from app.services.job_service import create_job, prune_job_history
+from app.services import optimization_service
+from app.services.job_service import create_job, pause_job, prune_job_history, resume_job
 
 
 def test_create_job_stores_profile_snapshot():
@@ -61,3 +62,58 @@ def test_prune_job_history_removes_stale_terminal_jobs():
         db.delete(fresh_terminal)
         db.delete(stale_active)
         db.commit()
+
+
+def test_pause_job_captures_resume_position_without_resetting_progress(monkeypatch):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        job = Job(input_path='/media/pause-me.mkv', status='running', progress_percent=44, eta_seconds=120)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        stopped_job_ids: list[int] = []
+        monkeypatch.setattr(optimization_service, 'get_active_position', lambda job_id: 133.7)
+        monkeypatch.setattr(optimization_service, 'stop_active_ffmpeg', lambda job_id: stopped_job_ids.append(job_id))
+
+        updated = pause_job(db, job.id)
+
+        assert updated is not None
+        assert updated.status == 'paused'
+        assert updated.progress_percent == 44
+        assert updated.resume_position_seconds == 133.7
+        assert updated.eta_seconds is None
+        assert stopped_job_ids == [job.id]
+
+
+def test_resume_job_requeues_paused_job_without_clearing_resume_state():
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        job = Job(
+            input_path='/media/resume-me.mkv',
+            status='paused',
+            progress_percent=57,
+            resume_position_seconds=95.0,
+            fps=10.0,
+            eta_seconds=300,
+            error_message='temporary',
+            completed_at=datetime.utcnow(),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        updated = resume_job(db, job.id)
+
+        assert updated is not None
+        assert updated.status == 'queued'
+        assert updated.progress_percent == 57
+        assert updated.resume_position_seconds == 95.0
+        assert updated.fps is None
+        assert updated.eta_seconds is None
+        assert updated.error_message is None
+        assert updated.completed_at is None

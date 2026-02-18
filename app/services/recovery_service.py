@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.models.job import Job
 from app.models.settings import Settings
 
-RECOVERABLE_STATUSES = {'running', 'preflight', 'aborting'}
+RECOVERABLE_STATUSES = {'running', 'preflight', 'starting', 'aborting'}
 ACTIVE_WORKSPACE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
 
 
