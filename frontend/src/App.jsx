@@ -21,6 +21,7 @@ import {
   pauseQueue,
   purgeHistory,
   removeAllJobs,
+  requeueJob,
   resumeJob,
   resumeQueue,
   retryJob,
@@ -744,6 +745,7 @@ export default function App() {
   async function handleJobAction(action, jobId) {
     try {
       if (action === 'cancel') await cancelJob(jobId);
+      else if (action === 'requeue') await requeueJob(jobId);
       else if (action === 'retry') await retryJob(jobId);
       else if (action === 'pause') await pauseJob(jobId);
       else if (action === 'resume') await resumeJob(jobId);
@@ -1619,6 +1621,7 @@ export default function App() {
                                   {job.status === 'running' && <Btn size="sm" variant="warning" onClick={() => handleJobAction('pause', job.id)}>Pause</Btn>}
                                   {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
                                   {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && <Btn size="sm" variant="success" onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>Start</Btn>}
+                                  {job.status === 'interrupted' && <Btn size="sm" variant="primary" onClick={() => handleJobAction('requeue', job.id)}>Requeue</Btn>}
                                   {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
                                     <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>Abort</Btn>
                                   )}

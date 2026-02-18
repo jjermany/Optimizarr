@@ -46,7 +46,7 @@ from app.services.monitoring_service import (
 )
 from app.services.realtime_service import broker, expected_ws_token, next_message
 from app.services.discovery_service import scan_enabled_libraries, scan_library
-from app.services.recovery_service import run_startup_recovery, run_workspace_cleanup
+from app.services.recovery_service import requeue_interrupted_job, run_startup_recovery, run_workspace_cleanup
 from app.workers import queue as worker_queue
 
 router = APIRouter()
@@ -832,6 +832,16 @@ def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db))
 @router.post('/jobs/{job_id}/cancel', response_model=JobResponse)
 def cancel_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
     job = cancel_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Job not found')
+    response = JobResponse.from_orm_job(job)
+    broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    return response
+
+
+@router.post('/jobs/{job_id}/requeue', response_model=JobResponse)
+def requeue_interrupted_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
+    job = requeue_interrupted_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
     response = JobResponse.from_orm_job(job)

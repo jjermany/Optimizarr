@@ -134,7 +134,8 @@ def retry_job(db: Session, job_id: int) -> Job | None:
         return job
 
     job.status = 'queued'
-    job.progress_percent = 0
+    if not job.resume_position_seconds:
+        job.progress_percent = 0
     job.fps = None
     job.eta_seconds = None
     job.output_path = None

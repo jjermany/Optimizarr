@@ -661,7 +661,7 @@ def stop_worker() -> None:
         workers = list(_active_workers.values())
     for worker in workers:
         if worker.is_alive():
-            worker.join(timeout=5)
+            worker.join(timeout=30)
 
     _manager_thread = None
     _last_workers_allowed = None
