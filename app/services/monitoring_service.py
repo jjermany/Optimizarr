@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import glob
 import json
+import os
 import select
 import subprocess
 import time
@@ -153,9 +155,63 @@ def _get_nvidia_gpu_metrics() -> dict[str, float] | None:
         return None
 
 
+def _get_intel_gpu_metrics_sysfs() -> dict[str, float] | None:
+    """Read Intel GPU engine utilisation from sysfs (kernel ≥ 5.11).
+
+    Works inside Docker containers without SYS_ADMIN or perf_event_open because
+    the engine busy_time_ms counters under /sys/class/drm/ are world-readable.
+    Two readings 500 ms apart are used to derive the utilisation percentage.
+    Returns None if the engine sysfs hierarchy is absent on this host.
+    """
+    engine_dirs = glob.glob('/sys/class/drm/card*/engine/*')
+    if not engine_dirs:
+        return None
+
+    def _read_busy() -> dict[str, int]:
+        result: dict[str, int] = {}
+        for d in engine_dirs:
+            path = os.path.join(d, 'busy_time_ms')
+            try:
+                with open(path) as f:
+                    result[os.path.basename(d).lower()] = int(f.read().strip())
+            except (OSError, ValueError):
+                pass
+        return result
+
+    t0 = time.monotonic()
+    before = _read_busy()
+    if not before:
+        return None
+
+    time.sleep(0.5)
+
+    after = _read_busy()
+    elapsed_ms = (time.monotonic() - t0) * 1000.0
+
+    video_pct = 0.0
+    render_pct = 0.0
+
+    for name, busy_after in after.items():
+        busy_before = before.get(name, busy_after)
+        delta = max(0, busy_after - busy_before)
+        pct = min(100.0, 100.0 * delta / elapsed_ms)
+        if any(lbl in name for lbl in ('vcs', 'vd', 'video')):
+            video_pct = max(video_pct, pct)
+        elif any(lbl in name for lbl in ('rcs', 'ccs', 'render')):
+            render_pct = max(render_pct, pct)
+
+    return {'gpu_video_percent': video_pct, 'gpu_render_percent': render_pct}
+
+
 def get_gpu_metrics() -> dict[str, float]:
     default_metrics = {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0}
 
+    # Sysfs engine stats — works inside Docker without special capabilities.
+    sysfs = _get_intel_gpu_metrics_sysfs()
+    if sysfs is not None:
+        return sysfs
+
+    # intel_gpu_top — requires SYS_ADMIN / perf_event_open in Docker.
     intel = _get_intel_gpu_metrics()
     if intel is not None:
         return intel
