@@ -268,6 +268,7 @@ class RemoveAllJobsResponse(BaseModel):
     removed_job_ids: list[int]
 
 class NotificationTriggerSettings(BaseModel):
+    job_complete: bool = False
     job_failed: bool = True
     job_interrupted: bool = True
     low_disk_pause: bool = True
