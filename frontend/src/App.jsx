@@ -14,6 +14,7 @@ import {
   fetchNotificationSettings,
   fetchPlexLibraries,
   fetchPlexSettings,
+  fetchQueueStatus,
   fetchSettings,
   fetchWsToken,
   pauseJob,
@@ -522,13 +523,14 @@ export default function App() {
 
   async function refreshAll() {
     try {
-      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextPlexSettings, nextEncoders] = await Promise.all([
+      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus] = await Promise.all([
         fetchMetrics(),
         fetchJobs(),
         fetchSettings(),
         fetchNotificationSettings(),
         fetchPlexSettings(),
         fetchEncoders(),
+        fetchQueueStatus(),
       ]);
       setMetrics(nextMetrics);
       setJobs(nextJobs.filter((job) => !isAbortedJob(job)));
@@ -537,6 +539,7 @@ export default function App() {
       setPlexSettings(nextPlexSettings);
       const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
       setAvailableEncodersByCodec(encoderMap);
+      setQueuePaused(nextQueueStatus?.status === 'paused');
       if (nextPlexSettings?.enabled && nextPlexSettings?.token) {
         fetchPlexLibraries().then((sections) => setPlexLibraries(sections ?? [])).catch(() => {});
       }
@@ -700,8 +703,16 @@ export default function App() {
           }
           if (payload.type === 'system_event') {
             if (payload.data?.event === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
-            if (payload.data?.event === 'queue_paused' && payload.data?.reason === 'low_disk') { pushToast('Queue paused due to low disk.', 'warn'); return; }
-            if (payload.data?.event === 'queue_paused' && payload.data?.reason !== 'manual_scan') { pushToast('Queue paused.', 'warn'); return; }
+            if (payload.data?.event === 'queue_paused') {
+              setQueuePaused(true);
+              if (payload.data?.reason === 'low_disk') { pushToast('Queue paused due to low disk.', 'warn'); return; }
+              if (payload.data?.reason !== 'manual_scan') { pushToast('Queue paused.', 'warn'); }
+              return;
+            }
+            if (payload.data?.event === 'queue_resumed') {
+              setQueuePaused(false);
+              return;
+            }
             if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') pushToast('Recovery ran on startup.', 'info');
           }
         };
@@ -1518,7 +1529,7 @@ export default function App() {
                     />
                     <Btn size="sm" variant="danger" onClick={handleAbortAllJobs}>Abort All</Btn>
                     <Btn size="sm" variant="warning" onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}>
-                      {queuePaused ? 'Resume Queue' : 'Pause Queue'}
+                      {queuePaused ? 'Start Queue' : 'Pause Queue'}
                     </Btn>
                   </div>
                 )}
