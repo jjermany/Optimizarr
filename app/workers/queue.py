@@ -15,7 +15,7 @@ from app.models.job import Job
 from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
 from app.models.settings import Settings
 from app.services.job_service import prune_job_history
-from app.services.notification_service import enqueue_job_failed, enqueue_low_disk_space_alert, handle_job_terminal_state
+from app.services.notification_service import enqueue_job_failed, enqueue_low_disk_space_alert, format_display_name, handle_job_terminal_state
 from app.services.plex_service import trigger_scan_after_job
 from app.services.optimization_service import (
     delete_partial_output,
@@ -148,7 +148,7 @@ def _pause_queue_for_low_disk_space(settings: Settings, free_bytes: int, job: Jo
     library_name = None
     file_name = None
     if job:
-        file_name = Path(job.source_path).name
+        file_name = format_display_name(job.source_path)
 
     enqueue_low_disk_space_alert(
         min_free_gb=min_free_gb,

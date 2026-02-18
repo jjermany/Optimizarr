@@ -6,6 +6,7 @@ from email.message import EmailMessage
 from html import escape
 import logging
 from pathlib import Path
+import re
 from queue import Empty, Queue
 import smtplib
 from threading import Event, Lock, Thread
@@ -18,6 +19,27 @@ from app.models.library import Library
 from app.models.notification_settings import NotificationSettings
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_title_year(source_path: str) -> tuple[str, str | None]:
+    """Mirror the frontend extractTitleYear logic: parse title and year from a file path."""
+    stem = Path(source_path).stem
+    spaced = re.sub(r'[._]', ' ', stem).strip()
+    paren_match = re.search(r'\(((19|20)\d{2})\)', spaced)
+    if paren_match:
+        title = spaced[: spaced.index(paren_match.group(0))].rstrip()
+        return (title or spaced, paren_match.group(1))
+    year_match = re.search(r'\b((19|20)\d{2})\b', spaced)
+    if year_match:
+        title = spaced[: year_match.start()].rstrip(' -')
+        return (title or spaced, year_match.group(1))
+    return (spaced, None)
+
+
+def format_display_name(source_path: str) -> str:
+    """Return a human-readable 'Title (Year)' string for email notifications."""
+    title, year = _extract_title_year(source_path)
+    return f'{title} ({year})' if year else title
 
 
 @dataclass(slots=True)
@@ -250,7 +272,7 @@ def enqueue_test_email() -> None:
 
 
 def enqueue_job_failed(job: Job) -> None:
-    file_name = Path(job.source_path).name
+    file_name = format_display_name(job.source_path)
     with _batch_lock:
         for batch in _batches:
             if job.id not in batch.pending_ids:
@@ -297,7 +319,7 @@ def enqueue_job_interrupted(*, job_id: int, reason: str = 'Interrupted by applic
             library = db.query(Library).filter(Library.id == job.library_id).first()
             library_name = library.name if library else None
 
-        file_name = Path(job.source_path).name
+        file_name = format_display_name(job.source_path)
     finally:
         db.close()
 
