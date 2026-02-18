@@ -41,6 +41,10 @@ _HDR_TONEMAP_FILTERS = [
 # HDR-to-SDR hardware tone mapping via Intel VEBOX (tonemap_vaapi).
 # Requires the input to already be in a VAAPI surface (hardware decode).
 # Produces NV12 output in VAAPI memory, ready for VAAPI encode.
+# On Gen 12+ hardware with iHD driver ≥ 23.x, the VEBOX also reads
+# HDR10+ SMPTE2094-40 dynamic metadata for per-frame tone mapping.
+# Dolby Vision Profile 8 decodes to PQ/BT.2020 frames from its HDR10
+# base layer, which VEBOX processes correctly as standard HDR10 content.
 _VAAPI_TONEMAP_FILTER = 'tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709'
 ENCODER_OPTIONS_BY_CODEC = {
     # VAAPI is listed first: it uses the iHD driver directly (same as Plex) and
@@ -60,6 +64,15 @@ _QSV_VAAPI_FALLBACK: dict[str, str] = {
     'h264_qsv': 'h264_vaapi',
     'hevc_qsv': 'hevc_vaapi',
     'av1_qsv': 'av1_vaapi',
+}
+# When VAAPI tonemap_vaapi (VEBOX) fails for HDR content (e.g. unusual DV/HDR10+
+# bitstream structure), try the QSV equivalent before falling back to slow CPU
+# zscale.  vpp_qsv=tonemap=1 (Intel VPP) handles DV/HDR10+ dynamic metadata
+# more robustly than VEBOX on the same physical iGPU.
+_VAAPI_QSV_FALLBACK: dict[str, str] = {
+    'h264_vaapi': 'h264_qsv',
+    'hevc_vaapi': 'hevc_qsv',
+    'av1_vaapi': 'av1_qsv',
 }
 
 
@@ -730,6 +743,68 @@ def is_hdr_video(input_path: str) -> bool:
     )
 
 
+def _detect_hdr_format(input_path: str) -> str | None:
+    """Return the specific HDR format of the primary video stream.
+
+    Returns one of: 'dolby_vision', 'hdr10plus', 'hdr10', 'hlg', or None (SDR).
+
+    Detection priority (highest first):
+      1. Dolby Vision — dvhe/dvh1 codec profile, or DOVI side-data record.
+      2. HDR10+       — SMPTE 2094-40 dynamic metadata side-data.
+      3. HLG          — arib-std-b67 transfer function.
+      4. HDR10        — smpte2084 (PQ) transfer function without DV/HDR10+.
+    """
+    _dv_markers = {'dovi configuration record', 'dolby vision rpu metadata', 'dolby vision'}
+
+    payload = _run_ffprobe_stream_json(input_path)
+    if payload:
+        streams = payload.get('streams', [])
+        if isinstance(streams, list) and streams:
+            stream = streams[0] if isinstance(streams[0], dict) else {}
+            transfer = str(stream.get('color_transfer', '')).strip().lower()
+            profile = str(stream.get('profile', '')).strip().lower()
+
+            # 1. Dolby Vision — codec profile is the fastest indicator.
+            if 'dvhe' in profile or 'dvh1' in profile:
+                return 'dolby_vision'
+
+            has_dv = False
+            has_hdr10plus = False
+            side_data_list = stream.get('side_data_list', [])
+            if isinstance(side_data_list, list):
+                for side_data in side_data_list:
+                    if not isinstance(side_data, dict):
+                        continue
+                    sdt = str(side_data.get('side_data_type', '')).lower()
+                    if sdt in _dv_markers:
+                        has_dv = True
+                    # HDR10+ uses SMPTE ST 2094-40; ffprobe reports the full
+                    # string which may vary slightly across versions.
+                    if 'smpte2094-40' in sdt or 'hdr10plus' in sdt or 'hdr10+' in sdt:
+                        has_hdr10plus = True
+
+            if has_dv:
+                return 'dolby_vision'
+            if has_hdr10plus:
+                return 'hdr10plus'
+
+            # 3. HLG
+            if transfer == 'arib-std-b67':
+                return 'hlg'
+            # 4. HDR10 (PQ without DV/HDR10+ side data)
+            if transfer == 'smpte2084':
+                return 'hdr10'
+
+    # Scalar fallback for minimal ffprobe output.
+    transfer = (_run_ffprobe_value(input_path, 'stream=color_transfer') or '').strip().lower()
+    if transfer == 'arib-std-b67':
+        return 'hlg'
+    if transfer == 'smpte2084':
+        return 'hdr10'
+
+    return None
+
+
 def _profile_from_settings(settings: Any) -> dict[str, Any]:
     profile_snapshot_json = getattr(settings, 'profile_snapshot_json', None)
     if profile_snapshot_json:
@@ -996,10 +1071,20 @@ def optimize_video(
 
     if 'source_is_hdr' not in profile:
         profile['source_is_hdr'] = is_hdr_video(input_path)
+    if 'source_hdr_format' not in profile:
+        profile['source_hdr_format'] = (
+            _detect_hdr_format(input_path) if profile['source_is_hdr'] else None
+        )
     if profile['source_is_hdr'] and bool(profile.get('tone_map_hdr')):
-        logger.info('[%s] HDR source detected — tone mapping to SDR will be applied', job_tag)
+        logger.info(
+            '[%s] HDR source detected (%s) — tone mapping to SDR will be applied',
+            job_tag, profile['source_hdr_format'] or 'hdr',
+        )
     elif profile['source_is_hdr']:
-        logger.info('[%s] HDR source detected — preserving HDR (tone mapping disabled)', job_tag)
+        logger.info(
+            '[%s] HDR source detected (%s) — preserving HDR (tone mapping disabled)',
+            job_tag, profile['source_hdr_format'] or 'hdr',
+        )
 
     selection = _select_encoder(profile)
 
@@ -1153,37 +1238,105 @@ def optimize_video(
             metrics.used_fallback = True
             metrics.fallback_reason = 'qsv_failed_vaapi_fallback'
 
+    # If VAAPI hw-decode + tonemap_vaapi failed (unusual DV/HDR10+ bitstream, driver
+    # limitation, etc.), try the QSV equivalent first.  vpp_qsv=tonemap=1 (Intel VPP)
+    # handles DV/HDR10+ dynamic metadata more robustly than VEBOX on the same iGPU,
+    # avoiding a fall-back to the slow CPU zscale chain wherever possible.
+    _vaapi_tonemap_failed = False
+    if (
+        return_code is not None and return_code != 0 and not was_cancelled
+        and selection.use_vaapi and selection.hw_decode and _apply_tonemap
+    ):
+        _vaapi_tonemap_failed = True
+        qsv_tonemap_encoder = _VAAPI_QSV_FALLBACK.get(selection.encoder)
+        if qsv_tonemap_encoder and _encoder_available(qsv_tonemap_encoder):
+            logger.warning(
+                '[%s] VAAPI tonemap_vaapi failed (rc=%s); retrying with %r + vpp_qsv=tonemap=1 '
+                '(Intel VPP — handles DV/HDR10+ dynamic metadata on the same iGPU)',
+                job_tag, return_code, qsv_tonemap_encoder,
+            )
+            if not can_resume:
+                try:
+                    _ensure_clean_workspace(workspace_path)
+                except OSError:
+                    pass
+            qsv_tonemap_selection = EncoderSelection(
+                codec=selection.codec, encoder=qsv_tonemap_encoder, use_qsv=True, use_vaapi=False,
+            )
+            if encoder_selected_callback:
+                encoder_selected_callback(qsv_tonemap_encoder, True)
+            if can_resume:
+                ffmpeg_command = _build_resume_command(
+                    input_path, resume_position_seconds, str(resume_segment_path), profile, qsv_tonemap_selection,
+                )
+                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                    job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+                )
+            else:
+                ffmpeg_command = _build_command_with_selection(
+                    input_path, str(partial_output_path), profile, qsv_tonemap_selection,
+                )
+                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                    job_id, ffmpeg_command, duration, progress_callback, should_cancel,
+                )
+            selection = qsv_tonemap_selection
+            metrics.used_fallback = True
+            metrics.fallback_reason = 'vaapi_tonemap_failed_qsv_vpp_fallback'
+
     # If VAAPI hardware decode failed, retry with software decode + hwupload.
-    if return_code is not None and return_code != 0 and not was_cancelled and selection.use_vaapi and selection.hw_decode and _has_qsv_error(output_lines):
-        sw_decode_selection = EncoderSelection(
-            codec=selection.codec, encoder=selection.encoder, use_qsv=False, use_vaapi=True, hw_decode=False,
+    # Triggers on QSV-pattern hw errors (non-tonemap) or when tonemap_vaapi failed
+    # and either QSV was unavailable or the QSV intermediate fallback also failed.
+    # When the intermediate fallback switched selection to QSV, look up the original
+    # VAAPI encoder via _QSV_VAAPI_FALLBACK for the sw-decode retry.
+    _needs_sw_decode_retry = (
+        return_code is not None and return_code != 0 and not was_cancelled
+        and (
+            (selection.use_vaapi and selection.hw_decode and _has_qsv_error(output_lines))
+            or _vaapi_tonemap_failed
         )
-        logger.warning(
-            '[%s] VAAPI hardware decode failed (rc=%s); retrying with software decode + hwupload',
-            job_tag, return_code,
+    )
+    if _needs_sw_decode_retry:
+        _vaapi_sw_encoder = (
+            selection.encoder if selection.use_vaapi
+            else _QSV_VAAPI_FALLBACK.get(selection.encoder)
         )
-        if not can_resume:
-            try:
-                _ensure_clean_workspace(workspace_path)
-            except OSError:
-                pass
-        if can_resume:
-            ffmpeg_command = _build_resume_command(
-                input_path, resume_position_seconds, str(resume_segment_path), profile, sw_decode_selection,
+        if _vaapi_sw_encoder:
+            sw_decode_selection = EncoderSelection(
+                codec=selection.codec, encoder=_vaapi_sw_encoder, use_qsv=False, use_vaapi=True, hw_decode=False,
             )
-            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
-                job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+            _sw_reason = (
+                'VAAPI tone mapping failed' if _vaapi_tonemap_failed
+                else 'VAAPI hardware decode failed'
             )
-        else:
-            ffmpeg_command = _build_command_with_selection(
-                input_path, str(partial_output_path), profile, sw_decode_selection,
+            logger.warning(
+                '[%s] %s (rc=%s); retrying with software decode + hwupload',
+                job_tag, _sw_reason, return_code,
             )
-            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
-                job_id, ffmpeg_command, duration, progress_callback, should_cancel,
+            if not can_resume:
+                try:
+                    _ensure_clean_workspace(workspace_path)
+                except OSError:
+                    pass
+            if can_resume:
+                ffmpeg_command = _build_resume_command(
+                    input_path, resume_position_seconds, str(resume_segment_path), profile, sw_decode_selection,
+                )
+                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                    job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+                )
+            else:
+                ffmpeg_command = _build_command_with_selection(
+                    input_path, str(partial_output_path), profile, sw_decode_selection,
+                )
+                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                    job_id, ffmpeg_command, duration, progress_callback, should_cancel,
+                )
+            selection = sw_decode_selection
+            metrics.used_fallback = True
+            metrics.fallback_reason = (
+                'vaapi_tonemap_failed_swdecode_fallback' if _vaapi_tonemap_failed
+                else 'vaapi_hwdecode_failed_swdecode_fallback'
             )
-        selection = sw_decode_selection
-        metrics.used_fallback = True
-        metrics.fallback_reason = 'vaapi_hwdecode_failed_swdecode_fallback'
 
     if return_code is None:
         logger.error('[%s] FFmpeg could not be launched (binary missing or not executable)', job_tag)

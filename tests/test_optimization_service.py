@@ -327,18 +327,22 @@ def test_build_encoder_command_hdr_qsv_applies_tonemap(monkeypatch):
 
     command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
 
-    # QSV+HDR must now use VAAPI hardware decode so tone mapping happens on the GPU.
-    assert '-hwaccel' in command
-    assert command[command.index('-hwaccel') + 1] == 'vaapi'
-    assert '-hwaccel_output_format' in command
-    assert command[command.index('-hwaccel_output_format') + 1] == 'vaapi'
+    # QSV+HDR uses software decode via the VAAPI→QSV bridge.
+    # The VAAPI device is initialised for QSV device enumeration; actual decoding
+    # happens on the CPU so tonemap_vaapi (VEBOX) is never involved here.
+    assert '-init_hw_device' in command
+    hw_device_values = [
+        command[i + 1] for i, v in enumerate(command) if v == '-init_hw_device'
+    ]
+    assert any(v.startswith('vaapi=va:') for v in hw_device_values)
+    assert any(v.startswith('qsv=qs@') for v in hw_device_values)
+    assert '-filter_hw_device' in command
 
-    # Filter chain: tonemap_vaapi (Intel VEBOX) → scale on GPU → hwmap to QSV surface.
+    # Filter chain: hwupload → vpp_qsv=tonemap=1 (Intel VPP handles DV/HDR10+) → scale.
     assert '-vf' in command
     vf = command[command.index('-vf') + 1]
-    assert vf.startswith('tonemap_vaapi=')
-    assert 'scale_vaapi=-2:1080' in vf
-    assert vf.endswith(',hwmap=derive_device=qsv,format=qsv')
+    assert vf.startswith('hwupload=extra_hw_frames=64,vpp_qsv=tonemap=1')
+    assert 'scale_qsv=-1:1080' in vf
 
 
 def test_refresh_encoder_cache_parses_ffmpeg_encoders(monkeypatch):
@@ -512,3 +516,220 @@ def test_select_encoder_honors_preferred_even_when_alternatives_available(monkey
     assert selection is not None
     assert selection.encoder == 'libx264'
     assert selection.is_explicit_preference is True
+
+
+# ---------------------------------------------------------------------------
+# _detect_hdr_format tests
+# ---------------------------------------------------------------------------
+
+def test_detect_hdr_format_dolby_vision_profile(monkeypatch):
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffprobe_stream_json',
+        lambda _: {
+            'streams': [
+                {
+                    'color_transfer': 'smpte2084',
+                    'color_primaries': 'bt2020',
+                    'profile': 'dvhe.08.06',
+                    'side_data_list': [],
+                },
+            ],
+        },
+    )
+    assert optimization_service._detect_hdr_format('/media/dv.mkv') == 'dolby_vision'
+
+
+def test_detect_hdr_format_dolby_vision_side_data(monkeypatch):
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffprobe_stream_json',
+        lambda _: {
+            'streams': [
+                {
+                    'color_transfer': 'smpte2084',
+                    'color_primaries': 'bt2020',
+                    'profile': 'Main 10',
+                    'side_data_list': [{'side_data_type': 'DOVI configuration record'}],
+                },
+            ],
+        },
+    )
+    assert optimization_service._detect_hdr_format('/media/dv.mkv') == 'dolby_vision'
+
+
+def test_detect_hdr_format_hdr10plus_side_data(monkeypatch):
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffprobe_stream_json',
+        lambda _: {
+            'streams': [
+                {
+                    'color_transfer': 'smpte2084',
+                    'color_primaries': 'bt2020',
+                    'profile': 'Main 10',
+                    'side_data_list': [
+                        {'side_data_type': 'Mastering display metadata'},
+                        {'side_data_type': 'HDR Dynamic Metadata SMPTE2094-40'},
+                    ],
+                },
+            ],
+        },
+    )
+    assert optimization_service._detect_hdr_format('/media/hdr10plus.mkv') == 'hdr10plus'
+
+
+def test_detect_hdr_format_hdr10_transfer(monkeypatch):
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffprobe_stream_json',
+        lambda _: {
+            'streams': [
+                {
+                    'color_transfer': 'smpte2084',
+                    'color_primaries': 'bt2020',
+                    'profile': 'Main 10',
+                    'side_data_list': [{'side_data_type': 'Mastering display metadata'}],
+                },
+            ],
+        },
+    )
+    assert optimization_service._detect_hdr_format('/media/hdr10.mkv') == 'hdr10'
+
+
+def test_detect_hdr_format_hlg_transfer(monkeypatch):
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffprobe_stream_json',
+        lambda _: {
+            'streams': [
+                {
+                    'color_transfer': 'arib-std-b67',
+                    'color_primaries': 'bt2020',
+                    'profile': 'Main 10',
+                    'side_data_list': [],
+                },
+            ],
+        },
+    )
+    assert optimization_service._detect_hdr_format('/media/hlg.mkv') == 'hlg'
+
+
+def test_detect_hdr_format_sdr(monkeypatch):
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffprobe_stream_json',
+        lambda _: {
+            'streams': [
+                {
+                    'color_transfer': 'bt709',
+                    'color_primaries': 'bt709',
+                    'profile': 'High',
+                    'side_data_list': [],
+                },
+            ],
+        },
+    )
+    assert optimization_service._detect_hdr_format('/media/sdr.mkv') is None
+
+
+# ---------------------------------------------------------------------------
+# VAAPI tonemap fallback tests
+# ---------------------------------------------------------------------------
+
+def test_vaapi_tonemap_failure_falls_back_to_qsv_vpp(monkeypatch, tmp_path):
+    """When VAAPI tonemap_vaapi fails and QSV is available, retry with vpp_qsv=tonemap=1."""
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 60.0)
+    monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: True)
+    monkeypatch.setattr(optimization_service, '_detect_hdr_format', lambda _: 'hdr10plus')
+    monkeypatch.setattr(
+        optimization_service,
+        '_encoder_available',
+        lambda name: name in {'h264_vaapi', 'h264_qsv'},
+    )
+
+    commands_run = []
+
+    def fake_run_ffmpeg(job_id, command, *args, **kwargs):
+        commands_run.append(command)
+        # First call: VAAPI hw-decode + tonemap_vaapi — simulate failure.
+        # Subsequent calls: success.
+        rc = 1 if len(commands_run) == 1 else 0
+        return rc, 60.0, 24.0, False, ['Error opening filters'] if rc == 1 else []
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *a, **kw: True)
+
+    class HDRSettings:
+        profile_snapshot_json = (
+            '{"codec":"h264","bitrate_mode":"cbr","speed_preset":"medium",'
+            '"audio_mode":"copy","container":"mkv","target_resolution":1080,'
+            '"bitrate_mbps":8,"crf":23,"tone_map_hdr":true,"hdr_only":true}'
+        )
+        workspace_root = str(tmp_path / 'workspaces')
+        bitrate_mbps = 8
+
+    metrics = optimization_service.optimize_video(str(input_path), HDRSettings())
+
+    assert metrics.status == 'complete'
+    assert metrics.used_fallback is True
+    assert metrics.fallback_reason == 'vaapi_tonemap_failed_qsv_vpp_fallback'
+    assert len(commands_run) == 2
+    # Second command must use vpp_qsv tone mapping (Intel VPP, not VEBOX).
+    second_vf = commands_run[1][commands_run[1].index('-vf') + 1]
+    assert 'vpp_qsv=tonemap=1' in second_vf
+    assert 'tonemap_vaapi' not in second_vf
+
+
+def test_vaapi_tonemap_failure_falls_back_to_sw_decode_when_qsv_unavailable(monkeypatch, tmp_path):
+    """When VAAPI tonemap fails and QSV is unavailable, fall back to sw-decode (CPU zscale)."""
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 60.0)
+    monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: True)
+    monkeypatch.setattr(optimization_service, '_detect_hdr_format', lambda _: 'dolby_vision')
+    # Only VAAPI available — no QSV to use as intermediate GPU fallback.
+    monkeypatch.setattr(
+        optimization_service,
+        '_encoder_available',
+        lambda name: name == 'h264_vaapi',
+    )
+
+    commands_run = []
+
+    def fake_run_ffmpeg(job_id, command, *args, **kwargs):
+        commands_run.append(command)
+        rc = 1 if len(commands_run) == 1 else 0
+        return rc, 60.0, 24.0, False, ['tonemap_vaapi error'] if rc == 1 else []
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *a, **kw: True)
+
+    class HDRSettings:
+        profile_snapshot_json = (
+            '{"codec":"h264","bitrate_mode":"cbr","speed_preset":"medium",'
+            '"audio_mode":"copy","container":"mkv","target_resolution":1080,'
+            '"bitrate_mbps":8,"crf":23,"tone_map_hdr":true,"hdr_only":true}'
+        )
+        workspace_root = str(tmp_path / 'workspaces')
+        bitrate_mbps = 8
+
+    metrics = optimization_service.optimize_video(str(input_path), HDRSettings())
+
+    assert metrics.status == 'complete'
+    assert metrics.used_fallback is True
+    assert metrics.fallback_reason == 'vaapi_tonemap_failed_swdecode_fallback'
+    assert len(commands_run) == 2
+    # Second command must be the sw-decode VAAPI path (uses -vaapi_device, not -hwaccel).
+    second_cmd = commands_run[1]
+    assert '-vaapi_device' in second_cmd
+    assert '-hwaccel' not in second_cmd
+    # CPU zscale chain is present in the filter for sw-decode + tone mapping.
+    second_vf = second_cmd[second_cmd.index('-vf') + 1]
+    assert 'zscale' in second_vf
