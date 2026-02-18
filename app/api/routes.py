@@ -37,7 +37,13 @@ from app.services.job_service import (
     resume_job,
     retry_job,
 )
-from app.services.monitoring_service import get_system_metrics
+from app.services.monitoring_service import (
+    _get_intel_gpu_metrics,
+    _get_intel_gpu_metrics_sysfs,
+    _get_nvidia_gpu_metrics,
+    _intel_gpu_top_raw,
+    get_system_metrics,
+)
 from app.services.realtime_service import broker, expected_ws_token, next_message
 from app.services.discovery_service import scan_enabled_libraries, scan_library
 from app.services.recovery_service import run_startup_recovery, run_workspace_cleanup
@@ -715,6 +721,54 @@ def get_encoders(_: None = Depends(require_ui_auth)) -> EncodersResponse:
 @router.get('/metrics', response_model=MetricsResponse)
 def metrics(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> MetricsResponse:
     return MetricsResponse(**get_system_metrics(db))
+
+
+@router.get('/debug/gpu')
+def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
+    """Diagnostic endpoint: run each GPU detection method and report raw results.
+
+    Useful for debugging why GPU% shows 0 on the dashboard.
+    Hit GET /api/debug/gpu and inspect the JSON response.
+    """
+    import glob as _glob
+    import os as _os
+
+    # ── sysfs ──────────────────────────────────────────────────────────────────
+    engine_dirs = _glob.glob('/sys/class/drm/card*/engine/*')
+    sysfs_engine_dirs = engine_dirs
+    sysfs_busy_files: list[str] = []
+    for d in engine_dirs:
+        p = _os.path.join(d, 'busy_time_ms')
+        if _os.path.exists(p):
+            sysfs_busy_files.append(p)
+
+    sysfs_result = _get_intel_gpu_metrics_sysfs()
+
+    # ── intel_gpu_top (parsed) ─────────────────────────────────────────────────
+    intel_result = _get_intel_gpu_metrics()
+
+    # ── intel_gpu_top (raw) ────────────────────────────────────────────────────
+    raw = _intel_gpu_top_raw()
+
+    # ── nvidia-smi ─────────────────────────────────────────────────────────────
+    nvidia_result = _get_nvidia_gpu_metrics()
+
+    return {
+        'sysfs': {
+            'engine_dirs_found': sysfs_engine_dirs,
+            'busy_time_ms_files_found': sysfs_busy_files,
+            'result': sysfs_result,
+        },
+        'intel_gpu_top': {
+            'parsed_result': intel_result,
+            'raw_stdout_first_512': raw['stdout'][:512],
+            'raw_stderr': raw['stderr'][:512],
+            'launch_error': raw['error'],
+        },
+        'nvidia_smi': {
+            'result': nvidia_result,
+        },
+    }
 
 
 @router.post('/jobs', response_model=JobResponse, status_code=201)
