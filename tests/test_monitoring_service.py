@@ -64,6 +64,10 @@ def test_get_gpu_metrics_defaults_when_process_outputs_nothing(monkeypatch):
         'Popen',
         lambda *args, **kwargs: _FakePopen(''),
     )
+    def _raise_not_found(*args, **kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(monitoring_service.subprocess, 'run', _raise_not_found)
 
     metrics = monitoring_service.get_gpu_metrics()
 

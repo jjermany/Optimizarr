@@ -297,15 +297,16 @@ def enqueue_job_complete(job: Job) -> None:
 
 
 def enqueue_job_failed(job: Job) -> None:
-    file_name = format_display_name(job.source_path)
     with _batch_lock:
         for batch in _batches:
             if job.id not in batch.pending_ids:
                 continue
             if batch.failed_files is None:
                 batch.failed_files = []
-            batch.failed_files.append(file_name)
+            batch.failed_files.append(Path(job.source_path).name)
             return
+
+    file_name = format_display_name(job.source_path)
 
     db = SessionLocal()
     try:

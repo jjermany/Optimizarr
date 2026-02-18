@@ -336,6 +336,7 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         },
         throttle_progress=False,
     )
+    broker.publish_system_event('discovery_job_queued', source_path=source_path)
     return job
 
 
