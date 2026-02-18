@@ -10,6 +10,8 @@ services:
       - /mnt/cache/appdata/optimizarr/tmp:/cache
     devices:
       - /dev/dri:/dev/dri
+    cap_add:
+      - PERFMON
     environment:
       - LIBVA_DRIVER_NAME=iHD
       - QSV_DEVICE=/dev/dri/renderD128

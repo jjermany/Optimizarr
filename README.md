@@ -195,18 +195,21 @@ If jobs fail with `qsv_encode_failed` but `ffmpeg -encoders` lists `*_qsv` encod
 
 The GPU% stat on the dashboard is collected using the following priority order:
 
-1. **sysfs engine stats** (`/sys/class/drm/card*/engine/*/busy_time_ms`) — the preferred method. Works inside Docker without any extra capabilities. Requires Linux kernel 5.11 or newer (all current Unraid versions qualify).
-2. **`intel_gpu_top`** — fallback for older kernels. Inside Docker this tool needs access to the kernel perf interface, which is blocked by Docker's default seccomp profile. To enable it add to your container:
-   ```
-   --cap-add=SYS_ADMIN --security-opt seccomp=unconfined
-   ```
-   or set `Privileged: true` in your Unraid template.
-3. **`nvidia-smi`** — used automatically for NVIDIA GPUs if present.
+1. **sysfs engine stats** (`/sys/class/drm/card*/engine/*/busy_time_ms`) — works inside Docker without any extra capabilities on kernels that expose per-engine busy-time counters.
+2. **`intel_gpu_top`** — used when sysfs counters are unavailable (the common case on Intel iGPU). This tool requires `CAP_PERFMON` to call `perf_event_open()`. Docker's default seccomp profile allows that syscall when the capability is present, so the container must be started with `--cap-add=PERFMON`. The `docker-compose.yml`, `docker-compose.unraid.yml`, and `optimizarr.xml` templates already include this.
 
-If GPU% shows 0% while encoding, the most common cause on Unraid is that the sysfs paths aren't exposed inside the container. Verify with:
+   If you manage the container manually, add the flag:
+   ```
+   --cap-add=PERFMON
+   ```
+   Unraid users: this appears in the **Extra Parameters** field in the Docker template GUI. After adding it, **stop and recreate** the container (not just restart).
+
+3. **`nvidia-smi`** — used automatically for NVIDIA GPUs when present.
+
+If GPU% still shows 0% after recreating the container with `--cap-add=PERFMON`, run:
 
 ```bash
-docker exec optimizarr ls /sys/class/drm/card0/engine/
+docker exec optimizarr intel_gpu_top -J -s 250 -c 1
 ```
 
-If the directory is empty or missing, add `--privileged` (or the cap-add/seccomp options above) to your container's extra parameters.
+If that prints JSON with an `engines` key the metric collection is working. If it prints nothing or an error, check that `/dev/dri` is passed through correctly.

@@ -13,7 +13,7 @@
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/jjermany/Optimizarr/main/optimizarr.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/jjermany/Optimizarr/main/icon.png</Icon>
-  <ExtraParams>--device=/dev/dri:/dev/dri</ExtraParams>
+  <ExtraParams>--device=/dev/dri:/dev/dri --cap-add=PERFMON</ExtraParams>
   <Description>Automated media library optimizer with Intel QSV / VAAPI hardware-accelerated transcoding. Monitors your media libraries, queues encoding jobs, and replaces source files with smaller, re-encoded versions — all from a single container.</Description>
   <Config Name="Media" Target="/media" Default="/mnt/user/data/media" Mode="rw" Description="Path to your media libraries." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/data/media</Config>
   <Config Name="Config" Target="/config" Default="/mnt/cache/appdata/optimizarr" Mode="rw" Description="Persistent configuration and database storage." Type="Path" Display="always" Required="true" Mask="false">/mnt/cache/appdata/optimizarr</Config>
