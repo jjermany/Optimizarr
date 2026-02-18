@@ -136,6 +136,10 @@ export function resumeQueue() {
   return request('/queue/resume', { method: 'POST' });
 }
 
+export function fetchQueueStatus() {
+  return request('/queue/status');
+}
+
 export function fetchSettings() {
   return request('/settings');
 }

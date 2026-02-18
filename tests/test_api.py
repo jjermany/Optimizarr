@@ -611,9 +611,17 @@ def test_pause_resume_abort_and_queue_controls(monkeypatch, tmp_path):
         assert pause_queue_response.status_code == 200
         assert pause_queue_response.json() == {'status': 'paused'}
 
+        paused_status_response = client.get('/queue/status')
+        assert paused_status_response.status_code == 200
+        assert paused_status_response.json() == {'status': 'paused'}
+
         resume_queue_response = client.post('/queue/resume')
         assert resume_queue_response.status_code == 200
         assert resume_queue_response.json() == {'status': 'running'}
+
+        running_status_response = client.get('/queue/status')
+        assert running_status_response.status_code == 200
+        assert running_status_response.json() == {'status': 'running'}
 
 
 
@@ -664,6 +672,7 @@ def test_scan_endpoints_pause_queue_before_queueing(monkeypatch, tmp_path):
     from app.workers import queue as worker_queue
 
     monkeypatch.setattr(worker_queue, 'pause_queue', lambda reason='manual': paused_reasons.append(reason))
+    monkeypatch.setattr(worker_queue, 'resume_queue', lambda reason='manual': (_ for _ in ()).throw(AssertionError('scan endpoints should not auto-resume queue')))
     monkeypatch.setattr(routes, 'scan_enabled_libraries', lambda db: [])
     monkeypatch.setattr(routes, 'scan_library', lambda db, library, include_disabled=False: [])
 

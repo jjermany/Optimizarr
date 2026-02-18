@@ -586,10 +586,11 @@ def _manager_loop() -> None:
             if _last_workers_allowed is None:
                 _last_workers_allowed = _workers_allowed
             elif _workers_allowed != _last_workers_allowed:
-                if _workers_allowed:
-                    broker.publish_system_event('queue_resumed', reason='schedule')
-                else:
-                    broker.publish_system_event('queue_paused', reason='schedule')
+                if not _queue_paused:
+                    if _workers_allowed:
+                        broker.publish_system_event('queue_resumed', reason='schedule')
+                    else:
+                        broker.publish_system_event('queue_paused', reason='schedule')
                 _last_workers_allowed = _workers_allowed
 
             now_monotonic = time.monotonic()

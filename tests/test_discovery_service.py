@@ -184,3 +184,41 @@ def test_scan_library_skips_disabled_library_by_default(monkeypatch, tmp_path):
             assert library is not None
             created_jobs = discovery_service.scan_library(session, library)
             assert created_jobs == []
+
+
+def test_scan_library_can_requeue_source_after_abort_all(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'movies'
+    library_path.mkdir()
+
+    source_file = library_path / 'movie.mkv'
+    source_file.write_text('content')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: False)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'Movies', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        profile_response = client.put(f'/libraries/{library_id}/profile', json={'hdr_only': False})
+        assert profile_response.status_code == 200
+
+        first_scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert first_scan_response.status_code == 200
+        first_jobs = first_scan_response.json()['created_jobs']
+        assert len(first_jobs) == 1
+
+        abort_all_response = client.post('/jobs/abort-all')
+        assert abort_all_response.status_code == 200
+        assert first_jobs[0]['id'] in abort_all_response.json()['aborted_job_ids']
+
+        second_scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert second_scan_response.status_code == 200
+        second_jobs = second_scan_response.json()['created_jobs']
+        assert len(second_jobs) == 1
+        assert second_jobs[0]['id'] != first_jobs[0]['id']
+        assert second_jobs[0]['source_path'] == str(source_file)
