@@ -117,6 +117,39 @@ def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
     }
 
 
+def requeue_interrupted_job(db: Session, job_id: int) -> Job | None:
+    """Re-queue an interrupted job, resuming from its partial output if available."""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job or job.status != 'interrupted':
+        return job
+
+    settings = _get_or_create_settings(db)
+    workspace = _workspace_path(settings, job.id)
+
+    partial_duration = _probe_partial_duration(workspace) if workspace.exists() else None
+
+    job.status = 'queued'
+    job.cancel_requested = False
+    job.error_message = None
+    job.fps = None
+    job.eta_seconds = None
+    job.output_path = None
+    job.completed_at = None
+
+    if partial_duration and partial_duration > 0:
+        job.resume_position_seconds = partial_duration
+        # Preserve progress_percent so the UI reflects work already done.
+    else:
+        job.resume_position_seconds = None
+        job.progress_percent = 0
+        if workspace.exists():
+            shutil.rmtree(workspace, ignore_errors=True)
+
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 def run_workspace_cleanup(db: Session) -> dict[str, int | list[int]]:
     settings = _get_or_create_settings(db)
     workspace_root = Path(settings.workspace_root)

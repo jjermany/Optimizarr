@@ -95,6 +95,10 @@ export function retryJob(jobId) {
   return request(`/jobs/${jobId}/retry`, { method: 'POST' });
 }
 
+export function requeueJob(jobId) {
+  return request(`/jobs/${jobId}/requeue`, { method: 'POST' });
+}
+
 export function pauseJob(jobId) {
   return request(`/jobs/${jobId}/pause`, { method: 'POST' });
 }
