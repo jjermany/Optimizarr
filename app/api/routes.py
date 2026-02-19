@@ -734,21 +734,64 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
     import glob as _glob
     import os as _os
 
-    # ── sysfs ──────────────────────────────────────────────────────────────────
+    def _read_int(path: str) -> int | None:
+        try:
+            with open(path) as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    # ── sysfs engine dirs + files present ─────────────────────────────────────
     engine_dirs = _glob.glob('/sys/class/drm/card*/engine/*')
-    sysfs_engine_dirs = engine_dirs
     sysfs_busy_files: list[str] = []
+    engine_dir_contents: dict[str, list[str]] = {}
     for d in engine_dirs:
-        p = _os.path.join(d, 'busy_time_ms')
-        if _os.path.exists(p):
-            sysfs_busy_files.append(p)
+        try:
+            files = sorted(_os.listdir(d))
+        except OSError:
+            files = []
+        engine_dir_contents[d] = files
+        if 'busy_time_ms' in files:
+            sysfs_busy_files.append(_os.path.join(d, 'busy_time_ms'))
 
     sysfs_result = _get_intel_gpu_metrics_sysfs()
 
-    # ── intel_gpu_top (parsed) ─────────────────────────────────────────────────
-    intel_result = _get_intel_gpu_metrics()
+    # ── GT frequency (Intel iGPU — better proxy for QSV load than engine %) ───
+    freq_info: dict[str, dict] = {}
+    for card in _glob.glob('/sys/class/drm/card*'):
+        entry: dict = {}
+        # Old i915 flat paths
+        for name, path in [
+            ('act_mhz',  f'{card}/gt_act_freq_mhz'),
+            ('cur_mhz',  f'{card}/gt_cur_freq_mhz'),
+            ('min_mhz',  f'{card}/gt_min_freq_mhz'),
+            ('max_mhz',  f'{card}/gt_max_freq_mhz'),
+            ('RP0_mhz',  f'{card}/gt_RP0_freq_mhz'),
+            ('RPn_mhz',  f'{card}/gt_RPn_freq_mhz'),
+        ]:
+            v = _read_int(path)
+            if v is not None:
+                entry[name] = v
+        # New xe / newer-i915 nested paths
+        for gt in _glob.glob(f'{card}/gt/gt*'):
+            gt_name = _os.path.basename(gt)
+            gt_entry: dict = {}
+            for name, fname in [
+                ('act_mhz', 'rps_act_freq_mhz'),
+                ('cur_mhz', 'rps_cur_freq_mhz'),
+                ('min_mhz', 'rps_min_freq_mhz'),
+                ('max_mhz', 'rps_max_freq_mhz'),
+            ]:
+                v = _read_int(f'{gt}/{fname}')
+                if v is not None:
+                    gt_entry[name] = v
+            if gt_entry:
+                entry[gt_name] = gt_entry
+        if entry:
+            freq_info[_os.path.basename(card)] = entry
 
-    # ── intel_gpu_top (raw) ────────────────────────────────────────────────────
+    # ── intel_gpu_top (parsed + raw last sample) ───────────────────────────────
+    intel_result = _get_intel_gpu_metrics()
     raw = _intel_gpu_top_raw()
     last_blob = _extract_last_json_blob(raw['stdout'])
 
@@ -757,15 +800,13 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
 
     return {
         'sysfs': {
-            'engine_dirs_found': sysfs_engine_dirs,
+            'engine_dir_contents': engine_dir_contents,
             'busy_time_ms_files_found': sysfs_busy_files,
             'result': sysfs_result,
         },
+        'gt_frequency': freq_info,
         'intel_gpu_top': {
             'parsed_result': intel_result,
-            # Last complete JSON sample — shows exact engine names and busy% values.
-            # "rc6" = % of time the GPU spent in power-save sleep during this sample.
-            # All engines at 0 + rc6 near 100 means the GPU was genuinely idle.
             'last_sample_engines': last_blob.get('engines'),
             'last_sample_rc6_pct': last_blob.get('rc6', {}).get('value'),
             'last_sample_period_ms': last_blob.get('period', {}).get('duration'),
