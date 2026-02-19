@@ -278,7 +278,8 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
     if media_file.stem.endswith(profile.output_suffix):
         return None
 
-    output_path = media_file.with_name(f'{media_file.stem}{profile.output_suffix}.{media_file.suffix.lstrip(".")}')
+    container = str(profile.container.value if hasattr(profile.container, 'value') else profile.container).lower().strip('.')
+    output_path = media_file.with_name(f'{media_file.stem}{profile.output_suffix}.{container}')
     if output_path.exists():
         return None
 
