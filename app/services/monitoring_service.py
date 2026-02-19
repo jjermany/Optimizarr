@@ -255,19 +255,88 @@ def _get_intel_gpu_metrics_sysfs() -> dict[str, float] | None:
     return {'gpu_video_percent': video_pct, 'gpu_render_percent': render_pct}
 
 
+def _get_intel_gpu_metrics_freq() -> dict[str, float] | None:
+    """Estimate GPU utilisation from GT clock frequency (Intel iGPU/dGPU).
+
+    Intel VDEnc (the hardware engine behind QSV) executes each video frame in
+    sub-millisecond bursts that are far too brief for perf-event counters to
+    register — intel_gpu_top shows near-zero even during active encoding.
+    The GPU clock governor, however, ramps the GT frequency up to a sustained
+    level while work is queued and holds it there, making the current clock a
+    reliable activity indicator.
+
+    Reads /sys/class/drm/card*/gt/gt*/rps_act_freq_mhz (xe driver and newer
+    i915 with multi-GT, e.g. Alder/Raptor/Meteor Lake).  Falls back to the
+    older flat /sys/class/drm/card*/gt_act_freq_mhz path for single-GT i915.
+
+    The percentage is: (act_mhz - min_mhz) / (max_mhz - min_mhz) * 100,
+    clamped to [0, 100].  Takes the maximum across all GT tiles on a card so
+    that a card with a dedicated media GT (gt0 doing VDEnc at 1400 MHz) is
+    not masked by an idle display GT (gt1 at 100 MHz).
+    """
+
+    def _read_int(path: str) -> int | None:
+        try:
+            with open(path) as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
+
+    def _pct(act: int, min_f: int, max_f: int) -> float:
+        freq_range = max_f - min_f
+        if freq_range <= 0:
+            return 0.0
+        return min(100.0, max(0.0, 100.0 * (act - min_f) / freq_range))
+
+    for card in sorted(glob.glob('/sys/class/drm/card*')):
+        # New per-GT nested paths — preferred; present on xe driver and
+        # newer i915 (kernel 6.x) with multi-GT topology.
+        gt_dirs = sorted(glob.glob(f'{card}/gt/gt*'))
+        if gt_dirs:
+            best = 0.0
+            found = False
+            for gt_dir in gt_dirs:
+                act   = _read_int(f'{gt_dir}/rps_act_freq_mhz')
+                min_f = _read_int(f'{gt_dir}/rps_min_freq_mhz')
+                max_f = _read_int(f'{gt_dir}/rps_max_freq_mhz')
+                if act is None or min_f is None or max_f is None:
+                    continue
+                found = True
+                best = max(best, _pct(act, min_f, max_f))
+            if found:
+                return {'gpu_video_percent': best, 'gpu_render_percent': best}
+
+        # Older flat i915 paths (single-GT, kernel ≤ 5.x style).
+        act   = _read_int(f'{card}/gt_act_freq_mhz')
+        min_f = _read_int(f'{card}/gt_min_freq_mhz')
+        max_f = _read_int(f'{card}/gt_max_freq_mhz')
+        if act is not None and min_f is not None and max_f is not None:
+            return {'gpu_video_percent': _pct(act, min_f, max_f),
+                    'gpu_render_percent': _pct(act, min_f, max_f)}
+
+    return None
+
+
 def get_gpu_metrics() -> dict[str, float]:
     default_metrics = {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0}
 
-    # Sysfs engine stats — works inside Docker without special capabilities.
+    # 1. Sysfs engine busy_time_ms — accurate per-engine, no special caps needed.
     sysfs = _get_intel_gpu_metrics_sysfs()
     if sysfs is not None:
         return sysfs
 
-    # intel_gpu_top — requires SYS_ADMIN / perf_event_open in Docker.
+    # 2. GT clock frequency — best proxy for Intel VDEnc/QSV which runs in
+    #    sub-millisecond bursts that perf counters miss.  No CAP_PERFMON needed.
+    freq = _get_intel_gpu_metrics_freq()
+    if freq is not None:
+        return freq
+
+    # 3. intel_gpu_top engine % — accurate for 3D/Compute, requires CAP_PERFMON.
     intel = _get_intel_gpu_metrics()
     if intel is not None:
         return intel
 
+    # 4. NVIDIA via nvidia-smi.
     nvidia = _get_nvidia_gpu_metrics()
     if nvidia is not None:
         return nvidia
