@@ -212,21 +212,28 @@ function parseYearForSort(job) {
 }
 
 function sortJobsByOption(jobs, sortOption, fallbackSort) {
+  const comparatorWithPinnedInProgress = (left, right, comparator) => {
+    const leftActive = ACTIVE_STATUSES.has(left.status?.toLowerCase());
+    const rightActive = ACTIVE_STATUSES.has(right.status?.toLowerCase());
+    if (leftActive !== rightActive) return leftActive ? -1 : 1;
+    return comparator(left, right);
+  };
+
   if (sortOption === 'year_desc') {
     return [...jobs].sort((a, b) => {
       const yearDiff = (parseYearForSort(b) ?? -Infinity) - (parseYearForSort(a) ?? -Infinity);
       if (yearDiff !== 0) return yearDiff;
-      return fallbackSort(a, b);
+      return comparatorWithPinnedInProgress(a, b, fallbackSort);
     });
   }
   if (sortOption === 'year_asc') {
     return [...jobs].sort((a, b) => {
       const yearDiff = (parseYearForSort(a) ?? Infinity) - (parseYearForSort(b) ?? Infinity);
       if (yearDiff !== 0) return yearDiff;
-      return fallbackSort(a, b);
+      return comparatorWithPinnedInProgress(a, b, fallbackSort);
     });
   }
-  return [...jobs].sort(fallbackSort);
+  return [...jobs].sort((a, b) => comparatorWithPinnedInProgress(a, b, fallbackSort));
 }
 
 function validateLibraryDraft(draft, libraryEnabled) {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 import shutil
 import subprocess
 
@@ -9,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.models.job import Job
 from app.models.settings import Settings
 
-RECOVERABLE_STATUSES = {'running', 'preflight', 'starting', 'aborting'}
+RECOVERABLE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
 ACTIVE_WORKSPACE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
 
 
@@ -24,6 +25,36 @@ def _apply_partial_resume_if_available(job: Job, workspace: Path, partial_durati
         shutil.rmtree(workspace, ignore_errors=True)
     return False
 
+
+
+
+def _pin_resume_encoder(job: Job) -> None:
+    """Lock resumable jobs to their last known working codec/encoder."""
+    if not job.resume_position_seconds or not job.profile_snapshot_json:
+        return
+
+    try:
+        snapshot = json.loads(job.profile_snapshot_json)
+    except json.JSONDecodeError:
+        return
+
+    if not isinstance(snapshot, dict):
+        return
+
+    changed = False
+    if job.codec_used:
+        codec = str(job.codec_used).lower()
+        if snapshot.get('codec') != codec:
+            snapshot['codec'] = codec
+            changed = True
+    if job.encoder_used:
+        encoder = str(job.encoder_used).lower()
+        if snapshot.get('preferred_video_encoder') != encoder:
+            snapshot['preferred_video_encoder'] = encoder
+            changed = True
+
+    if changed:
+        job.profile_snapshot_json = json.dumps(snapshot)
 
 def _get_or_create_settings(db: Session) -> Settings:
     settings = db.query(Settings).first()
@@ -103,6 +134,7 @@ def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
             workspace_existed = workspace.exists()
             if not _apply_partial_resume_if_available(job, workspace, partial_duration) and workspace_existed:
                 cleaned_workspaces += 1
+            _pin_resume_encoder(job)
         else:
             job.resume_position_seconds = None
             job.progress_percent = 0
@@ -122,6 +154,7 @@ def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
 
         partial_duration = _probe_partial_duration(workspace)
         if _apply_partial_resume_if_available(job, workspace, partial_duration):
+            _pin_resume_encoder(job)
             requeued_jobs += 1
         else:
             cleaned_workspaces += 1
@@ -157,6 +190,7 @@ def requeue_interrupted_job(db: Session, job_id: int) -> Job | None:
     job.completed_at = None
 
     _apply_partial_resume_if_available(job, workspace, partial_duration)
+    _pin_resume_encoder(job)
 
     db.commit()
     db.refresh(job)

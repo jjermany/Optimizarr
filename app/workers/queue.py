@@ -89,6 +89,7 @@ def _publish_job(job: Job, *, throttle_progress: bool = True) -> None:
             'error_message': job.error_message,
             'source_resolution': job.source_resolution,
             'source_is_hdr': job.source_is_hdr,
+            'completed_at': job.completed_at.isoformat() if job.completed_at else None,
         },
         throttle_progress=throttle_progress,
     )
