@@ -43,6 +43,7 @@ import StatCard from './components/StatCard';
 const WS_PATH = '/ws';
 const FALLBACK_AFTER_MS = 30000;
 const FALLBACK_POLL_MS = 10000;
+const METRICS_POLL_MS = 10000;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const MESSAGE_DISMISS_MS = 5000;
@@ -656,6 +657,19 @@ export default function App() {
   }, [fallbackPollingEnabled]);
 
   useEffect(() => {
+    const timer = setInterval(async () => {
+      try {
+        const nextMetrics = await fetchMetrics();
+        if (nextMetrics) setMetrics(nextMetrics);
+      } catch {
+        // WebSocket is still the primary path; polling is best-effort resilience.
+      }
+    }, METRICS_POLL_MS);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     intentionallyClosedRef.current = false;
 
     function clearTimers() {
@@ -1085,7 +1099,7 @@ export default function App() {
         {activePage === 'dashboard' && (
           <section className="animate-fade-in space-y-5">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
-              <StatCard label="GPU" value={`${metrics?.gpu_video_percent ?? 0}%`} />
+              <StatCard label="GPU" value={`${Math.max(metrics?.gpu_video_percent ?? 0, metrics?.gpu_render_percent ?? 0)}%`} />
               <StatCard label="CPU" value={`${metrics?.cpu_percent ?? 0}%`} />
               <StatCard label="RAM" value={`${metrics?.ram_percent ?? 0}%`} />
               <StatCard label="Active Jobs" value={metrics?.active_jobs ?? 0} />
