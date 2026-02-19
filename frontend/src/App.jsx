@@ -1874,6 +1874,7 @@ export default function App() {
                 <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Notify On</p>
                 <div className="space-y-2">
                   {[
+                    { key: 'job_complete', label: 'Job Complete' },
                     { key: 'job_failed', label: 'Job Failed' },
                     { key: 'job_interrupted', label: 'Job Interrupted' },
                     { key: 'low_disk_pause', label: 'Low Disk Pause' },
