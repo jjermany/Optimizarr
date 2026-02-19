@@ -3,8 +3,9 @@ from datetime import datetime, timedelta
 from app.core.database import SessionLocal
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile
+from app.models.settings import Settings
 from app.services import optimization_service
-from app.services.job_service import create_job, pause_job, prune_job_history, resume_job
+from app.services.job_service import create_job, pause_job, prune_job_history, resume_job, retry_job
 
 
 def test_create_job_stores_profile_snapshot():
@@ -117,3 +118,59 @@ def test_resume_job_requeues_paused_job_without_clearing_resume_state():
         assert updated.eta_seconds is None
         assert updated.error_message is None
         assert updated.completed_at is None
+
+
+def test_retry_job_recovers_resume_position_from_partial_workspace(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.commit()
+
+        settings = Settings(workspace_root=str(tmp_path / 'workspaces'))
+        db.add(settings)
+        db.commit()
+
+        job = Job(input_path='/media/retry-me.mkv', status='cancelled', progress_percent=61)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = tmp_path / 'workspaces' / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr('app.services.job_service._probe_partial_duration', lambda *_: 142.5)
+
+        updated = retry_job(db, job.id)
+
+        assert updated is not None
+        assert updated.status == 'queued'
+        assert updated.progress_percent == 61
+        assert updated.resume_position_seconds == 142.5
+
+
+def test_retry_job_resets_progress_when_no_partial_workspace_resume_state(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.commit()
+
+        settings = Settings(workspace_root=str(tmp_path / 'workspaces'))
+        db.add(settings)
+        db.commit()
+
+        job = Job(input_path='/media/retry-clean.mkv', status='failed', progress_percent=47)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = tmp_path / 'workspaces' / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr('app.services.job_service._probe_partial_duration', lambda *_: None)
+
+        updated = retry_job(db, job.id)
+
+        assert updated is not None
+        assert updated.status == 'queued'
+        assert updated.progress_percent == 0
+        assert updated.resume_position_seconds is None
