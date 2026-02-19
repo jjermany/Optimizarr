@@ -895,6 +895,58 @@ def test_vaapi_tonemap_failure_falls_back_to_qsv_vpp(monkeypatch, tmp_path):
     assert 'tonemap_vaapi' not in second_vf
 
 
+
+
+def test_vaapi_tonemap_then_qsv_failure_falls_back_to_vaapi_hwdecode(monkeypatch, tmp_path):
+    """If VAAPI tonemap path fails and QSV retry also fails, retry VAAPI with hw-decode path."""
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 60.0)
+    monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: True)
+    monkeypatch.setattr(optimization_service, '_detect_hdr_format', lambda _: 'hdr10')
+    monkeypatch.setattr(
+        optimization_service,
+        '_encoder_available',
+        lambda name: name in {'h264_vaapi', 'h264_qsv'},
+    )
+
+    commands_run = []
+
+    def fake_run_ffmpeg(job_id, command, *args, **kwargs):
+        commands_run.append(command)
+        rc = 1 if len(commands_run) in (1, 2) else 0
+        return rc, 60.0, 24.0, False, ['tonemap error'] if rc == 1 else []
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *a, **kw: True)
+
+    class HDRSettings:
+        profile_snapshot_json = (
+            '{"codec":"h264","bitrate_mode":"cbr","speed_preset":"medium",'
+            '"audio_mode":"copy","container":"mkv","target_resolution":1080,'
+            '"bitrate_mbps":8,"crf":23,"tone_map_hdr":true,"hdr_only":true}'
+        )
+        workspace_root = str(tmp_path / 'workspaces')
+        bitrate_mbps = 8
+
+    metrics = optimization_service.optimize_video(str(input_path), HDRSettings())
+
+    assert metrics.status == 'complete'
+    assert metrics.used_fallback is True
+    assert metrics.fallback_reason == 'vaapi_tonemap_failed_vaapi_hwdecode_fallback'
+    assert len(commands_run) == 3
+
+    second_vf = commands_run[1][commands_run[1].index('-vf') + 1]
+    assert 'vpp_qsv=tonemap=1' in second_vf
+
+    third_cmd = commands_run[2]
+    assert '-hwaccel' in third_cmd
+    assert '-vaapi_device' not in third_cmd
+    third_vf = third_cmd[third_cmd.index('-vf') + 1]
+    assert 'tonemap_vaapi' in third_vf
+
 def test_vaapi_tonemap_failure_falls_back_to_sw_decode_when_qsv_unavailable(monkeypatch, tmp_path):
     """When VAAPI tonemap_vaapi fails for plain HDR10 and QSV is unavailable, fall back to sw-decode (CPU zscale)."""
     input_path = tmp_path / 'movie.mkv'

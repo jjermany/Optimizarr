@@ -1365,16 +1365,26 @@ def optimize_video(
             else _QSV_VAAPI_FALLBACK.get(selection.encoder)
         )
         if _vaapi_sw_encoder:
+            _retry_with_vaapi_hwdecode = bool(_vaapi_tonemap_failed and selection.use_qsv)
             sw_decode_selection = EncoderSelection(
-                codec=selection.codec, encoder=_vaapi_sw_encoder, use_qsv=False, use_vaapi=True, hw_decode=False,
+                codec=selection.codec,
+                encoder=_vaapi_sw_encoder,
+                use_qsv=False,
+                use_vaapi=True,
+                hw_decode=_retry_with_vaapi_hwdecode,
             )
             _sw_reason = (
                 'VAAPI tone mapping failed' if _vaapi_tonemap_failed
                 else 'VAAPI hardware decode failed'
             )
+            _retry_message = (
+                'retrying with VAAPI hw-decode + hwdownload tonemap path'
+                if _retry_with_vaapi_hwdecode
+                else 'retrying with software decode + hwupload'
+            )
             logger.warning(
-                '[%s] %s (rc=%s); retrying with software decode + hwupload',
-                job_tag, _sw_reason, return_code,
+                '[%s] %s (rc=%s); %s',
+                job_tag, _sw_reason, return_code, _retry_message,
             )
             if not can_resume:
                 try:
@@ -1398,7 +1408,9 @@ def optimize_video(
             selection = sw_decode_selection
             metrics.used_fallback = True
             metrics.fallback_reason = (
-                'vaapi_tonemap_failed_swdecode_fallback' if _vaapi_tonemap_failed
+                'vaapi_tonemap_failed_vaapi_hwdecode_fallback'
+                if _vaapi_tonemap_failed and _retry_with_vaapi_hwdecode
+                else 'vaapi_tonemap_failed_swdecode_fallback' if _vaapi_tonemap_failed
                 else 'vaapi_hwdecode_failed_swdecode_fallback'
             )
 
