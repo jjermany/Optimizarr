@@ -44,6 +44,7 @@ from app.services.monitoring_service import (
     _get_intel_gpu_metrics_sysfs,
     _get_nvidia_gpu_metrics,
     _intel_gpu_top_raw,
+    get_gpu_metrics,
     get_system_metrics,
 )
 from app.services.realtime_service import broker, expected_ws_token, next_message
@@ -802,7 +803,11 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
     # ── nvidia-smi ─────────────────────────────────────────────────────────────
     nvidia_result = _get_nvidia_gpu_metrics()
 
+    # ── final result: what get_gpu_metrics() actually returns to the dashboard ─
+    final_result = get_gpu_metrics()
+
     return {
+        'final_gpu_metrics': final_result,
         'sysfs': {
             'engine_dir_contents': engine_dir_contents,
             'busy_time_ms_files_found': sysfs_busy_files,
