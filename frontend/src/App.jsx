@@ -162,6 +162,18 @@ function compareActiveJobsDefault(a, b) {
   return b.id - a.id;
 }
 
+function compareActiveJobsNewest(a, b) {
+  const rankDiff = jobSortRank(a) - jobSortRank(b);
+  if (rankDiff !== 0) return rankDiff;
+  return b.id - a.id;
+}
+
+function compareActiveJobsOldest(a, b) {
+  const rankDiff = jobSortRank(a) - jobSortRank(b);
+  if (rankDiff !== 0) return rankDiff;
+  return a.id - b.id;
+}
+
 function formatResolution(height) {
   return Number.isInteger(height) ? `${height}p` : 'Unknown';
 }
@@ -220,6 +232,12 @@ function sortJobsByOption(jobs, sortOption, fallbackSort) {
     return comparator(left, right);
   };
 
+  if (sortOption === 'newest') {
+    return [...jobs].sort((a, b) => comparatorWithPinnedInProgress(a, b, compareActiveJobsNewest));
+  }
+  if (sortOption === 'oldest') {
+    return [...jobs].sort((a, b) => comparatorWithPinnedInProgress(a, b, compareActiveJobsOldest));
+  }
   if (sortOption === 'year_desc') {
     return [...jobs].sort((a, b) =>
       comparatorWithPinnedInProgress(a, b, (x, y) => {
@@ -618,6 +636,18 @@ export default function App() {
     }
   }
 
+
+
+  async function handleQueueSortChange(nextSort) {
+    setQueueSort(nextSort);
+    try {
+      const updated = await updateSettings({ queue_sort: nextSort });
+      setSettings(updated);
+    } catch (err) {
+      setError(err.message || 'Failed to update queue sort order.');
+    }
+  }
+
   async function refreshLibrariesAndProfiles() {
     try {
       const nextLibraries = await fetchLibraries();
@@ -677,6 +707,12 @@ export default function App() {
     if (token) url.searchParams.set('token', token);
     return url.toString();
   }
+
+
+  useEffect(() => {
+    if (!settings?.queue_sort) return;
+    setQueueSort((prev) => (prev === settings.queue_sort ? prev : settings.queue_sort));
+  }, [settings?.queue_sort]);
 
   useEffect(() => {
     refreshAll();
@@ -1612,10 +1648,12 @@ export default function App() {
                     />
                     <select
                       value={queueSort}
-                      onChange={(e) => setQueueSort(e.target.value)}
+                      onChange={(e) => { void handleQueueSortChange(e.target.value); }}
                       className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30"
                     >
-                      <option value="default">Default order</option>
+                      <option value="default">Default order (Resume-aware)</option>
+                      <option value="newest">Newest first</option>
+                      <option value="oldest">Oldest first</option>
                       <option value="year_desc">Year (Newest first)</option>
                       <option value="year_asc">Year (Oldest first)</option>
                     </select>

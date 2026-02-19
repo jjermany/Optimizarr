@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 import json
 import logging
 from pathlib import Path
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
-from app.models.settings import Settings
+from app.models.settings import QueueSortEnum, Settings
 from app.services.job_service import prune_job_history
 from app.services.notification_service import enqueue_job_complete, enqueue_job_failed, enqueue_low_disk_space_alert, format_display_name, handle_job_terminal_state
 from app.services.plex_service import trigger_scan_after_job
@@ -496,6 +497,19 @@ def _enforce_library_schedule_policies(db: Session, settings: Settings, now: dat
         )
 
 
+
+
+def _parse_source_year(path: str) -> int | None:
+    file_name = Path(path or '').name
+    stem = Path(file_name).stem
+    normalized = re.sub(r'[._]', ' ', stem).strip()
+    paren = re.search(r'\(((19|20)\d{2})\)', normalized)
+    if paren:
+        return int(paren.group(1))
+    year = re.search(r'\b((19|20)\d{2})\b', normalized)
+    if year:
+        return int(year.group(1))
+    return None
 def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> int | None:
     queued = (
         db.query(Job, Library, LibraryProfile)
@@ -504,14 +518,29 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         .filter(Job.status == 'queued')
         .all()
     )
-    queued.sort(
-        key=lambda row: (
-            -float(row[0].resume_position_seconds or 0),
-            -int(row[0].progress_percent or 0),
-            row[0].created_at,
-            row[0].id,
-        )
-    )
+    sort_option = str(getattr(settings, 'queue_sort', QueueSortEnum.default.value) or QueueSortEnum.default.value)
+
+    def sort_key(row: tuple[Job, Library | None, LibraryProfile | None]) -> tuple:
+        job = row[0]
+        resume_priority = -float(job.resume_position_seconds or 0)
+        progress_priority = -int(job.progress_percent or 0)
+
+        if sort_option == QueueSortEnum.newest.value:
+            return (resume_priority, progress_priority, -(job.created_at.timestamp() if job.created_at else 0), -job.id)
+        if sort_option == QueueSortEnum.oldest.value:
+            return (resume_priority, progress_priority, job.created_at.timestamp() if job.created_at else 0, job.id)
+        if sort_option == QueueSortEnum.year_desc.value:
+            source_year = _parse_source_year(job.source_path)
+            year_key = -(source_year if source_year is not None else -1)
+            return (resume_priority, progress_priority, year_key, job.created_at.timestamp() if job.created_at else 0, job.id)
+        if sort_option == QueueSortEnum.year_asc.value:
+            source_year = _parse_source_year(job.source_path)
+            year_key = source_year if source_year is not None else 9999
+            return (resume_priority, progress_priority, year_key, job.created_at.timestamp() if job.created_at else 0, job.id)
+
+        return (resume_priority, progress_priority, job.created_at.timestamp() if job.created_at else 0, job.id)
+
+    queued.sort(key=sort_key)
     for job, library, profile in queued:
         if not _library_job_can_start(settings, now, library, profile):
             continue

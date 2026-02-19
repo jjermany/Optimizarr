@@ -82,6 +82,12 @@ def init_db() -> None:
             'discovery_interval_minutes',
             'discovery_interval_minutes INTEGER NOT NULL DEFAULT 30',
         )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'queue_sort',
+            "queue_sort VARCHAR(9) NOT NULL DEFAULT 'default'",
+        )
 
 
 

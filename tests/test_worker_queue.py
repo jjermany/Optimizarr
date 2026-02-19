@@ -9,7 +9,7 @@ from app.core.database import SessionLocal
 from app.main import app
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
-from app.models.settings import Settings
+from app.models.settings import QueueSortEnum, Settings
 from app.services.optimization_service import OptimizationMetrics
 from app.services import notification_service
 from app.workers import queue
@@ -310,6 +310,49 @@ def test_claim_next_queued_job_prioritizes_resume_progress(tmp_path):
 
         assert selected_id == second.id
 
+
+
+
+def test_claim_next_queued_job_honors_newest_sort_after_resume_priority(tmp_path):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False, queue_sort=QueueSortEnum.newest))
+        db.commit()
+
+        oldest = Job(input_path='/media/oldest.mkv', status='queued', progress_percent=0)
+        newest = Job(input_path='/media/newest.mkv', status='queued', progress_percent=0)
+        resumable = Job(input_path='/media/resume.mkv', status='queued', progress_percent=5, resume_position_seconds=90.0)
+        db.add_all([oldest, newest, resumable])
+        db.commit()
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+
+        assert selected_id == resumable.id
+
+
+
+def test_claim_next_queued_job_honors_oldest_sort_when_no_resume_priority(tmp_path):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False, queue_sort=QueueSortEnum.oldest))
+        db.commit()
+
+        oldest = Job(input_path='/media/oldest.mkv', status='queued', progress_percent=0)
+        newest = Job(input_path='/media/newest.mkv', status='queued', progress_percent=0)
+        db.add_all([oldest, newest])
+        db.commit()
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+
+        assert selected_id == oldest.id
 
 def test_start_queued_job_manual_pauses_running_job(monkeypatch):
     queue.resume_queue()

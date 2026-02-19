@@ -132,6 +132,7 @@ def test_get_and_update_settings():
         assert 'auto_discovery_enabled' in payload
         assert payload['discovery_method'] in {'interval', 'watcher'}
         assert payload['discovery_interval_minutes'] >= 1
+        assert payload['queue_sort'] == 'default'
         assert payload['workspace_root']
         assert payload['requeue_interrupted_jobs'] is True
         assert payload['cleanup_workspaces_on_startup'] is True
@@ -150,6 +151,7 @@ def test_get_and_update_settings():
                 'auto_discovery_enabled': False,
                 'discovery_method': 'watcher',
                 'discovery_interval_minutes': 15,
+                'queue_sort': 'newest',
                 'workspace_root': '/cache/workspaces',
                 'requeue_interrupted_jobs': False,
                 'cleanup_workspaces_on_startup': False,
@@ -168,6 +170,7 @@ def test_get_and_update_settings():
         assert updated['auto_discovery_enabled'] is False
         assert updated['discovery_method'] == 'watcher'
         assert updated['discovery_interval_minutes'] == 15
+        assert updated['queue_sort'] == 'newest'
         assert updated['workspace_root'] == '/cache/workspaces'
         assert updated['requeue_interrupted_jobs'] is False
         assert updated['cleanup_workspaces_on_startup'] is False
