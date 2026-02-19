@@ -310,8 +310,8 @@ def test_build_encoder_command_hdr_vaapi_applies_tonemap(monkeypatch):
     assert vf.endswith(',scale_vaapi=-2:1080')
 
 
-def test_build_encoder_command_hdr_vaapi_dv_uses_hwdecode_cpu_tonemap(monkeypatch):
-    """Dolby Vision uses VAAPI hw-decode + CPU tonemap; tonemap_vaapi is skipped entirely."""
+def test_build_encoder_command_hdr_vaapi_dv_uses_libplacebo_when_available(monkeypatch):
+    """Dolby Vision uses libplacebo (Vulkan GPU tonemap) when the FFmpeg build includes it."""
     profile = {
         'codec': 'h264',
         'bitrate_mode': 'cbr',
@@ -328,6 +328,42 @@ def test_build_encoder_command_hdr_vaapi_dv_uses_hwdecode_cpu_tonemap(monkeypatc
 
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_vaapi')
+    monkeypatch.setattr(optimization_service, '_libplacebo_available', lambda: True)
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    # HW decode must still be active (iGPU decoder is faster than software for 4K).
+    assert '-hwaccel' in command
+    assert '-hwaccel_output_format' in command
+    assert '-vf' in command
+    vf = command[command.index('-vf') + 1]
+    # Filter chain: hwdownload → libplacebo (Vulkan GPU) → hwupload → VAAPI encode.
+    assert 'hwdownload,format=p010le' in vf
+    assert 'libplacebo=' in vf
+    assert 'zscale' not in vf
+    assert 'tonemap_vaapi' not in vf
+    assert vf.endswith(',scale_vaapi=-2:1080')
+
+
+def test_build_encoder_command_hdr_vaapi_dv_falls_back_to_zscale_without_libplacebo(monkeypatch):
+    """Dolby Vision falls back to CPU zscale chain when libplacebo is unavailable."""
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+        'source_is_hdr': True,
+        'source_hdr_format': 'dolby_vision',
+        'tone_map_hdr': True,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_vaapi')
+    monkeypatch.setattr(optimization_service, '_libplacebo_available', lambda: False)
 
     command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
 
@@ -340,12 +376,13 @@ def test_build_encoder_command_hdr_vaapi_dv_uses_hwdecode_cpu_tonemap(monkeypatc
     assert vf.startswith('hwdownload,format=p010le,')
     assert 'zscale=t=linear' in vf
     assert 'tonemap=hable' in vf
+    assert 'libplacebo' not in vf
     assert 'tonemap_vaapi' not in vf
     assert vf.endswith(',scale_vaapi=-2:1080')
 
 
-def test_build_encoder_command_hdr_vaapi_hdr10plus_uses_hwdecode_cpu_tonemap(monkeypatch):
-    """HDR10+ uses VAAPI hw-decode + CPU tonemap; tonemap_vaapi is skipped entirely."""
+def test_build_encoder_command_hdr_vaapi_hdr10plus_uses_libplacebo_when_available(monkeypatch):
+    """HDR10+ uses libplacebo (Vulkan GPU tonemap) when the FFmpeg build includes it."""
     profile = {
         'codec': 'h264',
         'bitrate_mode': 'cbr',
@@ -362,6 +399,40 @@ def test_build_encoder_command_hdr_vaapi_hdr10plus_uses_hwdecode_cpu_tonemap(mon
 
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_vaapi')
+    monkeypatch.setattr(optimization_service, '_libplacebo_available', lambda: True)
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    assert '-hwaccel' in command
+    assert '-hwaccel_output_format' in command
+    assert '-vf' in command
+    vf = command[command.index('-vf') + 1]
+    assert 'hwdownload,format=p010le' in vf
+    assert 'libplacebo=' in vf
+    assert 'zscale' not in vf
+    assert 'tonemap_vaapi' not in vf
+    assert vf.endswith(',scale_vaapi=-2:1080')
+
+
+def test_build_encoder_command_hdr_vaapi_hdr10plus_falls_back_to_zscale_without_libplacebo(monkeypatch):
+    """HDR10+ falls back to CPU zscale chain when libplacebo is unavailable."""
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+        'source_is_hdr': True,
+        'source_hdr_format': 'hdr10plus',
+        'tone_map_hdr': True,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_vaapi')
+    monkeypatch.setattr(optimization_service, '_libplacebo_available', lambda: False)
 
     command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
 
@@ -372,6 +443,7 @@ def test_build_encoder_command_hdr_vaapi_hdr10plus_uses_hwdecode_cpu_tonemap(mon
     assert vf.startswith('hwdownload,format=p010le,')
     assert 'zscale=t=linear' in vf
     assert 'tonemap=hable' in vf
+    assert 'libplacebo' not in vf
     assert 'tonemap_vaapi' not in vf
     assert vf.endswith(',scale_vaapi=-2:1080')
 
