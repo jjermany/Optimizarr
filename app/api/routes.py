@@ -40,6 +40,7 @@ from app.services.job_service import (
 from app.services.monitoring_service import (
     _extract_last_json_blob,
     _get_intel_gpu_metrics,
+    _get_intel_gpu_metrics_freq,
     _get_intel_gpu_metrics_sysfs,
     _get_nvidia_gpu_metrics,
     _intel_gpu_top_raw,
@@ -790,6 +791,9 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
         if entry:
             freq_info[_os.path.basename(card)] = entry
 
+    # ── GT frequency metric (new primary method) ──────────────────────────────
+    freq_result = _get_intel_gpu_metrics_freq()
+
     # ── intel_gpu_top (parsed + raw last sample) ───────────────────────────────
     intel_result = _get_intel_gpu_metrics()
     raw = _intel_gpu_top_raw()
@@ -804,7 +808,10 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
             'busy_time_ms_files_found': sysfs_busy_files,
             'result': sysfs_result,
         },
-        'gt_frequency': freq_info,
+        'gt_frequency': {
+            'raw_sysfs': freq_info,
+            'parsed_result': freq_result,
+        },
         'intel_gpu_top': {
             'parsed_result': intel_result,
             'last_sample_engines': last_blob.get('engines'),
