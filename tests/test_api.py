@@ -203,6 +203,7 @@ def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
                 'from_email': 'optimizarr@example.com',
                 'to_emails': ['ops@example.com', 'alerts@example.com'],
                 'notify_on': {
+                    'job_complete': True,
                     'job_failed': True,
                     'job_interrupted': True,
                     'low_disk_pause': True,
@@ -216,6 +217,7 @@ def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
         assert updated['smtp_host'] == 'smtp.example.com'
         assert updated['smtp_port'] == 2525
         assert updated['to_emails'] == ['ops@example.com', 'alerts@example.com']
+        assert updated['notify_on']['job_complete'] is True
         assert updated['notify_on']['job_failed'] is True
         assert updated['notify_on']['job_interrupted'] is True
         assert updated['notify_on']['low_disk_pause'] is True
