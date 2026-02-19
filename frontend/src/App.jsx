@@ -1166,7 +1166,7 @@ export default function App() {
         {activePage === 'dashboard' && (
           <section className="animate-fade-in space-y-5">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
-              <StatCard label="GPU" value={`${Math.max(metrics?.gpu_video_percent ?? 0, metrics?.gpu_render_percent ?? 0)}%`} />
+              <StatCard label="GPU" value={`${Math.round(Math.max(metrics?.gpu_video_percent ?? 0, metrics?.gpu_render_percent ?? 0))}%`} />
               <StatCard label="CPU" value={`${metrics?.cpu_percent ?? 0}%`} />
               <StatCard label="RAM" value={`${metrics?.ram_percent ?? 0}%`} />
               <StatCard label="Active Jobs" value={metrics?.active_jobs ?? 0} />
