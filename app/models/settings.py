@@ -15,8 +15,6 @@ class QueueSortEnum(str, Enum):
     default = 'default'
     newest = 'newest'
     oldest = 'oldest'
-    year_desc = 'year_desc'
-    year_asc = 'year_asc'
 
 
 class Settings(Base):

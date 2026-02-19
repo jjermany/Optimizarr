@@ -68,7 +68,10 @@ def create_job(
 
 
 def job_exists_for_source(db: Session, source_path: str, library_id: int | None = None) -> bool:
-    query = db.query(Job).filter(Job.input_path == source_path, ~Job.status.in_(TERMINAL_STATUSES))
+    # 'complete' is intentionally excluded so successfully-finished jobs prevent re-queuing.
+    # Only failed/skipped/cancelled jobs are retryable on the next scan.
+    _RETRYABLE_STATUSES = {'failed', 'skipped', 'cancelled'}
+    query = db.query(Job).filter(Job.input_path == source_path, ~Job.status.in_(_RETRYABLE_STATUSES))
     if library_id is None:
         query = query.filter(Job.library_id.is_(None))
     else:

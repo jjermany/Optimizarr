@@ -88,8 +88,10 @@ def init_db() -> None:
             'queue_sort',
             "queue_sort VARCHAR(9) NOT NULL DEFAULT 'default'",
         )
-
-
+        # Reset removed year-based sort options to 'default'
+        connection.execute(text(
+            "UPDATE settings SET queue_sort = 'default' WHERE queue_sort IN ('year_desc', 'year_asc')"
+        ))
 
         _add_column_if_missing(
             connection,
