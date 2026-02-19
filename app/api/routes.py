@@ -22,7 +22,8 @@ from app.models.library import (
     OutputConflictPolicyEnum,
     PreferredEncoderEnum,
 )
-from app.models.settings import DiscoveryMethodEnum, Settings
+from app.models.settings import DiscoveryMethodEnum, QueueSortEnum, Settings
+
 from app.services import notification_service, plex_service
 from app.services.job_service import (
     abort_all_jobs,
@@ -200,6 +201,7 @@ class SettingsResponse(BaseModel):
     auto_discovery_enabled: bool
     discovery_method: DiscoveryMethodEnum
     discovery_interval_minutes: int
+    queue_sort: QueueSortEnum
     workspace_root: str
     requeue_interrupted_jobs: bool
     cleanup_workspaces_on_startup: bool
@@ -224,6 +226,7 @@ class SettingsResponse(BaseModel):
             auto_discovery_enabled=settings.auto_discovery_enabled,
             discovery_method=settings.discovery_method,
             discovery_interval_minutes=settings.discovery_interval_minutes,
+            queue_sort=settings.queue_sort,
             workspace_root=settings.workspace_root,
             requeue_interrupted_jobs=settings.requeue_interrupted_jobs,
             cleanup_workspaces_on_startup=settings.cleanup_workspaces_on_startup,
@@ -248,6 +251,7 @@ class SettingsUpdateRequest(BaseModel):
     auto_discovery_enabled: bool | None = None
     discovery_method: DiscoveryMethodEnum | None = None
     discovery_interval_minutes: int | None = Field(default=None, ge=1)
+    queue_sort: QueueSortEnum | None = None
     workspace_root: str | None = Field(default=None, min_length=1)
     requeue_interrupted_jobs: bool | None = None
     cleanup_workspaces_on_startup: bool | None = None

@@ -11,6 +11,14 @@ class DiscoveryMethodEnum(str, Enum):
     watcher = 'watcher'
 
 
+class QueueSortEnum(str, Enum):
+    default = 'default'
+    newest = 'newest'
+    oldest = 'oldest'
+    year_desc = 'year_desc'
+    year_asc = 'year_asc'
+
+
 class Settings(Base):
     __tablename__ = 'settings'
 
@@ -35,6 +43,11 @@ class Settings(Base):
         nullable=False,
     )
     discovery_interval_minutes: Mapped[int] = mapped_column(Integer, default=30, nullable=False)
+    queue_sort: Mapped[QueueSortEnum] = mapped_column(
+        SqlEnum(QueueSortEnum),
+        default=QueueSortEnum.default,
+        nullable=False,
+    )
     workspace_root: Mapped[str] = mapped_column(String(512), default='/cache/workspaces', nullable=False)
     min_free_gb: Mapped[int] = mapped_column(Integer, default=25, nullable=False)
     requeue_interrupted_jobs: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
