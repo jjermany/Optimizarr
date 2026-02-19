@@ -77,6 +77,37 @@ def test_startup_recovery_preserves_partial_resume_state_when_available(monkeypa
         assert workspace.exists()
 
 
+
+
+def test_startup_recovery_adds_resume_position_for_queued_partials(monkeypatch, tmp_path):
+    workspace_root = tmp_path / 'workspaces'
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        _configure_settings(db, workspace_root, requeue=True)
+
+        job = Job(input_path='/media/queued-partial.mkv', status='queued', progress_percent=33)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = workspace_root / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / 'output.partial.mkv').write_text('partial')
+
+        monkeypatch.setattr(recovery_service, '_probe_partial_duration', lambda *_: 88.8)
+
+        summary = recovery_service.run_startup_recovery(db)
+        db.refresh(job)
+
+        assert summary['recovered_jobs'] == 0
+        assert summary['requeued_jobs'] == 1
+        assert job.status == 'queued'
+        assert job.resume_position_seconds == 88.8
+        assert job.progress_percent == 33
+
 # ---------------------------------------------------------------------------
 # run_workspace_cleanup edge cases
 # ---------------------------------------------------------------------------

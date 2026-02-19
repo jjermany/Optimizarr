@@ -647,6 +647,37 @@ def test_start_job_endpoint(monkeypatch, tmp_path):
     assert called == [(job_id, True)]
 
 
+
+
+def test_start_job_endpoint_resumes_paused_job_before_start(monkeypatch):
+    from app.core.database import SessionLocal
+    from app.models.job import Job
+    from app.workers import queue as worker_queue
+
+    calls = []
+    monkeypatch.setattr(worker_queue, 'start_queued_job', lambda job_id, manual=False: (calls.append((job_id, manual)) or (True, None)))
+
+    with TestClient(app) as client:
+        create_response = client.post('/jobs', json={'source_path': '/media/start-paused.mkv'})
+        assert create_response.status_code == 201
+        job_id = create_response.json()['id']
+
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            assert job is not None
+            job.status = 'paused'
+            db.commit()
+
+        response = client.post(f'/jobs/{job_id}/start')
+        assert response.status_code == 200
+
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            assert job is not None
+            assert job.status == 'queued'
+
+    assert calls == [(job_id, True)]
+
 def test_start_job_endpoint_returns_reason_when_rejected(monkeypatch):
     from app.workers import queue as worker_queue
 

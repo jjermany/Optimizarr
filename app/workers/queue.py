@@ -488,8 +488,15 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         .outerjoin(Library, Job.library_id == Library.id)
         .outerjoin(LibraryProfile, LibraryProfile.library_id == Library.id)
         .filter(Job.status == 'queued')
-        .order_by(Job.created_at.asc())
         .all()
+    )
+    queued.sort(
+        key=lambda row: (
+            -float(row[0].resume_position_seconds or 0),
+            -int(row[0].progress_percent or 0),
+            row[0].created_at,
+            row[0].id,
+        )
     )
     for job, library, profile in queued:
         if not _library_job_can_start(settings, now, library, profile):
@@ -553,7 +560,31 @@ def start_queued_job(job_id: int, *, manual: bool = False) -> tuple[bool, str | 
 
             max_workers = max(1, int(settings.max_workers))
             if len(_active_workers) >= max_workers:
-                return False, 'Maximum workers already running'
+                if not manual:
+                    return False, 'Maximum workers already running'
+
+                # Manual starts are intentionally preemptive: pause a currently
+                # running job so the explicitly selected job can begin.
+                running_job = (
+                    db.query(Job)
+                    .filter(Job.id != job_id, Job.status == 'running')
+                    .order_by(Job.created_at.asc())
+                    .first()
+                )
+                if running_job is None:
+                    return False, 'Maximum workers already running'
+
+                current_position = get_active_position(running_job.id)
+                stop_active_ffmpeg(running_job.id)
+                db.refresh(running_job)
+                running_job.status = 'paused'
+                running_job.cancel_requested = False
+                running_job.eta_seconds = None
+                if current_position is not None and current_position > 0:
+                    running_job.resume_position_seconds = current_position
+                db.commit()
+                _publish_job(running_job, throttle_progress=False)
+                broker.publish_system_event('job_paused', job_id=running_job.id)
 
             job.status = 'starting'
             db.commit()
