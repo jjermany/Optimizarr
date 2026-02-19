@@ -1365,16 +1365,26 @@ def optimize_video(
             else _QSV_VAAPI_FALLBACK.get(selection.encoder)
         )
         if _vaapi_sw_encoder:
+            _retry_with_vaapi_hwdecode = bool(_vaapi_tonemap_failed and selection.use_qsv)
             sw_decode_selection = EncoderSelection(
-                codec=selection.codec, encoder=_vaapi_sw_encoder, use_qsv=False, use_vaapi=True, hw_decode=False,
+                codec=selection.codec,
+                encoder=_vaapi_sw_encoder,
+                use_qsv=False,
+                use_vaapi=True,
+                hw_decode=_retry_with_vaapi_hwdecode,
             )
             _sw_reason = (
                 'VAAPI tone mapping failed' if _vaapi_tonemap_failed
                 else 'VAAPI hardware decode failed'
             )
+            _retry_message = (
+                'retrying with VAAPI hw-decode + hwdownload tonemap path'
+                if _retry_with_vaapi_hwdecode
+                else 'retrying with software decode + hwupload'
+            )
             logger.warning(
-                '[%s] %s (rc=%s); retrying with software decode + hwupload',
-                job_tag, _sw_reason, return_code,
+                '[%s] %s (rc=%s); %s',
+                job_tag, _sw_reason, return_code, _retry_message,
             )
             if not can_resume:
                 try:
@@ -1395,10 +1405,56 @@ def optimize_video(
                 return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
                     job_id, ffmpeg_command, duration, progress_callback, should_cancel,
                 )
+
+            # If the VAAPI hw-decode retry was attempted after a QSV tonemap failure
+            # and still failed, fall back one more time to the software-decode VAAPI
+            # path (CPU tonemap + hwupload). This preserves resilience on hosts where
+            # both tonemap_vaapi and vpp_qsv are unreliable for a given source.
+            if (
+                _retry_with_vaapi_hwdecode
+                and return_code is not None
+                and return_code != 0
+                and not was_cancelled
+            ):
+                logger.warning(
+                    '[%s] VAAPI hw-decode tonemap retry failed (rc=%s); retrying with software decode + hwupload',
+                    job_tag, return_code,
+                )
+                if not can_resume:
+                    try:
+                        _ensure_clean_workspace(workspace_path)
+                    except OSError:
+                        pass
+                sw_decode_selection = EncoderSelection(
+                    codec=selection.codec,
+                    encoder=_vaapi_sw_encoder,
+                    use_qsv=False,
+                    use_vaapi=True,
+                    hw_decode=False,
+                )
+                if can_resume:
+                    ffmpeg_command = _build_resume_command(
+                        input_path, resume_position_seconds, str(resume_segment_path), profile, sw_decode_selection,
+                    )
+                    return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                        job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+                    )
+                else:
+                    ffmpeg_command = _build_command_with_selection(
+                        input_path, str(partial_output_path), profile, sw_decode_selection,
+                    )
+                    return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                        job_id, ffmpeg_command, duration, progress_callback, should_cancel,
+                    )
+
             selection = sw_decode_selection
             metrics.used_fallback = True
             metrics.fallback_reason = (
-                'vaapi_tonemap_failed_swdecode_fallback' if _vaapi_tonemap_failed
+                'vaapi_tonemap_failed_swdecode_after_hwdecode_retry'
+                if _vaapi_tonemap_failed and _retry_with_vaapi_hwdecode and not selection.hw_decode
+                else 'vaapi_tonemap_failed_vaapi_hwdecode_fallback'
+                if _vaapi_tonemap_failed and _retry_with_vaapi_hwdecode
+                else 'vaapi_tonemap_failed_swdecode_fallback' if _vaapi_tonemap_failed
                 else 'vaapi_hwdecode_failed_swdecode_fallback'
             )
 
