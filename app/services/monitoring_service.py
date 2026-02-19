@@ -428,13 +428,15 @@ def get_gpu_metrics() -> dict[str, float]:
     if freq is not None:
         if _has_nonzero_gpu_activity(freq):
             return freq
-        if sysfs is None:
-            return freq
 
-    # If sysfs existed but reported all zeroes, keep that as an idle fallback
-    # in case richer probes are unavailable.
+    # Keep the best available zero-activity reading as the idle fallback.
+    # Prefer sysfs (per-engine), then freq, then the generic default.
+    # Do NOT return early here — always let intel_gpu_top run so CAP_PERFMON
+    # is used when the caller has granted it (e.g. via --cap-add=PERFMON).
     if sysfs is not None:
         default_metrics = sysfs
+    elif freq is not None:
+        default_metrics = freq
 
     # 3. intel_gpu_top engine % — accurate for 3D/Compute, requires CAP_PERFMON.
     intel = _get_intel_gpu_metrics()
