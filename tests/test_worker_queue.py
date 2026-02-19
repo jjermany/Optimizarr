@@ -128,6 +128,40 @@ def test_library_job_can_start_honors_library_schedule_and_enablement():
     assert queue._library_job_can_start(settings, datetime(2024, 1, 1, 23, 0, 0), library, profile) is False
 
 
+
+
+def test_stop_worker_does_not_mark_active_jobs_cancel_requested():
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        job = Job(input_path='/media/active-shutdown.mkv', status='running', cancel_requested=False)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        job_id = job.id
+
+    class StubThread:
+        def is_alive(self):
+            return False
+
+        def join(self, timeout=None):
+            return None
+
+    queue._manager_thread = StubThread()
+    queue._active_workers[job_id] = StubThread()
+    queue.stop_event.clear()
+
+    try:
+        queue.stop_worker()
+    finally:
+        queue._active_workers.clear()
+        queue.stop_event.clear()
+
+    with SessionLocal() as db:
+        refreshed = db.query(Job).filter(Job.id == job_id).first()
+        assert refreshed is not None
+        assert refreshed.cancel_requested is False
+
 def test_should_cancel_when_shutdown_requested():
     queue.stop_event.set()
     try:
