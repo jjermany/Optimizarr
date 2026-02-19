@@ -2,6 +2,7 @@ from datetime import datetime
 from datetime import timedelta
 import json
 from pathlib import Path
+import subprocess
 
 from sqlalchemy.orm import Session
 
@@ -105,6 +106,34 @@ def _get_settings(db: Session) -> Settings:
     return settings
 
 
+def _probe_partial_duration(workspace: Path) -> float | None:
+    partials = list(workspace.glob('output.partial.*'))
+    if not partials:
+        return None
+
+    command = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        str(partials[0]),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+
+    values = result.stdout.strip().splitlines()
+    if not values:
+        return None
+    try:
+        return float(values[-1].strip())
+    except ValueError:
+        return None
+
+
 def cancel_job(db: Session, job_id: int) -> Job | None:
     job = get_job(db, job_id)
     if not job:
@@ -133,9 +162,16 @@ def retry_job(db: Session, job_id: int) -> Job | None:
     if job.retry_count >= 1:
         return job
 
-    job.status = 'queued'
+    settings = _get_settings(db)
     if not job.resume_position_seconds:
-        job.progress_percent = 0
+        workspace = Path(settings.workspace_root) / str(job.id)
+        partial_duration = _probe_partial_duration(workspace) if workspace.exists() else None
+        if partial_duration and partial_duration > 0:
+            job.resume_position_seconds = partial_duration
+        else:
+            job.progress_percent = 0
+
+    job.status = 'queued'
     job.fps = None
     job.eta_seconds = None
     job.output_path = None
