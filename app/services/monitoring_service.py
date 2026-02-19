@@ -19,7 +19,17 @@ TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
 def _safe_float(value: Any) -> float:
     if isinstance(value, (int, float)):
         return float(value)
+    if isinstance(value, str):
+        stripped = value.strip().rstrip('%').strip()
+        try:
+            return float(stripped)
+        except ValueError:
+            return 0.0
     return 0.0
+
+
+def _has_nonzero_gpu_activity(metrics: dict[str, float]) -> bool:
+    return any(value > 0.0 for value in metrics.values())
 
 
 def _extract_percent(stats: Any, preferred_labels: tuple[str, ...]) -> float:
@@ -354,13 +364,22 @@ def get_gpu_metrics() -> dict[str, float]:
     # 1. Sysfs engine busy_time_ms — accurate per-engine, no special caps needed.
     sysfs = _get_intel_gpu_metrics_sysfs()
     if sysfs is not None:
-        return sysfs
+        if _has_nonzero_gpu_activity(sysfs):
+            return sysfs
 
     # 2. GT clock frequency — best proxy for Intel VDEnc/QSV which runs in
     #    sub-millisecond bursts that perf counters miss.  No CAP_PERFMON needed.
     freq = _get_intel_gpu_metrics_freq()
     if freq is not None:
-        return freq
+        if _has_nonzero_gpu_activity(freq):
+            return freq
+        if sysfs is None:
+            return freq
+
+    # If sysfs existed but reported all zeroes, keep that as an idle fallback
+    # in case richer probes are unavailable.
+    if sysfs is not None:
+        default_metrics = sysfs
 
     # 3. intel_gpu_top engine % — accurate for 3D/Compute, requires CAP_PERFMON.
     intel = _get_intel_gpu_metrics()

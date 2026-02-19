@@ -135,6 +135,65 @@ def test_get_gpu_metrics_falls_back_to_intel_gpu_top_when_sysfs_absent(monkeypat
     assert metrics['gpu_render_percent'] == 5.0
 
 
+def test_get_gpu_metrics_prefers_freq_when_sysfs_is_stuck_at_zero(monkeypatch):
+    """Continue probing when sysfs exists but reports 0% during active QSV workloads."""
+    monkeypatch.setattr(
+        monitoring_service,
+        '_get_intel_gpu_metrics_sysfs',
+        lambda: {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0},
+    )
+    monkeypatch.setattr(
+        monitoring_service,
+        '_get_intel_gpu_metrics_freq',
+        lambda: {'gpu_video_percent': 62.5, 'gpu_render_percent': 62.5},
+    )
+
+    metrics = monitoring_service.get_gpu_metrics()
+
+    assert metrics == {'gpu_video_percent': 62.5, 'gpu_render_percent': 62.5}
+
+
+def test_get_gpu_metrics_keeps_sysfs_zero_when_higher_signal_unavailable(monkeypatch):
+    """If every richer probe is unavailable, keep sysfs 0% as the idle baseline."""
+    monkeypatch.setattr(
+        monitoring_service,
+        '_get_intel_gpu_metrics_sysfs',
+        lambda: {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0},
+    )
+    monkeypatch.setattr(monitoring_service, '_get_intel_gpu_metrics_freq', lambda: None)
+    monkeypatch.setattr(monitoring_service, '_get_intel_gpu_metrics', lambda: None)
+    monkeypatch.setattr(monitoring_service, '_get_nvidia_gpu_metrics', lambda: None)
+
+    metrics = monitoring_service.get_gpu_metrics()
+
+    assert metrics == {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0}
+
+
+def test_get_gpu_metrics_parses_intel_gpu_top_string_busy_values(monkeypatch):
+    mock_stdout = '{"engines": {"Render/3D": {"busy": "67.5"}, "Video": {"busy": "21.25%"}}}\n'
+
+    monkeypatch.setattr(
+        monitoring_service,
+        '_get_intel_gpu_metrics_sysfs',
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        monitoring_service,
+        '_get_intel_gpu_metrics_freq',
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        monitoring_service.subprocess,
+        'Popen',
+        lambda *args, **kwargs: _FakePopen(mock_stdout),
+    )
+
+    metrics = monitoring_service.get_gpu_metrics()
+
+    assert metrics['gpu_video_percent'] == 21.25
+    assert metrics['gpu_render_percent'] == 67.5
+
+
 def test_get_intel_gpu_metrics_freq_supports_alternate_gt_filenames(monkeypatch):
     monkeypatch.setattr(monitoring_service.glob, 'glob', lambda pattern: {
         '/sys/class/drm/card*': ['/sys/class/drm/card0'],
