@@ -1272,6 +1272,7 @@ def optimize_video(
                     pass
             vaapi_selection = EncoderSelection(
                 codec=selection.codec, encoder=vaapi_encoder, use_qsv=False, use_vaapi=True,
+                hw_decode=True,  # mirrors _select_encoder: all VAAPI encoders hw-decode via iHD
             )
             if encoder_selected_callback:
                 encoder_selected_callback(vaapi_encoder, True)

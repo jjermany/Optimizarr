@@ -543,6 +543,76 @@ def test_optimize_video_fails_when_h264_qsv_encode_fails(monkeypatch, tmp_path):
     assert metrics.error_message == 'qsv_encode_failed'
 
 
+def test_qsv_to_vaapi_fallback_enables_hw_decode_for_dv(monkeypatch, tmp_path):
+    """When QSV fails and falls back to VAAPI, the VAAPI selection must use hw_decode=True.
+
+    Before the fix, hw_decode was omitted from the fallback EncoderSelection, causing
+    the VAAPI retry to use software decode (no -hwaccel) and skip the libplacebo/zscale
+    hw_decode path entirely — defeating the GPU optimisations for DV/HDR10+ content.
+    """
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 60.0)
+    monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: True)
+    monkeypatch.setattr(optimization_service, '_detect_hdr_format', lambda _: 'dolby_vision')
+    monkeypatch.setattr(optimization_service, '_libplacebo_available', lambda: False)
+    # Force QSV as the primary selection so the QSV→VAAPI fallback path is exercised.
+    # (Without this, _select_encoder would pick VAAPI first since it is listed before QSV.)
+    monkeypatch.setattr(
+        optimization_service,
+        '_select_encoder',
+        lambda profile: optimization_service.EncoderSelection(
+            codec='hevc', encoder='hevc_qsv', use_qsv=True, use_vaapi=False,
+        ),
+    )
+    # hevc_vaapi must appear available so the QSV→VAAPI fallback is triggered.
+    monkeypatch.setattr(
+        optimization_service,
+        '_encoder_available',
+        lambda name: name in {'hevc_qsv', 'hevc_vaapi'},
+    )
+
+    commands_run = []
+
+    def fake_run_ffmpeg(job_id, command, *args, **kwargs):
+        commands_run.append(command)
+        # QSV fails on first attempt; VAAPI succeeds.
+        rc = 1 if len(commands_run) == 1 else 0
+        return rc, 60.0, 24.0, False, ['MFX_ERR_DEVICE_FAILED'] if rc == 1 else []
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *a, **kw: True)
+
+    class DVSettings:
+        profile_snapshot_json = (
+            '{"codec":"hevc","bitrate_mode":"cbr","speed_preset":"medium",'
+            '"audio_mode":"copy","container":"mkv","target_resolution":1080,'
+            '"bitrate_mbps":8,"crf":23,"tone_map_hdr":true,"hdr_only":true}'
+        )
+        workspace_root = str(tmp_path / 'workspaces')
+        bitrate_mbps = 8
+
+    metrics = optimization_service.optimize_video(str(input_path), DVSettings())
+
+    assert metrics.status == 'complete'
+    assert metrics.used_fallback is True
+    assert metrics.fallback_reason == 'qsv_failed_vaapi_fallback'
+    assert len(commands_run) == 2
+
+    # The VAAPI fallback command must use hardware decode (-hwaccel vaapi).
+    # Prior to the fix, hw_decode was False in the fallback selection, so -hwaccel
+    # was absent and the filter chain used slow software decode + zscale without
+    # hwdownload.
+    second_cmd = commands_run[1]
+    assert '-hwaccel' in second_cmd, 'VAAPI fallback must enable hardware decode'
+    assert '-hwaccel_output_format' in second_cmd
+    # DV path: hwdownload (hw_decode branch) must be present in the filter chain.
+    second_vf = second_cmd[second_cmd.index('-vf') + 1]
+    assert second_vf.startswith('hwdownload,format=p010le,'), (
+        f'Expected hwdownload at start of filter chain, got: {second_vf!r}'
+    )
 
 
 
