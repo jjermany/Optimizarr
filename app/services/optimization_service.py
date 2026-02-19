@@ -41,11 +41,20 @@ _HDR_TONEMAP_FILTERS = [
 # HDR-to-SDR hardware tone mapping via Intel VEBOX (tonemap_vaapi).
 # Requires the input to already be in a VAAPI surface (hardware decode).
 # Produces NV12 output in VAAPI memory, ready for VAAPI encode.
-# On Gen 12+ hardware with iHD driver ≥ 23.x, the VEBOX also reads
-# HDR10+ SMPTE2094-40 dynamic metadata for per-frame tone mapping.
-# Dolby Vision Profile 8 decodes to PQ/BT.2020 frames from its HDR10
-# base layer, which VEBOX processes correctly as standard HDR10 content.
+# Used only for HDR10 and HLG (static metadata) where VEBOX is reliable.
+# DV and HDR10+ use VAAPI hw-decode + hwdownload + CPU zscale instead —
+# see the 'dolby_vision'/'hdr10plus' branch in _build_command_with_selection.
 _VAAPI_TONEMAP_FILTER = 'tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709'
+# HDR-to-SDR GPU tone mapping via libplacebo (Vulkan backend).
+# Operates on CPU-side p010le frames (after hwdownload) but offloads the heavy
+# tone-mapping maths to the GPU via Vulkan — far faster than the CPU zscale chain
+# for 4K content.  bt.2390 is the ITU-recommended EETF; produces excellent
+# highlight roll-off compared with Hable.  Used for DV/HDR10+ when available.
+_LIBPLACEBO_TONEMAP_FILTER = (
+    'libplacebo=tonemapping=bt.2390'
+    ':colorspace=bt709:color_primaries=bt709:color_trc=bt709'
+    ':format=nv12'
+)
 ENCODER_OPTIONS_BY_CODEC = {
     # VAAPI is listed first: it uses the iHD driver directly (same as Plex) and
     # works without the Intel oneVPL GPU runtime that QSV requires.  QSV remains
@@ -65,10 +74,10 @@ _QSV_VAAPI_FALLBACK: dict[str, str] = {
     'hevc_qsv': 'hevc_vaapi',
     'av1_qsv': 'av1_vaapi',
 }
-# When VAAPI tonemap_vaapi (VEBOX) fails for HDR content (e.g. unusual DV/HDR10+
-# bitstream structure), try the QSV equivalent before falling back to slow CPU
-# zscale.  vpp_qsv=tonemap=1 (Intel VPP) handles DV/HDR10+ dynamic metadata
-# more robustly than VEBOX on the same physical iGPU.
+# When VAAPI tonemap_vaapi (VEBOX) fails for HDR10/HLG content (unexpected driver
+# or bitstream edge case), try the QSV equivalent before falling back to CPU zscale.
+# DV and HDR10+ skip tonemap_vaapi entirely and never reach this path — they are
+# handled proactively with VAAPI hw-decode + hwdownload + CPU zscale.
 _VAAPI_QSV_FALLBACK: dict[str, str] = {
     'h264_vaapi': 'h264_qsv',
     'hevc_vaapi': 'hevc_qsv',
@@ -240,6 +249,29 @@ def _encoder_available(encoder_name: str) -> bool:
     if encoder_name not in _ENCODER_CACHE:
         return False
     return _ENCODER_CACHE[encoder_name]
+
+
+_LIBPLACEBO_AVAILABLE: bool | None = None
+
+
+def _libplacebo_available() -> bool:
+    """Return True if the FFmpeg build includes the libplacebo filter (Vulkan GPU tonemap)."""
+    global _LIBPLACEBO_AVAILABLE
+    if _LIBPLACEBO_AVAILABLE is None:
+        try:
+            result = subprocess.run(
+                ['ffmpeg', '-hide_banner', '-filters'],
+                capture_output=True, text=True, check=False,
+            )
+            _LIBPLACEBO_AVAILABLE = 'libplacebo' in result.stdout
+        except OSError:
+            _LIBPLACEBO_AVAILABLE = False
+        logger.info(
+            'libplacebo filter: %s',
+            'available (GPU tonemap enabled for DV/HDR10+)' if _LIBPLACEBO_AVAILABLE
+            else 'unavailable (falling back to CPU zscale for DV/HDR10+)',
+        )
+    return _LIBPLACEBO_AVAILABLE
 
 
 def available_encoders_by_codec() -> dict[str, list[str]]:
@@ -435,9 +467,20 @@ def _build_command_with_selection(
         if filters:
             command.extend(['-vf', ','.join(filters)])
     elif selection.use_vaapi and selection.hw_decode and apply_tonemap:
-        # Full GPU pipeline (HDR): hardware decode → tonemap_vaapi (Intel VEBOX) → encode.
-        # tonemap_vaapi converts HDR10/HLG to SDR BT.709 on the GPU.
-        filters = [_VAAPI_TONEMAP_FILTER]
+        hdr_format = profile.get('source_hdr_format')
+        if hdr_format in ('dolby_vision', 'hdr10plus'):
+            # DV/HDR10+ carry dynamic/complex metadata that tonemap_vaapi (VEBOX)
+            # handles unreliably.  Keep the fast VAAPI HW decoder, then hwdownload
+            # to CPU.  Prefer libplacebo (Vulkan GPU tonemap — fast) when the FFmpeg
+            # build includes it; fall back to the CPU zscale chain otherwise.
+            if _libplacebo_available():
+                filters = ['hwdownload,format=p010le', _LIBPLACEBO_TONEMAP_FILTER, 'hwupload']
+            else:
+                filters = ['hwdownload,format=p010le'] + list(_HDR_TONEMAP_FILTERS) + ['format=nv12', 'hwupload']
+        else:
+            # HDR10/HLG: static metadata only — VEBOX (tonemap_vaapi) handles it well.
+            # Full GPU pipeline: hardware decode → tonemap_vaapi → VAAPI encode.
+            filters = [_VAAPI_TONEMAP_FILTER]
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
@@ -889,7 +932,17 @@ def _build_resume_command(
         if filters:
             command.extend(['-vf', ','.join(filters)])
     elif selection.use_vaapi and selection.hw_decode and apply_tonemap:
-        filters = [_VAAPI_TONEMAP_FILTER]
+        hdr_format = profile.get('source_hdr_format')
+        if hdr_format in ('dolby_vision', 'hdr10plus'):
+            # DV/HDR10+: keep VAAPI HW decode, download to CPU, then GPU tonemap via
+            # libplacebo (Vulkan) if available; CPU zscale otherwise.
+            if _libplacebo_available():
+                filters = ['hwdownload,format=p010le', _LIBPLACEBO_TONEMAP_FILTER, 'hwupload']
+            else:
+                filters = ['hwdownload,format=p010le'] + list(_HDR_TONEMAP_FILTERS) + ['format=nv12', 'hwupload']
+        else:
+            # HDR10/HLG: static metadata — VEBOX handles it reliably.
+            filters = [_VAAPI_TONEMAP_FILTER]
         if should_scale:
             filters.append(f'scale_vaapi=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
@@ -1080,6 +1133,16 @@ def optimize_video(
             '[%s] HDR source detected (%s) — tone mapping to SDR will be applied',
             job_tag, profile['source_hdr_format'] or 'hdr',
         )
+        if profile['source_hdr_format'] in ('dolby_vision', 'hdr10plus'):
+            _tonemap_method = (
+                'libplacebo (Vulkan/GPU)' if _libplacebo_available()
+                else 'CPU zscale (libplacebo unavailable)'
+            )
+            logger.info(
+                '[%s] %s detected — using VAAPI hw-decode + %s for tone mapping '
+                '(tonemap_vaapi/VEBOX unreliable for DV/HDR10+; skipping that path entirely)',
+                job_tag, profile['source_hdr_format'], _tonemap_method,
+            )
     elif profile['source_is_hdr']:
         logger.info(
             '[%s] HDR source detected (%s) — preserving HDR (tone mapping disabled)',
