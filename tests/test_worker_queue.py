@@ -254,6 +254,81 @@ def test_preflight_job_applies_output_conflict_policy_rename(monkeypatch, tmp_pa
     assert job.output_path.endswith('-opt-v2.mkv')
 
 
+
+
+def test_claim_next_queued_job_prioritizes_resume_progress(tmp_path):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        first = Job(input_path='/media/older.mkv', status='queued', progress_percent=5)
+        second = Job(input_path='/media/resumable.mkv', status='queued', progress_percent=10, resume_position_seconds=120.0)
+        third = Job(input_path='/media/newer.mkv', status='queued', progress_percent=90)
+        db.add_all([first, second, third])
+        db.commit()
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+
+        assert selected_id == second.id
+
+
+def test_start_queued_job_manual_pauses_running_job(monkeypatch):
+    queue.resume_queue()
+    published = []
+    events = []
+
+    with queue._pool_lock:
+        queue._active_workers.clear()
+
+    class DummyThread:
+        def __init__(self, target=None, args=(), daemon=True, name=''):
+            self.target = target
+            self.args = args
+        def start(self):
+            return None
+
+    monkeypatch.setattr(queue, 'Thread', DummyThread)
+    monkeypatch.setattr(queue, 'get_active_position', lambda *_: 45.0)
+    monkeypatch.setattr(queue, 'stop_active_ffmpeg', lambda *_: None)
+    monkeypatch.setattr(queue, '_publish_job', lambda job, throttle_progress=False: published.append((job.id, job.status)))
+    monkeypatch.setattr(queue.broker, 'publish_system_event', lambda event, **kwargs: events.append((event, kwargs)))
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        running = Job(input_path='/media/running.mkv', status='running', progress_percent=20)
+        queued = Job(input_path='/media/target.mkv', status='queued', progress_percent=0)
+        db.add_all([running, queued])
+        db.commit()
+        running_id = running.id
+        queued_id = queued.id
+
+    with queue._pool_lock:
+        queue._active_workers[running_id] = object()
+
+    started, reason = queue.start_queued_job(queued_id, manual=True)
+    assert started is True
+    assert reason is None
+
+    with SessionLocal() as db:
+        running = db.query(Job).filter(Job.id == running_id).first()
+        target = db.query(Job).filter(Job.id == queued_id).first()
+        assert running is not None and target is not None
+        assert running.status == 'paused'
+        assert running.resume_position_seconds == 45.0
+        assert target.status == 'starting'
+
+    assert ('job_paused', {'job_id': running_id}) in events
+
+    with queue._pool_lock:
+        queue._active_workers.clear()
+
 def test_preflight_job_low_disk_pauses_queue_and_alerts(monkeypatch, tmp_path):
     media = tmp_path / 'movie.mkv'
     media.write_text('x')
@@ -513,6 +588,9 @@ def test_enforce_schedule_policy_publishes_state_change(monkeypatch):
 
 
 def test_start_queued_job_manual_bypasses_optimizer_and_schedule(monkeypatch):
+    with queue._pool_lock:
+        queue._active_workers.clear()
+
     class DummyThread:
         def __init__(self, *args, **kwargs):
             pass

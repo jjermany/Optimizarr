@@ -153,13 +153,11 @@ function jobSortRank(job) {
   return 3;
 }
 
-function sortedJobsForDisplay(jobs) {
-  return [...jobs].sort((a, b) => {
-    const rankDiff = jobSortRank(a) - jobSortRank(b);
-    if (rankDiff !== 0) return rankDiff;
-    if (jobSortRank(a) === 2) return a.id - b.id;
-    return b.id - a.id;
-  });
+function compareActiveJobsDefault(a, b) {
+  const rankDiff = jobSortRank(a) - jobSortRank(b);
+  if (rankDiff !== 0) return rankDiff;
+  if (jobSortRank(a) === 2) return a.id - b.id;
+  return b.id - a.id;
 }
 
 function formatResolution(height) {
@@ -202,6 +200,32 @@ function extractTitleYear(filePath) {
     return { title: title || spaced, year: yearMatch[1] };
   }
   return { title: spaced, year: null };
+}
+
+
+function parseYearForSort(job) {
+  const { year } = extractTitleYear(job.source_path);
+  if (!year) return null;
+  const parsed = Number(year);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+function sortJobsByOption(jobs, sortOption, fallbackSort) {
+  if (sortOption === 'year_desc') {
+    return [...jobs].sort((a, b) => {
+      const yearDiff = (parseYearForSort(b) ?? -Infinity) - (parseYearForSort(a) ?? -Infinity);
+      if (yearDiff !== 0) return yearDiff;
+      return fallbackSort(a, b);
+    });
+  }
+  if (sortOption === 'year_asc') {
+    return [...jobs].sort((a, b) => {
+      const yearDiff = (parseYearForSort(a) ?? Infinity) - (parseYearForSort(b) ?? Infinity);
+      if (yearDiff !== 0) return yearDiff;
+      return fallbackSort(a, b);
+    });
+  }
+  return [...jobs].sort(fallbackSort);
 }
 
 function validateLibraryDraft(draft, libraryEnabled) {
@@ -402,6 +426,8 @@ export default function App() {
   const [historyPage, setHistoryPage] = useState(1);
   const [queueSearch, setQueueSearch] = useState('');
   const [historySearch, setHistorySearch] = useState('');
+  const [queueSort, setQueueSort] = useState('default');
+  const [historySort, setHistorySort] = useState('completed_desc');
   const [jobsView, setJobsView] = useState('queue');
   const [nowHour, setNowHour] = useState(() => new Date().getHours());
 
@@ -435,15 +461,17 @@ export default function App() {
     [jobs],
   );
 
-  const sortedActiveJobs = useMemo(() => sortedJobsForDisplay(activeJobs), [activeJobs]);
+  const sortedActiveJobs = useMemo(
+    () => sortJobsByOption(activeJobs, queueSort, compareActiveJobsDefault),
+    [activeJobs, queueSort],
+  );
 
-  // Sorted history: most recently completed first
   const sortedHistoryJobs = useMemo(
-    () => [...historyJobs].sort((a, b) => {
+    () => sortJobsByOption(historyJobs, historySort, (a, b) => {
       if (a.completed_at && b.completed_at) return b.completed_at.localeCompare(a.completed_at);
       return b.id - a.id;
     }),
-    [historyJobs],
+    [historyJobs, historySort],
   );
 
   function jobMatchesSearch(job, search) {
@@ -1529,6 +1557,15 @@ export default function App() {
                       onChange={(e) => { setQueueSearch(e.target.value); setJobsPage(1); }}
                       className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30 w-44"
                     />
+                    <select
+                      value={queueSort}
+                      onChange={(e) => setQueueSort(e.target.value)}
+                      className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30"
+                    >
+                      <option value="default">Default order</option>
+                      <option value="year_desc">Year (Newest first)</option>
+                      <option value="year_asc">Year (Oldest first)</option>
+                    </select>
                     <Btn size="sm" variant="danger" onClick={handleAbortAllJobs}>Abort All</Btn>
                     <Btn size="sm" variant="warning" onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}>
                       {queuePaused ? 'Start Queue' : 'Pause Queue'}
@@ -1544,6 +1581,15 @@ export default function App() {
                       onChange={(e) => { setHistorySearch(e.target.value); setHistoryPage(1); }}
                       className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30 w-44"
                     />
+                    <select
+                      value={historySort}
+                      onChange={(e) => setHistorySort(e.target.value)}
+                      className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30"
+                    >
+                      <option value="completed_desc">Completed (Newest)</option>
+                      <option value="year_desc">Year (Newest first)</option>
+                      <option value="year_asc">Year (Oldest first)</option>
+                    </select>
                     <Btn size="sm" variant="danger" onClick={handlePurgeHistory}>Purge All</Btn>
                   </div>
                 )}
@@ -1677,7 +1723,7 @@ export default function App() {
                           const { title, year } = extractTitleYear(job.source_path);
                           const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
                           const completedDate = job.completed_at
-                            ? new Date(job.completed_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                            ? new Date(job.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZoneName: 'short' })
                             : '—';
                           const statusColor = job.status === 'complete'
                             ? 'text-emerald-400'

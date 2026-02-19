@@ -13,6 +13,18 @@ RECOVERABLE_STATUSES = {'running', 'preflight', 'starting', 'aborting'}
 ACTIVE_WORKSPACE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
 
 
+def _apply_partial_resume_if_available(job: Job, workspace: Path, partial_duration: float | None) -> bool:
+    if partial_duration and partial_duration > 0:
+        job.resume_position_seconds = partial_duration
+        return True
+
+    job.resume_position_seconds = None
+    job.progress_percent = 0
+    if workspace.exists():
+        shutil.rmtree(workspace, ignore_errors=True)
+    return False
+
+
 def _get_or_create_settings(db: Session) -> Settings:
     settings = db.query(Settings).first()
     if settings:
@@ -88,17 +100,9 @@ def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
             job.output_path = None
             requeued_jobs += 1
 
-            if partial_duration and partial_duration > 0:
-                # Keep the workspace so optimize_video can resume from the partial.
-                job.resume_position_seconds = partial_duration
-                # Leave progress_percent as-is so the UI shows existing progress.
-            else:
-                # No usable partial; reset progress and clean the workspace.
-                job.resume_position_seconds = None
-                job.progress_percent = 0
-                if workspace.exists():
-                    shutil.rmtree(workspace, ignore_errors=True)
-                    cleaned_workspaces += 1
+            workspace_existed = workspace.exists()
+            if not _apply_partial_resume_if_available(job, workspace, partial_duration) and workspace_existed:
+                cleaned_workspaces += 1
         else:
             job.resume_position_seconds = None
             job.progress_percent = 0
@@ -106,7 +110,23 @@ def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
                 shutil.rmtree(workspace, ignore_errors=True)
                 cleaned_workspaces += 1
 
-    if recovered_jobs:
+
+    queued_jobs = db.query(Job).filter(Job.status == 'queued').all()
+    for job in queued_jobs:
+        if job.resume_position_seconds:
+            continue
+
+        workspace = _workspace_path(settings, job.id)
+        if not workspace.exists():
+            continue
+
+        partial_duration = _probe_partial_duration(workspace)
+        if _apply_partial_resume_if_available(job, workspace, partial_duration):
+            requeued_jobs += 1
+        else:
+            cleaned_workspaces += 1
+
+    if recovered_jobs or requeued_jobs or cleaned_workspaces:
         db.commit()
 
     return {
@@ -136,14 +156,7 @@ def requeue_interrupted_job(db: Session, job_id: int) -> Job | None:
     job.output_path = None
     job.completed_at = None
 
-    if partial_duration and partial_duration > 0:
-        job.resume_position_seconds = partial_duration
-        # Preserve progress_percent so the UI reflects work already done.
-    else:
-        job.resume_position_seconds = None
-        job.progress_percent = 0
-        if workspace.exists():
-            shutil.rmtree(workspace, ignore_errors=True)
+    _apply_partial_resume_if_available(job, workspace, partial_duration)
 
     db.commit()
     db.refresh(job)
