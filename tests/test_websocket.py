@@ -1,8 +1,17 @@
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.core.database import SessionLocal
+from app.models.job import Job
 from app.services.realtime_service import RealtimeBroker
 
+
+
+
+def _clear_jobs():
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
 
 def _receive_event_of_type(websocket, event_type: str, max_messages: int = 20) -> dict:
     for _ in range(max_messages):
@@ -13,6 +22,7 @@ def _receive_event_of_type(websocket, event_type: str, max_messages: int = 20) -
 
 
 def test_ws_stream_receives_job_update():
+    _clear_jobs()
     with TestClient(app) as client:
         with client.websocket_connect('/ws') as websocket:
             create_response = client.post('/jobs', json={'source_path': '/media/ws-demo.mkv'})
@@ -25,6 +35,7 @@ def test_ws_stream_receives_job_update():
 
 
 def test_ws_requires_token_when_basic_auth_enabled(monkeypatch):
+    _clear_jobs()
     monkeypatch.setenv('OPTIMIZARR_UI_USERNAME', 'admin')
     monkeypatch.setenv('OPTIMIZARR_UI_PASSWORD', 'secret')
 
@@ -75,6 +86,40 @@ def test_job_progress_throttle_limits_to_one_event_per_second():
 
     broker.unsubscribe(subscription.client_id)
 
+
+
+
+def test_job_progress_payload_includes_completed_at_field():
+    broker = RealtimeBroker()
+    subscription = broker.subscribe()
+
+    payload = {
+        'id': 102,
+        'status': 'queued',
+        'source_path': '/media/completed-at.mkv',
+        'output_path': None,
+        'retry_count': 0,
+        'cancel_requested': False,
+        'progress_percent': 0,
+        'fps': None,
+        'eta_seconds': None,
+        'encoder_used': None,
+        'codec_used': None,
+        'hwaccel_used': None,
+        'used_fallback': None,
+        'fallback_reason': None,
+        'error_message': None,
+        'completed_at': None,
+    }
+
+    broker.publish_job_update(payload, throttle_progress=False)
+    event = subscription.queue.get(timeout=1)
+
+    assert event['type'] == 'job_update'
+    assert 'completed_at' in event['data']
+    assert event['data']['completed_at'] is None
+
+    broker.unsubscribe(subscription.client_id)
 
 def test_ws_stream_receives_queue_pause_system_event():
     with TestClient(app) as client:

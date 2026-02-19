@@ -1,4 +1,5 @@
 import os
+from datetime import timezone
 from pathlib import Path
 import secrets
 
@@ -165,7 +166,7 @@ class JobResponse(BaseModel):
             source_resolution=job.source_resolution,
             source_is_hdr=job.source_is_hdr,
             library_id=job.library_id,
-            completed_at=job.completed_at.isoformat() if job.completed_at else None,
+            completed_at=job.completed_at.replace(tzinfo=timezone.utc).isoformat() if job.completed_at else None,
         )
 
 
