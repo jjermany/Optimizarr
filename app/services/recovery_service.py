@@ -126,6 +126,7 @@ def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
 
         if settings.requeue_interrupted_jobs:
             job.status = 'queued'
+            job.retry_count = 0
             job.fps = None
             job.eta_seconds = None
             job.output_path = None
@@ -182,6 +183,7 @@ def requeue_interrupted_job(db: Session, job_id: int) -> Job | None:
     partial_duration = _probe_partial_duration(workspace) if workspace.exists() else None
 
     job.status = 'queued'
+    job.retry_count = 0
     job.cancel_requested = False
     job.error_message = None
     job.fps = None

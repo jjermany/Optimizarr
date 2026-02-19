@@ -40,6 +40,7 @@ from app.services.job_service import (
 )
 from app.services.monitoring_service import (
     _extract_last_json_blob,
+    _find_drm_card_sysfs_paths,
     _get_intel_gpu_metrics,
     _get_intel_gpu_metrics_freq,
     _get_intel_gpu_metrics_sysfs,
@@ -744,7 +745,8 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
             return None
 
     # ── sysfs engine dirs + files present ─────────────────────────────────────
-    engine_dirs = _glob.glob('/sys/class/drm/card*/engine/*')
+    _card_paths = _find_drm_card_sysfs_paths()
+    engine_dirs = [d for card in _card_paths for d in _glob.glob(f'{card}/engine/*')]
     sysfs_busy_files: list[str] = []
     engine_dir_contents: dict[str, list[str]] = {}
     for d in engine_dirs:
@@ -760,7 +762,7 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
 
     # ── GT frequency (Intel iGPU — better proxy for QSV load than engine %) ───
     freq_info: dict[str, dict] = {}
-    for card in _glob.glob('/sys/class/drm/card*'):
+    for card in _card_paths:
         entry: dict = {}
         # Old i915 flat paths
         for name, path in [
@@ -804,6 +806,7 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
     nvidia_result = _get_nvidia_gpu_metrics()
 
     return {
+        'drm_card_sysfs_paths': _card_paths,
         'sysfs': {
             'engine_dir_contents': engine_dir_contents,
             'busy_time_ms_files_found': sysfs_busy_files,
