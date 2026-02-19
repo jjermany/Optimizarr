@@ -225,8 +225,13 @@ def _find_drm_card_sysfs_paths() -> list[str]:
     publishes the true sysfs path at /sys/dev/char/{major}:{minor}, so we can
     locate the card's sysfs directory from the device file even when the
     /sys/class/drm symlink layer is absent inside the container.
+
+    Some Docker configurations only pass through renderD nodes (not card nodes),
+    so we also try /dev/dri/renderD* and navigate to the sibling card directory.
     """
     paths: list[str] = []
+
+    # Primary: card* device nodes — direct major:minor resolution.
     for dev in sorted(glob.glob('/dev/dri/card*')):
         try:
             st = os.stat(dev)
@@ -236,6 +241,22 @@ def _find_drm_card_sysfs_paths() -> list[str]:
                 paths.append(resolved)
         except OSError:
             pass
+
+    # Secondary: renderD* device nodes — resolve to the parent drm dir then
+    # find card* siblings.  Used when Docker config exposes only renderD nodes.
+    if not paths:
+        for dev in sorted(glob.glob('/dev/dri/renderD*')):
+            try:
+                st = os.stat(dev)
+                link = f'/sys/dev/char/{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}'
+                render_path = os.path.realpath(link)
+                drm_dir = os.path.dirname(render_path)
+                for card in sorted(glob.glob(f'{drm_dir}/card*')):
+                    if card not in paths:
+                        paths.append(card)
+            except OSError:
+                pass
+
     # Fallback: standard /sys/class/drm symlinks (works on host or fully
     # privileged containers).
     if not paths:
@@ -252,7 +273,14 @@ def _get_intel_gpu_metrics_sysfs() -> dict[str, float] | None:
     Returns None if the engine sysfs hierarchy is absent on this host.
     """
     card_paths = _find_drm_card_sysfs_paths()
-    engine_dirs = [d for card in card_paths for d in glob.glob(f'{card}/engine/*')]
+    engine_dirs = [
+        d
+        for card in card_paths
+        for d in (
+            glob.glob(f'{card}/engine/*') +         # single-GT (pre-Alder Lake i915)
+            glob.glob(f'{card}/gt/gt*/engine/*')    # multi-GT (Alder Lake+, Arrow Lake, xe)
+        )
+    ]
     if not engine_dirs:
         return None
 
@@ -284,7 +312,7 @@ def _get_intel_gpu_metrics_sysfs() -> dict[str, float] | None:
         busy_before = before.get(name, busy_after)
         delta = max(0, busy_after - busy_before)
         pct = min(100.0, 100.0 * delta / elapsed_ms)
-        if any(lbl in name for lbl in ('vcs', 'vd', 'video')):
+        if any(lbl in name for lbl in ('vcs', 'vecs', 'vd', 'video')):
             video_pct = max(video_pct, pct)
         elif any(lbl in name for lbl in ('rcs', 'ccs', 'render')):
             render_pct = max(render_pct, pct)
