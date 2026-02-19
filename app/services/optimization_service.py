@@ -726,6 +726,71 @@ def _run_ffprobe_stream_json(input_path: str) -> dict[str, Any] | None:
     return payload
 
 
+def _probe_first_frame_hdr_format(input_path: str) -> str | None:
+    """Probe the first video frame for DV or HDR10+ side data.
+
+    DV Profile 8 in MKV containers embeds the Dolby Vision RPU inside the HEVC
+    bitstream rather than as a container-level side-data record.  As a result,
+    ffprobe's stream-level side_data_list never sees a DOVI Configuration Record
+    for these files, and stream-level detection returns 'hdr10' instead of
+    'dolby_vision' or 'hdr10plus'.  Frame-level side data (emitted once the
+    demuxer has read at least one packet) exposes the RPU/SMPTE 2094-40 records
+    that the stream-level probe misses.
+
+    This function reads only the first video frame (-read_intervals "%+#1") so the
+    overhead is minimal — typically a single packet read.
+
+    Returns 'dolby_vision', 'hdr10plus', or None (inconclusive; caller keeps its
+    own detection result).
+    """
+    command = [
+        'ffprobe',
+        '-v', 'error',
+        '-select_streams', 'v:0',
+        '-read_intervals', '%+#1',
+        '-show_frames',
+        '-of', 'json',
+        input_path,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    _dv_frame_markers = {'dovi', 'dolby vision', 'dovi metadata', 'dovi configuration'}
+    has_dv = False
+    has_hdr10plus = False
+
+    for frame in payload.get('frames', []):
+        if not isinstance(frame, dict):
+            continue
+        for side_data in frame.get('side_data_list', []):
+            if not isinstance(side_data, dict):
+                continue
+            sdt = str(side_data.get('side_data_type', '')).lower()
+            if any(m in sdt for m in _dv_frame_markers):
+                has_dv = True
+            if 'smpte2094-40' in sdt or 'hdr10plus' in sdt or 'hdr10+' in sdt:
+                has_hdr10plus = True
+
+    if has_dv:
+        return 'dolby_vision'
+    if has_hdr10plus:
+        return 'hdr10plus'
+    return None
+
+
 def is_hdr_video(input_path: str) -> bool:
     # Plex surfaces HDR flags from stream metadata (transfer/primaries/colorspace and Dolby Vision side-data).
     hdr_transfer_markers = {'smpte2084', 'arib-std-b67'}
@@ -834,16 +899,22 @@ def _detect_hdr_format(input_path: str) -> str | None:
             # 3. HLG
             if transfer == 'arib-std-b67':
                 return 'hlg'
-            # 4. HDR10 (PQ without DV/HDR10+ side data)
+            # 4. HDR10 (PQ) — but DV Profile 8 in MKV also uses smpte2084 transfer
+            # without exposing a DOVI Configuration Record at the stream level.  The
+            # DV RPU (and HDR10+ SMPTE 2094-40 records) only appear as frame-level
+            # side data once the demuxer reads a packet.  Do a secondary frame probe
+            # before concluding this is plain HDR10.
             if transfer == 'smpte2084':
-                return 'hdr10'
+                frame_fmt = _probe_first_frame_hdr_format(input_path)
+                return frame_fmt if frame_fmt else 'hdr10'
 
     # Scalar fallback for minimal ffprobe output.
     transfer = (_run_ffprobe_value(input_path, 'stream=color_transfer') or '').strip().lower()
     if transfer == 'arib-std-b67':
         return 'hlg'
     if transfer == 'smpte2084':
-        return 'hdr10'
+        frame_fmt = _probe_first_frame_hdr_format(input_path)
+        return frame_fmt if frame_fmt else 'hdr10'
 
     return None
 
@@ -1376,6 +1447,8 @@ def optimize_video(
                 '[%s] %s (rc=%s); retrying with software decode + hwupload',
                 job_tag, _sw_reason, return_code,
             )
+            if encoder_selected_callback:
+                encoder_selected_callback(_vaapi_sw_encoder, True)
             if not can_resume:
                 try:
                     _ensure_clean_workspace(workspace_path)
