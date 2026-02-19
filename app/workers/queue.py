@@ -676,16 +676,6 @@ def stop_worker() -> None:
     global _last_workers_allowed
     stop_event.set()
 
-    db = SessionLocal()
-    try:
-        with _pool_lock:
-            active_ids = list(_active_workers.keys())
-        if active_ids:
-            db.query(Job).filter(Job.id.in_(active_ids)).update({'cancel_requested': True}, synchronize_session=False)
-            db.commit()
-    finally:
-        db.close()
-
     if _manager_thread and _manager_thread.is_alive():
         _manager_thread.join(timeout=5)
 

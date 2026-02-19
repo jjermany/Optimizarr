@@ -49,6 +49,7 @@ const RECONNECT_MAX_DELAY_MS = 30000;
 const MESSAGE_DISMISS_MS = 5000;
 const JOBS_PAGE_SIZE = 50;
 const HISTORY_PAGE_SIZE = 50;
+const JOBS_UI_PREFS_KEY = 'optimizarr.jobsUiPrefs.v1';
 
 const PAGE_KEYS = {
   dashboard: 'Dashboard',
@@ -399,7 +400,20 @@ function pageFromHash() {
   return VALID_PAGES.has(hash) ? hash : 'dashboard';
 }
 
+function loadJobsUiPrefs() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(JOBS_UI_PREFS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function App() {
+  const jobsUiPrefs = loadJobsUiPrefs();
   const [activePage, setActivePage] = useState(pageFromHash);
   const [metrics, setMetrics] = useState();
   const [jobs, setJobs] = useState([]);
@@ -432,11 +446,11 @@ export default function App() {
   const [availableEncodersByCodec, setAvailableEncodersByCodec] = useState({});
   const [jobsPage, setJobsPage] = useState(1);
   const [historyPage, setHistoryPage] = useState(1);
-  const [queueSearch, setQueueSearch] = useState('');
-  const [historySearch, setHistorySearch] = useState('');
-  const [queueSort, setQueueSort] = useState('default');
-  const [historySort, setHistorySort] = useState('completed_desc');
-  const [jobsView, setJobsView] = useState('queue');
+  const [queueSearch, setQueueSearch] = useState(() => String(jobsUiPrefs.queueSearch ?? ''));
+  const [historySearch, setHistorySearch] = useState(() => String(jobsUiPrefs.historySearch ?? ''));
+  const [queueSort, setQueueSort] = useState(() => String(jobsUiPrefs.queueSort ?? 'default'));
+  const [historySort, setHistorySort] = useState(() => String(jobsUiPrefs.historySort ?? 'completed_desc'));
+  const [jobsView, setJobsView] = useState(() => (jobsUiPrefs.jobsView === 'history' ? 'history' : 'queue'));
   const [nowHour, setNowHour] = useState(() => new Date().getHours());
 
   const wsRef = useRef();
@@ -497,7 +511,7 @@ export default function App() {
   }
 
   const filteredActiveJobs = useMemo(
-    () => sortedActiveJobs.filter((job) => jobMatchesSearch(job, queueSearch)),
+    () => sortedActiveJobs.filter((job) => ACTIVE_STATUSES.has(job.status?.toLowerCase()) || jobMatchesSearch(job, queueSearch)),
     [sortedActiveJobs, queueSearch, libraryById],
   );
 
@@ -533,6 +547,20 @@ export default function App() {
   useEffect(() => {
     if (historyPage > totalHistoryPages) setHistoryPage(totalHistoryPages);
   }, [historyPage, totalHistoryPages]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(
+      JOBS_UI_PREFS_KEY,
+      JSON.stringify({
+        queueSearch,
+        historySearch,
+        queueSort,
+        historySort,
+        jobsView,
+      }),
+    );
+  }, [queueSearch, historySearch, queueSort, historySort, jobsView]);
 
   const selectedLibrary = useMemo(
     () => libraries.find((library) => library.id === selectedLibraryId) ?? null,
