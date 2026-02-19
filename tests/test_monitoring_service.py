@@ -135,6 +135,32 @@ def test_get_gpu_metrics_falls_back_to_intel_gpu_top_when_sysfs_absent(monkeypat
     assert metrics['gpu_render_percent'] == 5.0
 
 
+def test_get_gpu_metrics_uses_intel_gpu_top_when_sysfs_absent_and_freq_is_zero(monkeypatch):
+    """intel_gpu_top must be tried even when sysfs is None and freq reports 0%.
+
+    This is the core bug: previously a ``if sysfs is None: return freq`` short-
+    circuit returned 0 without ever calling intel_gpu_top, even when the caller
+    supplied --cap-add=PERFMON specifically to enable it.
+    """
+    monkeypatch.setattr(monitoring_service, '_get_intel_gpu_metrics_sysfs', lambda: None)
+    monkeypatch.setattr(
+        monitoring_service,
+        '_get_intel_gpu_metrics_freq',
+        lambda: {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0},
+    )
+    mock_stdout = '{"engines": {"Video": {"busy": 45.0}, "Render/3D": {"busy": 12.0}}}\n'
+    monkeypatch.setattr(
+        monitoring_service.subprocess,
+        'Popen',
+        lambda *args, **kwargs: _FakePopen(mock_stdout),
+    )
+
+    metrics = monitoring_service.get_gpu_metrics()
+
+    assert metrics['gpu_video_percent'] == 45.0
+    assert metrics['gpu_render_percent'] == 12.0
+
+
 def test_get_gpu_metrics_prefers_freq_when_sysfs_is_stuck_at_zero(monkeypatch):
     """Continue probing when sysfs exists but reports 0% during active QSV workloads."""
     monkeypatch.setattr(
