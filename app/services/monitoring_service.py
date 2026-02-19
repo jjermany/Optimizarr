@@ -288,6 +288,13 @@ def _get_intel_gpu_metrics_freq() -> dict[str, float] | None:
             return 0.0
         return min(100.0, max(0.0, 100.0 * (act - min_f) / freq_range))
 
+    def _first_int(paths: list[str]) -> int | None:
+        for path in paths:
+            value = _read_int(path)
+            if value is not None:
+                return value
+        return None
+
     for card in sorted(glob.glob('/sys/class/drm/card*')):
         # New per-GT nested paths — preferred; present on xe driver and
         # newer i915 (kernel 6.x) with multi-GT topology.
@@ -296,9 +303,21 @@ def _get_intel_gpu_metrics_freq() -> dict[str, float] | None:
             best = 0.0
             found = False
             for gt_dir in gt_dirs:
-                act   = _read_int(f'{gt_dir}/rps_act_freq_mhz')
-                min_f = _read_int(f'{gt_dir}/rps_min_freq_mhz')
-                max_f = _read_int(f'{gt_dir}/rps_max_freq_mhz')
+                act = _first_int([
+                    f'{gt_dir}/rps_act_freq_mhz',
+                    f'{gt_dir}/act_freq_mhz',
+                    f'{gt_dir}/act_mhz',
+                ])
+                min_f = _first_int([
+                    f'{gt_dir}/rps_min_freq_mhz',
+                    f'{gt_dir}/min_freq_mhz',
+                    f'{gt_dir}/min_mhz',
+                ])
+                max_f = _first_int([
+                    f'{gt_dir}/rps_max_freq_mhz',
+                    f'{gt_dir}/max_freq_mhz',
+                    f'{gt_dir}/max_mhz',
+                ])
                 if act is None or min_f is None or max_f is None:
                     continue
                 found = True
@@ -307,9 +326,21 @@ def _get_intel_gpu_metrics_freq() -> dict[str, float] | None:
                 return {'gpu_video_percent': best, 'gpu_render_percent': best}
 
         # Older flat i915 paths (single-GT, kernel ≤ 5.x style).
-        act   = _read_int(f'{card}/gt_act_freq_mhz')
-        min_f = _read_int(f'{card}/gt_min_freq_mhz')
-        max_f = _read_int(f'{card}/gt_max_freq_mhz')
+        act = _first_int([
+            f'{card}/gt_act_freq_mhz',
+            f'{card}/act_freq_mhz',
+            f'{card}/act_mhz',
+        ])
+        min_f = _first_int([
+            f'{card}/gt_min_freq_mhz',
+            f'{card}/min_freq_mhz',
+            f'{card}/min_mhz',
+        ])
+        max_f = _first_int([
+            f'{card}/gt_max_freq_mhz',
+            f'{card}/max_freq_mhz',
+            f'{card}/max_mhz',
+        ])
         if act is not None and min_f is not None and max_f is not None:
             return {'gpu_video_percent': _pct(act, min_f, max_f),
                     'gpu_render_percent': _pct(act, min_f, max_f)}

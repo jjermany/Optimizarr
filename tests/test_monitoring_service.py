@@ -1,5 +1,6 @@
 import os
 import threading
+from io import StringIO
 from types import SimpleNamespace
 
 from app.core.database import SessionLocal
@@ -132,6 +133,36 @@ def test_get_gpu_metrics_falls_back_to_intel_gpu_top_when_sysfs_absent(monkeypat
 
     assert metrics['gpu_video_percent'] == 30.0
     assert metrics['gpu_render_percent'] == 5.0
+
+
+def test_get_intel_gpu_metrics_freq_supports_alternate_gt_filenames(monkeypatch):
+    monkeypatch.setattr(monitoring_service.glob, 'glob', lambda pattern: {
+        '/sys/class/drm/card*': ['/sys/class/drm/card0'],
+        '/sys/class/drm/card0/gt/gt*': ['/sys/class/drm/card0/gt/gt0', '/sys/class/drm/card0/gt/gt1'],
+    }.get(pattern, []))
+
+    values = {
+        '/sys/class/drm/card0/gt/gt0/act_freq_mhz': '1400',
+        '/sys/class/drm/card0/gt/gt0/min_freq_mhz': '550',
+        '/sys/class/drm/card0/gt/gt0/max_freq_mhz': '2000',
+        '/sys/class/drm/card0/gt/gt1/act_mhz': '100',
+        '/sys/class/drm/card0/gt/gt1/min_mhz': '100',
+        '/sys/class/drm/card0/gt/gt1/max_mhz': '1400',
+    }
+
+    def fake_open(path, *args, **kwargs):
+        if path in values:
+            return StringIO(values[path])
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr('builtins.open', fake_open)
+
+    metrics = monitoring_service._get_intel_gpu_metrics_freq()
+
+    assert metrics == {
+        'gpu_video_percent': 58.62068965517241,
+        'gpu_render_percent': 58.62068965517241,
+    }
 
 
 def test_get_system_metrics_includes_cpu_ram_and_active_jobs(monkeypatch):
