@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import logging
 from pathlib import Path
+import re
 import shutil
 from threading import Event, Lock, Thread
 import time
@@ -498,6 +499,20 @@ def _enforce_library_schedule_policies(db: Session, settings: Settings, now: dat
 
 
 
+def _extract_year_from_path(path: str | None) -> int | None:
+    if not path:
+        return None
+    stem = Path(path).stem
+    spaced = re.sub(r'[._]', ' ', stem)
+    paren_match = re.search(r'\(((?:19|20)\d{2})\)', spaced)
+    if paren_match:
+        return int(paren_match.group(1))
+    year_match = re.search(r'\b((?:19|20)\d{2})\b', spaced)
+    if year_match:
+        return int(year_match.group(1))
+    return None
+
+
 def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> int | None:
     queued = (
         db.query(Job, Library, LibraryProfile)
@@ -517,7 +532,12 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
             return (resume_priority, progress_priority, -(job.created_at.timestamp() if job.created_at else 0), -job.id)
         if sort_option == QueueSortEnum.oldest.value:
             return (resume_priority, progress_priority, job.created_at.timestamp() if job.created_at else 0, job.id)
-
+        if sort_option == QueueSortEnum.year_newest.value:
+            year = _extract_year_from_path(job.source_path)
+            return (resume_priority, progress_priority, -(year if year is not None else 0), -job.id)
+        if sort_option == QueueSortEnum.year_oldest.value:
+            year = _extract_year_from_path(job.source_path)
+            return (resume_priority, progress_priority, (year if year is not None else 9999), job.id)
 
         return (resume_priority, progress_priority, job.created_at.timestamp() if job.created_at else 0, job.id)
 

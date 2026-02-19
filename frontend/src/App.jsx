@@ -174,6 +174,28 @@ function compareActiveJobsOldest(a, b) {
   return a.id - b.id;
 }
 
+function compareActiveJobsYearNewest(a, b) {
+  const rankDiff = jobSortRank(a) - jobSortRank(b);
+  if (rankDiff !== 0) return rankDiff;
+  const yearA = extractTitleYear(a.source_path).year;
+  const yearB = extractTitleYear(b.source_path).year;
+  if (yearA && yearB) return Number(yearB) - Number(yearA);
+  if (yearA) return -1;
+  if (yearB) return 1;
+  return b.id - a.id;
+}
+
+function compareActiveJobsYearOldest(a, b) {
+  const rankDiff = jobSortRank(a) - jobSortRank(b);
+  if (rankDiff !== 0) return rankDiff;
+  const yearA = extractTitleYear(a.source_path).year;
+  const yearB = extractTitleYear(b.source_path).year;
+  if (yearA && yearB) return Number(yearA) - Number(yearB);
+  if (yearA) return -1;
+  if (yearB) return 1;
+  return a.id - b.id;
+}
+
 function formatResolution(height) {
   return Number.isInteger(height) ? `${height}p` : 'Unknown';
 }
@@ -230,6 +252,12 @@ function sortJobsByOption(jobs, sortOption, fallbackSort) {
   }
   if (sortOption === 'oldest') {
     return [...jobs].sort((a, b) => comparatorWithPinnedInProgress(a, b, compareActiveJobsOldest));
+  }
+  if (sortOption === 'year_newest') {
+    return [...jobs].sort((a, b) => comparatorWithPinnedInProgress(a, b, compareActiveJobsYearNewest));
+  }
+  if (sortOption === 'year_oldest') {
+    return [...jobs].sort((a, b) => comparatorWithPinnedInProgress(a, b, compareActiveJobsYearOldest));
   }
   return [...jobs].sort((a, b) => comparatorWithPinnedInProgress(a, b, fallbackSort));
 }
@@ -1626,9 +1654,11 @@ export default function App() {
                       onChange={(e) => { void handleQueueSortChange(e.target.value); }}
                       className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30"
                     >
-                      <option value="default">Default order</option>
-                      <option value="newest">Newest first</option>
-                      <option value="oldest">Oldest first</option>
+                      <option value="default">Date Added (Oldest)</option>
+                      <option value="newest">Date Added (Newest)</option>
+                      <option value="year_newest">Release Year (Newest)</option>
+                      <option value="year_oldest">Release Year (Oldest)</option>
+                      {queueSort === 'oldest' && <option value="oldest">Date Added (Oldest)</option>}
                     </select>
                     <Btn size="sm" variant="danger" onClick={handleAbortAllJobs}>Abort All</Btn>
                     <Btn size="sm" variant="warning" onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}>
