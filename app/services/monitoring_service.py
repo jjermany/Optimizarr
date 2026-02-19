@@ -217,6 +217,32 @@ def _get_nvidia_gpu_metrics() -> dict[str, float] | None:
         return None
 
 
+def _find_drm_card_sysfs_paths() -> list[str]:
+    """Resolve DRM card sysfs paths, working around Docker sysfs filtering.
+
+    Docker containers with --device=/dev/dri have the /dev/dri/card* device
+    nodes available but may not expose /sys/class/drm symlinks.  Linux always
+    publishes the true sysfs path at /sys/dev/char/{major}:{minor}, so we can
+    locate the card's sysfs directory from the device file even when the
+    /sys/class/drm symlink layer is absent inside the container.
+    """
+    paths: list[str] = []
+    for dev in sorted(glob.glob('/dev/dri/card*')):
+        try:
+            st = os.stat(dev)
+            link = f'/sys/dev/char/{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}'
+            resolved = os.path.realpath(link)
+            if os.path.isdir(resolved):
+                paths.append(resolved)
+        except OSError:
+            pass
+    # Fallback: standard /sys/class/drm symlinks (works on host or fully
+    # privileged containers).
+    if not paths:
+        paths = sorted(glob.glob('/sys/class/drm/card*'))
+    return paths
+
+
 def _get_intel_gpu_metrics_sysfs() -> dict[str, float] | None:
     """Read Intel GPU engine utilisation from sysfs (kernel ≥ 5.11).
 
@@ -225,7 +251,8 @@ def _get_intel_gpu_metrics_sysfs() -> dict[str, float] | None:
     Two readings 500 ms apart are used to derive the utilisation percentage.
     Returns None if the engine sysfs hierarchy is absent on this host.
     """
-    engine_dirs = glob.glob('/sys/class/drm/card*/engine/*')
+    card_paths = _find_drm_card_sysfs_paths()
+    engine_dirs = [d for card in card_paths for d in glob.glob(f'{card}/engine/*')]
     if not engine_dirs:
         return None
 
@@ -305,7 +332,7 @@ def _get_intel_gpu_metrics_freq() -> dict[str, float] | None:
                 return value
         return None
 
-    for card in sorted(glob.glob('/sys/class/drm/card*')):
+    for card in _find_drm_card_sysfs_paths():
         # New per-GT nested paths — preferred; present on xe driver and
         # newer i915 (kernel 6.x) with multi-GT topology.
         gt_dirs = sorted(glob.glob(f'{card}/gt/gt*'))

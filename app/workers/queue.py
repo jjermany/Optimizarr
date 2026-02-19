@@ -330,6 +330,13 @@ def _process_job(job_id: int) -> None:
             handle_job_terminal_state(job.id, job.status)
             return
 
+        # If the application is shutting down, leave the job in its current
+        # DB state (still 'running') so startup recovery can find it and
+        # requeue it on next launch.  Committing a terminal status here would
+        # move the job to History and it would never be picked up again.
+        if stop_event.is_set():
+            return
+
         job.status = metrics.status
         job.output_path = metrics.output_path
         job.fps = metrics.fps
@@ -366,6 +373,12 @@ def _process_job(job_id: int) -> None:
     except Exception as exc:
         logger.exception('Unhandled exception while processing queued job %s', job_id)
         db.rollback()
+
+        # During application shutdown an exception may be raised by DB or I/O
+        # teardown.  Leave the job in its last committed state so startup
+        # recovery can requeue it; do not mark it failed.
+        if stop_event.is_set():
+            return
 
         job = db.query(Job).filter(Job.id == job_id).first()
         if job:
