@@ -551,7 +551,7 @@ def _build_command_with_selection(
         # no VEBOX (tonemap_vaapi) involved, so DV/HDR10+ content is handled.
         filters = ['hwupload=extra_hw_frames=64', _VPP_QSV_TONEMAP_FILTER]
         if should_scale:
-            filters.append(f'scale_qsv=-2:{target_height}')
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv and apply_tonemap:
         # QSV encode with CPU tone mapping — used when vpp_qsv=tonemap=1 failed
@@ -560,13 +560,13 @@ def _build_command_with_selection(
         filters = list(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
-            filters.append(f'scale_qsv=-2:{target_height}')
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
         filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
-            filters.append(f'scale_qsv=-2:{target_height}')
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     else:
         filters = []
@@ -1112,20 +1112,20 @@ def _build_resume_command(
         # to SDR fully on-GPU without involving VEBOX / tonemap_vaapi.
         filters = ['hwupload=extra_hw_frames=64', _VPP_QSV_TONEMAP_FILTER]
         if should_scale:
-            filters.append(f'scale_qsv=-2:{target_height}')
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv and apply_tonemap:
         # CPU tone-map fallback (vpp_qsv unsupported on this host).
         filters = list(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
-            filters.append(f'scale_qsv=-2:{target_height}')
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
         filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
-            filters.append(f'scale_qsv=-2:{target_height}')
+            filters.append(f'scale_qsv=-1:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     else:
         filters = []
