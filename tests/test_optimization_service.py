@@ -482,7 +482,7 @@ def test_build_encoder_command_hdr_qsv_applies_tonemap(monkeypatch):
     assert '-vf' in command
     vf = command[command.index('-vf') + 1]
     assert vf.startswith('hwupload=extra_hw_frames=64,vpp_qsv=tonemap=1')
-    assert 'scale_qsv=-2:1080' in vf
+    assert 'scale_qsv=-1:1080' in vf
 
 
 def test_refresh_encoder_cache_parses_ffmpeg_encoders(monkeypatch):
