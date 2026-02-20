@@ -162,9 +162,6 @@ def retry_job(db: Session, job_id: int) -> Job | None:
     if job.status not in {'failed', 'cancelled'}:
         return job
 
-    if job.retry_count >= 1:
-        return job
-
     settings = _get_settings(db)
     if not job.resume_position_seconds:
         workspace = Path(settings.workspace_root) / str(job.id)
@@ -175,6 +172,7 @@ def retry_job(db: Session, job_id: int) -> Job | None:
             job.progress_percent = 0
 
     job.status = 'queued'
+    job.retry_count = 0
     job.fps = None
     job.eta_seconds = None
     job.output_path = None
