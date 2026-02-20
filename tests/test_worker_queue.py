@@ -69,7 +69,7 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
     assert terminal_updates[-1] == (job_id, 'failed')
 
 
-def test_worker_auto_retries_from_partial_then_pauses_for_manual_retry(monkeypatch):
+def test_worker_auto_retries_from_partial_then_fails_for_manual_retry(monkeypatch):
     queue.resume_queue()
     call_count = {'count': 0}
 
@@ -87,6 +87,7 @@ def test_worker_auto_retries_from_partial_then_pauses_for_manual_retry(monkeypat
     monkeypatch.setattr(queue, '_probe_partial_duration', lambda _workspace: 1973.29)
     failure_notifications = []
     monkeypatch.setattr(queue, 'enqueue_job_failed', lambda job: failure_notifications.append(job.id))
+    monkeypatch.setattr(queue, 'handle_job_terminal_state', lambda *_: None)
 
     with SessionLocal() as session:
         session.query(Job).delete()
@@ -102,19 +103,13 @@ def test_worker_auto_retries_from_partial_then_pauses_for_manual_retry(monkeypat
         assert create_response.status_code == 201
         job_id = create_response.json()['id']
 
-        end = time.time() + 3.0
-        payload = {}
-        while time.time() < end:
-            response = client.get(f'/jobs/{job_id}')
-            payload = response.json()
-            if payload['status'] == 'paused':
-                break
-            time.sleep(0.05)
+        payload = _wait_for_terminal_status(client, job_id)
 
-    assert payload['status'] == 'paused'
-    assert payload['resume_position_seconds'] == 1973.29
-    assert call_count['count'] == 2  # auto-retried once before pausing
-    assert failure_notifications == []
+    # Job should be 'failed' (visible in History with a Retry button), not 'paused'.
+    assert payload['status'] == 'failed'
+    assert payload['retry_count'] == 1
+    assert call_count['count'] == 2  # auto-retried once from partial before terminal failure
+    assert failure_notifications == [job_id]
 
 
 def test_worker_marks_job_failed_when_unhandled_exception_occurs(monkeypatch):

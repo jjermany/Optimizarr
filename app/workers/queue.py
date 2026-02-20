@@ -360,8 +360,12 @@ def _process_job(job_id: int) -> None:
                     job.eta_seconds = None
                     job.completed_at = None
                 else:
-                    # Already auto-retried — pause for manual retry.
-                    job.status = 'paused'
+                    # Already auto-retried — mark failed with position saved.
+                    # 'failed' lands in History and shows the Retry button;
+                    # resume_position_seconds is preserved so retry picks up
+                    # exactly where encoding stopped.
+                    job.status = 'failed'
+                    _mark_finished(job)
             elif job.retry_count < 1:
                 job.retry_count += 1
                 job.status = 'queued'

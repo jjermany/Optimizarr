@@ -27,6 +27,12 @@ _QSV_ERROR_PATTERN = re.compile(
     re.IGNORECASE,
 )
 _FFMPEG_ERROR_PATTERN = re.compile(r'\b(error|failed|invalid|cannot|unable|no such|permission denied)\b', re.IGNORECASE)
+# Matches the specific VAAPI output-buffer exhaustion error produced when the GPU
+# encoder runs out of buffer slots (e.g. concurrent Plex transcodes holding them).
+# This is a transient resource-contention error, not a permanent encoder failure.
+_VAAPI_BUFFER_ERROR_PATTERN = re.compile(r'Failed to map output buffers', re.IGNORECASE)
+# Backoff intervals (seconds) between VAAPI buffer retry attempts.
+_VAAPI_BUFFER_RETRY_WAITS = (30, 60, 120)
 # HDR-to-SDR software tone mapping filter chain.
 # Converts HDR10/HLG (BT.2020 / PQ / HLG) to SDR BT.709 using zscale + tonemap.
 # Used as a fallback when VAAPI hardware tone mapping is unavailable.
@@ -592,6 +598,10 @@ def _has_qsv_error(output_lines: list[str]) -> bool:
     return any(_QSV_ERROR_PATTERN.search(line) for line in output_lines)
 
 
+def _has_vaapi_buffer_error(output_lines: list[str]) -> bool:
+    return any(_VAAPI_BUFFER_ERROR_PATTERN.search(line) for line in output_lines)
+
+
 def _run_ffmpeg(
     job_id: int | None,
     ffmpeg_command: list[str],
@@ -735,6 +745,35 @@ def _probe_duration_seconds(input_path: str) -> float | None:
         return None
     try:
         return float(value)
+    except ValueError:
+        return None
+
+
+def _probe_partial_duration(workspace: Path) -> float | None:
+    """Return the encoded duration of the partial output file in the workspace, or None."""
+    if not workspace.exists():
+        return None
+    partials = list(workspace.glob('output.partial.*'))
+    if not partials:
+        return None
+    command = [
+        'ffprobe', '-v', 'error',
+        '-select_streams', 'v:0',
+        '-show_entries', 'format=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        str(partials[0]),
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    values = result.stdout.strip().splitlines()
+    if not values:
+        return None
+    try:
+        return float(values[-1].strip())
     except ValueError:
         return None
 
@@ -1348,6 +1387,77 @@ def optimize_video(
             progress_callback,
             should_cancel,
         )
+
+    # VAAPI output-buffer exhaustion recovery.
+    # When the VAAPI encoder can't map output buffers (error 24 — transient GPU resource
+    # contention, typically from concurrent Plex transcodes holding encoder slots), wait
+    # for the load to ease and retry from wherever the partial output reached.
+    # The job stays "running" throughout; the queue never sees a failure for these waits.
+    # Falls through to the encoder-fallback chain below only if all waits are exhausted.
+    for _wait_secs in _VAAPI_BUFFER_RETRY_WAITS:
+        if return_code == 0 or was_cancelled:
+            break
+        if not _has_vaapi_buffer_error(output_lines):
+            break
+
+        logger.warning(
+            '[%s] VAAPI encoder buffer exhausted (rc=%s); waiting %ds for GPU resources '
+            'to free before retrying from partial',
+            job_tag, return_code, _wait_secs,
+        )
+        _deadline = time.monotonic() + _wait_secs
+        while time.monotonic() < _deadline:
+            if should_cancel and should_cancel():
+                was_cancelled = True
+                break
+            time.sleep(1)
+        if was_cancelled:
+            break
+
+        # Clean up any incomplete resume segment from the failed attempt, then probe
+        # the partial for the furthest safe restart point.
+        for _stale in workspace_path.glob('output.resume.*'):
+            _stale.unlink(missing_ok=True)
+        _partial_dur = _probe_partial_duration(workspace_path)
+
+        if _partial_dur and _partial_dur > 0:
+            container = _container_from_profile(profile)
+            _retry_seg = workspace_path / f'output.resume.{container}'
+            _retry_cmd = _build_resume_command(
+                input_path, _partial_dur, str(_retry_seg), profile, selection,
+            )
+            _remaining = (duration - _partial_dur) if duration else None
+            _retry_start_pct = int((_partial_dur / duration) * 100) if duration else 0
+            _retry_span = 100 - _retry_start_pct
+            _orig_cb = progress_callback
+            def _retry_progress_cb(
+                update: dict,
+                _s: int = _retry_start_pct,
+                _sp: int = _retry_span,
+                _cb: Callable[[dict], None] | None = _orig_cb,
+            ) -> None:
+                if _cb:
+                    pct = int(update.get('progress_percent') or 0)
+                    update['progress_percent'] = min(99, _s + int(pct * _sp / 100))
+                    _cb(update)
+            logger.info(
+                '[%s] VAAPI buffer retry: resuming encode from %.1fs',
+                job_tag, _partial_dur,
+            )
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id, _retry_cmd, _remaining, _retry_progress_cb, should_cancel,
+            )
+            if return_code == 0:
+                # Successful retry — wire up the resume state so the concat step below works.
+                can_resume = True
+                existing_partial = next(workspace_path.glob('output.partial.*'), None)
+                resume_segment_path = _retry_seg
+        else:
+            # No usable partial — retry the original command from scratch.
+            logger.info('[%s] VAAPI buffer retry: no partial found, retrying from scratch', job_tag)
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id, ffmpeg_command, duration, progress_callback, should_cancel,
+            )
 
     # If the QSV+HDR vpp_qsv path failed (driver too old, unsupported content, etc.)
     # retry with the same QSV encoder but use CPU (zscale) tone mapping instead.
