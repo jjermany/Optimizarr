@@ -30,7 +30,9 @@ RUN set -eux; \
         libvpl2 \
         intel-media-va-driver \
         intel-gpu-tools \
-        libva-drm2; \
+        libva-drm2 \
+        libvulkan1 \
+        mesa-vulkan-drivers; \
     for pkg in libmfx-gen1.2 libmfx-gen1 libmfx1; do \
         if apt-cache show "$pkg" >/dev/null 2>&1; then \
             apt-get install -y --no-install-recommends "$pkg" && break; \
