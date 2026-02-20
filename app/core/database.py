@@ -118,6 +118,12 @@ def init_db() -> None:
             'cleanup_workspaces_on_startup',
             'cleanup_workspaces_on_startup BOOLEAN NOT NULL DEFAULT 1',
         )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'queue_paused',
+            'queue_paused BOOLEAN NOT NULL DEFAULT 0',
+        )
 
         _add_column_if_missing(
             connection,

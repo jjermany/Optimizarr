@@ -15,6 +15,7 @@ from app.models.settings import DiscoveryMethodEnum, Settings
 from app.services.job_service import create_job, job_exists_for_source
 from app.services.optimization_service import is_hdr_video, probe_video_height
 from app.services.realtime_service import broker
+from app.workers.queue import is_queue_paused
 
 try:
     from watchdog.events import FileSystemEventHandler
@@ -87,6 +88,10 @@ class DiscoveryManager:
     def _run(self) -> None:
         logger.info('Auto-discovery worker started')
         while not self._stop_event.is_set():
+            if is_queue_paused():
+                time.sleep(2)
+                continue
+
             db = SessionLocal()
             try:
                 settings = _get_or_create_settings(db)
