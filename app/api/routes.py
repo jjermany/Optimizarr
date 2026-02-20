@@ -484,9 +484,9 @@ class LibraryProfileUpdateRequest(BaseModel):
             return value
 
         allowed = {
-            CodecEnum.h264: {PreferredEncoderEnum.h264_qsv, PreferredEncoderEnum.libx264},
-            CodecEnum.hevc: {PreferredEncoderEnum.hevc_qsv, PreferredEncoderEnum.libx265},
-            CodecEnum.av1: {PreferredEncoderEnum.av1_qsv, PreferredEncoderEnum.libsvtav1},
+            CodecEnum.h264: {PreferredEncoderEnum.h264_qsv, PreferredEncoderEnum.h264_vaapi, PreferredEncoderEnum.libx264},
+            CodecEnum.hevc: {PreferredEncoderEnum.hevc_qsv, PreferredEncoderEnum.hevc_vaapi, PreferredEncoderEnum.libx265},
+            CodecEnum.av1: {PreferredEncoderEnum.av1_qsv, PreferredEncoderEnum.av1_vaapi, PreferredEncoderEnum.libsvtav1},
         }
         if value not in allowed.get(codec, set()):
             raise ValueError('preferred_video_encoder is incompatible with selected codec')
