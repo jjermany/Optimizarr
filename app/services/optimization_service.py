@@ -55,6 +55,15 @@ _LIBPLACEBO_TONEMAP_FILTER = (
     ':colorspace=bt709:color_primaries=bt709:color_trc=bt709'
     ':format=nv12'
 )
+# HDR-to-SDR GPU tone mapping via Intel QSV VPP (vpp_qsv).
+# Operates entirely within QSV surfaces; no CPU round-trip.  Handles DV/HDR10+
+# dynamic metadata (unlike tonemap_vaapi/VEBOX).  Explicit BT.709 color metadata
+# parameters are required — without them the encoder inherits the input's
+# BT.2020/PQ tags and the output is incorrectly flagged as HDR.
+_VPP_QSV_TONEMAP_FILTER = (
+    'vpp_qsv=tonemap=1'
+    ':color_primaries=bt709:color_transfer=bt709:color_matrix=bt709'
+)
 ENCODER_OPTIONS_BY_CODEC = {
     # VAAPI is listed first: it uses the iHD driver directly (same as Plex) and
     # works without the Intel oneVPL GPU runtime that QSV requires.  QSV remains
@@ -499,9 +508,9 @@ def _build_command_with_selection(
         # surfaces in their native bit depth. vpp_qsv reads the stream's HDR
         # metadata and performs tone mapping entirely within the QSV pipeline —
         # no VEBOX (tonemap_vaapi) involved, so DV/HDR10+ content is handled.
-        filters = ['hwupload=extra_hw_frames=64', 'vpp_qsv=tonemap=1']
+        filters = ['hwupload=extra_hw_frames=64', _VPP_QSV_TONEMAP_FILTER]
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv and apply_tonemap:
         # QSV encode with CPU tone mapping — used when vpp_qsv=tonemap=1 failed
@@ -510,13 +519,13 @@ def _build_command_with_selection(
         filters = list(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
         filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     else:
         filters = []
@@ -1029,22 +1038,22 @@ def _build_resume_command(
         # QSV GPU tone mapping via Intel VPP.  SW decode keeps native 10-bit HDR
         # frames; hwupload pushes them into QSV surfaces; vpp_qsv=tonemap=1 converts
         # to SDR fully on-GPU without involving VEBOX / tonemap_vaapi.
-        filters = ['hwupload=extra_hw_frames=64', 'vpp_qsv=tonemap=1']
+        filters = ['hwupload=extra_hw_frames=64', _VPP_QSV_TONEMAP_FILTER]
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv and apply_tonemap:
         # CPU tone-map fallback (vpp_qsv unsupported on this host).
         filters = list(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
         filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     else:
         filters = []
@@ -1384,6 +1393,13 @@ def optimize_video(
     ):
         _vaapi_tonemap_failed = True
         qsv_tonemap_encoder = _VAAPI_QSV_FALLBACK.get(selection.encoder)
+        # Guard against the circular retry: QSV-vpp fail → VAAPI-tonemap fail →
+        # QSV-vpp again (same failure).  When the VAAPI selection was itself a
+        # fallback from a QSV failure (fallback_reason == 'qsv_failed_vaapi_fallback'),
+        # QSV VPP was already the original encoder and already failed; retrying it
+        # achieves nothing.  Go straight to the sw-decode path instead.
+        if metrics.fallback_reason == 'qsv_failed_vaapi_fallback':
+            qsv_tonemap_encoder = None
         if qsv_tonemap_encoder and _encoder_available(qsv_tonemap_encoder):
             logger.warning(
                 '[%s] VAAPI tonemap_vaapi failed (rc=%s); retrying with %r + vpp_qsv=tonemap=1 '
