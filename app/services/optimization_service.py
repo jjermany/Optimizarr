@@ -56,14 +56,12 @@ _LIBPLACEBO_TONEMAP_FILTER = (
     ':format=nv12'
 )
 # HDR-to-SDR GPU tone mapping via Intel QSV VPP (vpp_qsv).
-# Operates entirely within QSV surfaces; no CPU round-trip.  Handles DV/HDR10+
-# dynamic metadata (unlike tonemap_vaapi/VEBOX).  Explicit BT.709 color metadata
-# parameters are required — without them the encoder inherits the input's
-# BT.2020/PQ tags and the output is incorrectly flagged as HDR.
-_VPP_QSV_TONEMAP_FILTER = (
-    'vpp_qsv=tonemap=1'
-    ':color_primaries=bt709:color_transfer=bt709:color_matrix=bt709'
-)
+# Operates entirely within QSV surfaces; no CPU round-trip.  Handles HDR10/HLG
+# dynamic metadata.  Note: color_primaries/color_transfer/color_matrix were
+# removed — these options were only added in newer FFmpeg builds and cause an
+# "Option not found" hard failure on older builds.  BT.709 output tagging is
+# applied as stream-level codec flags at the encode step instead.
+_VPP_QSV_TONEMAP_FILTER = 'vpp_qsv=tonemap=1'
 ENCODER_OPTIONS_BY_CODEC = {
     # VAAPI is listed first: it uses the iHD driver directly (same as Plex) and
     # works without the Intel oneVPL GPU runtime that QSV requires.  QSV remains
@@ -264,17 +262,54 @@ _LIBPLACEBO_AVAILABLE: bool | None = None
 
 
 def _libplacebo_available() -> bool:
-    """Return True if the FFmpeg build includes the libplacebo filter (Vulkan GPU tonemap)."""
+    """Return True if FFmpeg includes libplacebo AND a working Vulkan driver is present.
+
+    Checking only ``ffmpeg -filters`` is insufficient: the filter may be compiled in
+    but Vulkan can still fail at runtime with VK_ERROR_INCOMPATIBLE_DRIVER when no
+    Vulkan ICD is installed.  A minimal one-frame probe is run once on first call to
+    confirm the full stack (filter + Vulkan device) actually works.
+    """
     global _LIBPLACEBO_AVAILABLE
     if _LIBPLACEBO_AVAILABLE is None:
+        # Step 1: Is the filter compiled in?
+        filter_present = False
         try:
             result = subprocess.run(
                 ['ffmpeg', '-hide_banner', '-filters'],
                 capture_output=True, text=True, check=False,
             )
-            _LIBPLACEBO_AVAILABLE = 'libplacebo' in result.stdout
+            filter_present = 'libplacebo' in result.stdout
         except OSError:
+            pass
+
+        if filter_present:
+            # Step 2: Does Vulkan actually initialise?  Run a 2×2 one-frame probe.
+            # If Vulkan is missing or incompatible the return code will be non-zero
+            # and stderr will contain VK_ERROR_INCOMPATIBLE_DRIVER.
+            try:
+                vk_probe = subprocess.run(
+                    [
+                        'ffmpeg', '-hide_banner',
+                        '-f', 'lavfi', '-i', 'color=size=2x2:duration=0.04',
+                        '-vf', 'libplacebo=w=2:h=2:format=yuv420p',
+                        '-frames:v', '1',
+                        '-f', 'null', '-',
+                    ],
+                    capture_output=True, text=True, check=False, timeout=15,
+                )
+                _LIBPLACEBO_AVAILABLE = vk_probe.returncode == 0
+                if not _LIBPLACEBO_AVAILABLE:
+                    vk_errors = [
+                        l for l in vk_probe.stderr.splitlines()
+                        if 'vulkan' in l.lower() or 'VK_' in l
+                    ]
+                    if vk_errors:
+                        logger.debug('libplacebo Vulkan probe failed: %s', '; '.join(vk_errors[:3]))
+            except (OSError, subprocess.TimeoutExpired):
+                _LIBPLACEBO_AVAILABLE = False
+        else:
             _LIBPLACEBO_AVAILABLE = False
+
         logger.info(
             'libplacebo filter: %s',
             'available (GPU tonemap enabled for DV/HDR10+)' if _LIBPLACEBO_AVAILABLE
@@ -1248,6 +1283,32 @@ def optimize_video(
         metrics.used_fallback = True
         metrics.fallback_reason = f'no_{profile_codec}_hw_encoder'
     else:
+        # For DV/HDR10+ content the intended tone-mapping path is always VAAPI
+        # hw-decode + libplacebo (Vulkan) or CPU zscale — not vpp_qsv.  When the
+        # selected encoder is QSV, swap it to the VAAPI equivalent now so we skip
+        # the guaranteed-to-fail vpp_qsv attempt entirely.
+        _hdr_fmt_early = profile.get('source_hdr_format')
+        _apply_tonemap_early = bool(profile.get('source_is_hdr')) and bool(profile.get('tone_map_hdr'))
+        if (
+            selection.use_qsv and _apply_tonemap_early
+            and _hdr_fmt_early in ('dolby_vision', 'hdr10plus')
+        ):
+            _vaapi_enc_dv = _QSV_VAAPI_FALLBACK.get(selection.encoder)
+            if _vaapi_enc_dv and _encoder_available(_vaapi_enc_dv):
+                logger.info(
+                    '[%s] %s + tone mapping: switching %r → %r upfront '
+                    '(vpp_qsv unreliable for DV/HDR10+; using VAAPI hw-decode + %s instead)',
+                    job_tag, _hdr_fmt_early, selection.encoder, _vaapi_enc_dv,
+                    'libplacebo' if _libplacebo_available() else 'CPU zscale',
+                )
+                selection = EncoderSelection(
+                    codec=selection.codec,
+                    encoder=_vaapi_enc_dv,
+                    use_qsv=False,
+                    use_vaapi=True,
+                    hw_decode=True,
+                    is_explicit_preference=False,
+                )
         logger.info('[%s] Encoder selected: %r (codec=%r, hwaccel=%s)', job_tag, selection.encoder, selection.codec, 'qsv' if selection.use_qsv else 'vaapi' if selection.use_vaapi else 'none')
 
     if encoder_selected_callback:
