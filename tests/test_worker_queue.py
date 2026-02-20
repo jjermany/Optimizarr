@@ -69,6 +69,47 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
     assert terminal_updates[-1] == (job_id, 'failed')
 
 
+def test_worker_auto_retries_from_partial_then_fails_for_manual_retry(monkeypatch):
+    queue.resume_queue()
+    call_count = {'count': 0}
+
+    def always_fail(*args, **kwargs):
+        call_count['count'] += 1
+        return OptimizationMetrics(
+            input_path='/media/partial-test.mkv',
+            output_path=None,
+            status='failed',
+            skipped_reason='vaapi_encode_failed',
+        )
+
+    monkeypatch.setattr(queue, 'optimize_video', always_fail)
+    monkeypatch.setattr(queue, 'preflight_job', lambda *_: True)
+    monkeypatch.setattr(queue, '_probe_partial_duration', lambda _workspace: 1973.29)
+    failure_notifications = []
+    monkeypatch.setattr(queue, 'enqueue_job_failed', lambda job: failure_notifications.append(job.id))
+    monkeypatch.setattr(queue, 'handle_job_terminal_state', lambda *_: None)
+
+    with SessionLocal() as session:
+        session.query(Job).delete()
+        session.query(Settings).delete()
+        session.add(Settings(enable_optimizer=True, global_quiet_enabled=False))
+        session.commit()
+
+    with TestClient(app) as client:
+        settings_response = client.post('/settings', json={'enable_optimizer': True, 'global_quiet_enabled': False})
+        assert settings_response.status_code == 200
+
+        create_response = client.post('/jobs', json={'source_path': '/media/partial-test.mkv'})
+        assert create_response.status_code == 201
+        job_id = create_response.json()['id']
+
+        payload = _wait_for_terminal_status(client, job_id)
+
+    # Job should be 'failed' (visible in History with a Retry button), not 'paused'.
+    assert payload['status'] == 'failed'
+    assert payload['retry_count'] == 1
+    assert call_count['count'] == 2  # auto-retried once from partial before terminal failure
+    assert failure_notifications == [job_id]
 
 
 def test_worker_marks_job_failed_when_unhandled_exception_occurs(monkeypatch):

@@ -15,7 +15,7 @@ from app.core.database import SessionLocal
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
 from app.models.settings import QueueSortEnum, Settings
-from app.services.job_service import prune_job_history
+from app.services.job_service import _probe_partial_duration, prune_job_history
 from app.services.notification_service import enqueue_job_complete, enqueue_job_failed, enqueue_low_disk_space_alert, format_display_name, handle_job_terminal_state
 from app.services.plex_service import trigger_scan_after_job
 from app.services.optimization_service import (
@@ -348,7 +348,25 @@ def _process_job(job_id: int) -> None:
         job.fallback_reason = metrics.fallback_reason
         if metrics.status == 'failed':
             job.error_message = metrics.error_message or metrics.skipped_reason or 'optimization_failed'
-            if job.retry_count < 1:
+            workspace = Path(settings.workspace_root) / str(job.id)
+            partial_duration = _probe_partial_duration(workspace)
+            if partial_duration is not None and partial_duration > 0:
+                # Partial output found — save position so progress isn't lost.
+                job.resume_position_seconds = partial_duration
+                if job.retry_count < 1:
+                    # Auto-retry once, resuming from where it left off.
+                    job.retry_count += 1
+                    job.status = 'queued'
+                    job.eta_seconds = None
+                    job.completed_at = None
+                else:
+                    # Already auto-retried — mark failed with position saved.
+                    # 'failed' lands in History and shows the Retry button;
+                    # resume_position_seconds is preserved so retry picks up
+                    # exactly where encoding stopped.
+                    job.status = 'failed'
+                    _mark_finished(job)
+            elif job.retry_count < 1:
                 job.retry_count += 1
                 job.status = 'queued'
                 job.progress_percent = 0
