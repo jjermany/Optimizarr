@@ -482,10 +482,6 @@ export default function App() {
   const [historySort, setHistorySort] = useState(() => String(jobsUiPrefs.historySort ?? 'completed_desc'));
   const [jobsView, setJobsView] = useState(() => (jobsUiPrefs.jobsView === 'history' ? 'history' : 'queue'));
   const [nowHour, setNowHour] = useState(() => new Date().getHours());
-  // Abort dialog: when the user clicks Abort on a paused job that has partial
-  // progress we ask whether they want to remove it entirely or just clear the
-  // progress and keep it in the queue.
-  const [abortDialogJobId, setAbortDialogJobId] = useState(null);
 
   const wsRef = useRef();
   const reconnectAttemptsRef = useRef(0);
@@ -880,20 +876,8 @@ export default function App() {
       else if (action === 'resume') await resumeJob(jobId);
       else if (action === 'start') await startJob(jobId);
       else if (action === 'start_paused') { await resumeJob(jobId); await startJob(jobId); }
-      else if (action === 'abort') {
-        // For any active or paused job, ask the user whether they want
-        // to remove the job entirely or just stop it and re-queue it.
-        const job = jobs.find((j) => j.id === jobId);
-        const jobStatus = job?.status?.toLowerCase();
-        const needsDialog = job && (ACTIVE_STATUSES.has(jobStatus) || PAUSED_STATUSES.has(jobStatus));
-        if (needsDialog) {
-          setAbortDialogJobId(jobId);
-          return; // wait for dialog selection
-        }
-        await abortJob(jobId);
-      }
-      else if (action === 'abort_remove') { await abortJob(jobId); }
-      else if (action === 'abort_requeue') { await discardJobProgress(jobId); }
+      else if (action === 'abort') { await abortJob(jobId); }
+      else if (action === 'discard') { await discardJobProgress(jobId); }
       else if (action === 'remove') await deleteJob(jobId);
       await refreshAll();
     } catch (actionError) {
@@ -1204,50 +1188,6 @@ export default function App() {
             {message}
           </div>
         )}
-
-        {/* Abort dialog for paused jobs with partial progress */}
-        {abortDialogJobId !== null && (() => {
-          const dialogJob = jobs.find((j) => j.id === abortDialogJobId);
-          const { title: dialogTitle } = dialogJob ? extractTitleYear(dialogJob.source_path) : { title: 'this job' };
-          return (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-              <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
-                <h2 className="mb-2 text-lg font-semibold text-slate-100">Stop job?</h2>
-                <p className="mb-5 text-sm text-slate-400">
-                  Choose what to do with <span className="font-medium text-slate-200">{dialogTitle}</span>:
-                </p>
-                <div className="flex flex-col gap-3">
-                  <button
-                    className="w-full rounded-xl border border-slate-600 bg-slate-800 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-slate-700"
-                    onClick={async () => {
-                      setAbortDialogJobId(null);
-                      await handleJobAction('abort_requeue', abortDialogJobId);
-                    }}
-                  >
-                    <span className="font-semibold text-emerald-400">Clear progress &amp; re-queue</span>
-                    <span className="ml-2 text-slate-400">— keep the job in the queue; it will restart from the beginning on the next available worker.</span>
-                  </button>
-                  <button
-                    className="w-full rounded-xl border border-red-800/60 bg-red-950/40 px-4 py-3 text-left text-sm text-slate-200 transition hover:bg-red-950/70"
-                    onClick={async () => {
-                      setAbortDialogJobId(null);
-                      await handleJobAction('abort_remove', abortDialogJobId);
-                    }}
-                  >
-                    <span className="font-semibold text-red-400">Remove from queue</span>
-                    <span className="ml-2 text-slate-400">— abort and mark as failed; the next scan will pick it up again.</span>
-                  </button>
-                  <button
-                    className="mt-1 w-full rounded-xl border border-slate-700 px-4 py-2 text-sm text-slate-400 transition hover:text-slate-200"
-                    onClick={() => setAbortDialogJobId(null)}
-                  >
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })()}
 
         {/* Toast stack */}
         <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col gap-2">
@@ -1828,6 +1768,9 @@ export default function App() {
                                   {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
                                   {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && <Btn size="sm" variant="success" onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>Start</Btn>}
                                   {job.status === 'interrupted' && <Btn size="sm" variant="primary" onClick={() => handleJobAction('requeue', job.id)}>Requeue</Btn>}
+                                  {(ACTIVE_STATUSES.has(job.status) || (job.status === 'paused' && progress > 0)) && (
+                                    <Btn size="sm" variant="secondary" onClick={() => handleJobAction('discard', job.id)}>Cancel</Btn>
+                                  )}
                                   {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
                                     <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>Abort</Btn>
                                   )}
