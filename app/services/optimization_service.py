@@ -350,6 +350,7 @@ def _select_encoder(profile: dict[str, Any]) -> EncoderSelection | None:
                 encoder=preferred_encoder,
                 use_qsv=preferred_encoder.endswith('_qsv'),
                 use_vaapi=preferred_encoder.endswith('_vaapi'),
+                hw_decode=preferred_encoder.endswith('_vaapi'),
                 is_explicit_preference=True,
             )
         logger.warning('Preferred encoder %r is not a valid candidate for codec %r; falling back to auto', preferred_encoder, codec)
