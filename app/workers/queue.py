@@ -351,9 +351,17 @@ def _process_job(job_id: int) -> None:
             workspace = Path(settings.workspace_root) / str(job.id)
             partial_duration = _probe_partial_duration(workspace)
             if partial_duration is not None and partial_duration > 0:
-                # Partial output found — pause with saved position so progress isn't lost.
+                # Partial output found — save position so progress isn't lost.
                 job.resume_position_seconds = partial_duration
-                job.status = 'paused'
+                if job.retry_count < 1:
+                    # Auto-retry once, resuming from where it left off.
+                    job.retry_count += 1
+                    job.status = 'queued'
+                    job.eta_seconds = None
+                    job.completed_at = None
+                else:
+                    # Already auto-retried — pause for manual retry.
+                    job.status = 'paused'
             elif job.retry_count < 1:
                 job.retry_count += 1
                 job.status = 'queued'

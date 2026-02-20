@@ -69,10 +69,12 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
     assert terminal_updates[-1] == (job_id, 'failed')
 
 
-def test_worker_pauses_job_with_saved_position_when_partial_output_exists(monkeypatch):
+def test_worker_auto_retries_from_partial_then_pauses_for_manual_retry(monkeypatch):
     queue.resume_queue()
+    call_count = {'count': 0}
 
     def always_fail(*args, **kwargs):
+        call_count['count'] += 1
         return OptimizationMetrics(
             input_path='/media/partial-test.mkv',
             output_path=None,
@@ -111,6 +113,7 @@ def test_worker_pauses_job_with_saved_position_when_partial_output_exists(monkey
 
     assert payload['status'] == 'paused'
     assert payload['resume_position_seconds'] == 1973.29
+    assert call_count['count'] == 2  # auto-retried once before pausing
     assert failure_notifications == []
 
 
