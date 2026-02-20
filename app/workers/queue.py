@@ -543,21 +543,24 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
 
     def sort_key(row: tuple[Job, Library | None, LibraryProfile | None]) -> tuple:
         job = row[0]
-        resume_priority = -float(job.resume_position_seconds or 0)
-        progress_priority = -int(job.progress_percent or 0)
+        # Jobs with a saved resume position are always prioritised so they can
+        # continue from where they left off.  progress_percent is intentionally
+        # excluded here: it is a display metric and should not override the
+        # user-selected sort order for ordinary queued items.
+        has_resume = 0 if (job.resume_position_seconds or 0) > 0 else 1  # 0 = higher priority
 
         if sort_option == QueueSortEnum.newest.value:
-            return (resume_priority, progress_priority, -(job.created_at.timestamp() if job.created_at else 0), -job.id)
+            return (has_resume, -(job.created_at.timestamp() if job.created_at else 0), -job.id)
         if sort_option == QueueSortEnum.oldest.value:
-            return (resume_priority, progress_priority, job.created_at.timestamp() if job.created_at else 0, job.id)
+            return (has_resume, job.created_at.timestamp() if job.created_at else 0, job.id)
         if sort_option == QueueSortEnum.year_newest.value:
             year = _extract_year_from_path(job.source_path)
-            return (resume_priority, progress_priority, -(year if year is not None else 0), -job.id)
+            return (has_resume, -(year if year is not None else 0), -job.id)
         if sort_option == QueueSortEnum.year_oldest.value:
             year = _extract_year_from_path(job.source_path)
-            return (resume_priority, progress_priority, (year if year is not None else 9999), job.id)
+            return (has_resume, (year if year is not None else 9999), job.id)
 
-        return (resume_priority, progress_priority, job.created_at.timestamp() if job.created_at else 0, job.id)
+        return (has_resume, job.created_at.timestamp() if job.created_at else 0, job.id)
 
     queued.sort(key=sort_key)
     for job, library, profile in queued:

@@ -32,6 +32,7 @@ from app.services.job_service import (
     cleanup_optimized_outputs,
     create_job,
     delete_job,
+    discard_progress_and_requeue,
     get_job,
     list_jobs,
     pause_job,
@@ -997,6 +998,16 @@ def abort_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     broker.publish_system_event('job_aborted', job_id=response.id)
     return response
 
+
+@router.post('/jobs/{job_id}/discard-progress', response_model=JobResponse)
+def discard_progress_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
+    """Wipe partial progress for a paused job and return it to the queue from the beginning."""
+    job = discard_progress_and_requeue(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Job not found')
+    response = JobResponse.from_orm_job(job)
+    broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    return response
 
 
 @router.post('/recovery/run', response_model=RecoveryResponse)
