@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-from threading import Lock
+from threading import Event, Lock, Thread
 import time
 from typing import Any, Callable
 
@@ -602,6 +602,60 @@ def _has_vaapi_buffer_error(output_lines: list[str]) -> bool:
     return any(_VAAPI_BUFFER_ERROR_PATTERN.search(line) for line in output_lines)
 
 
+# How long FFmpeg may go without advancing its output position before it is
+# considered hung and terminated.  5 minutes is generous enough to tolerate
+# slow hardware-init or brief I/O stalls while still catching a truly frozen
+# process well before the user notices hours of silence.
+_FFMPEG_STALL_TIMEOUT_SECS = 300
+# How often the watchdog checks for stalls.  Keep well below
+# _FFMPEG_STALL_TIMEOUT_SECS so detection is reasonably prompt.
+_FFMPEG_WATCHDOG_POLL_SECS = 30
+
+
+def _run_ffmpeg_watchdog(
+    job_id: int,
+    process: subprocess.Popen,
+    job_tag: str,
+    stop_flag: Event,
+) -> None:
+    """Background thread that kills FFmpeg if it stops advancing its output position.
+
+    The main readline loop blocks indefinitely on a hung FFmpeg process.  This
+    watchdog polls ``_ACTIVE_FFMPEG_POSITIONS`` every 30 seconds; if the encode
+    position has not moved for ``_FFMPEG_STALL_TIMEOUT_SECS`` it terminates the
+    process, which closes the stdout pipe and unblocks the stalled loop.
+    """
+    last_position: float = 0.0
+    stall_start: float | None = None
+
+    while not stop_flag.wait(timeout=_FFMPEG_WATCHDOG_POLL_SECS):
+        if process.poll() is not None:
+            # Process already finished naturally.
+            break
+
+        with _ACTIVE_FFMPEG_LOCK:
+            current_position = _ACTIVE_FFMPEG_POSITIONS.get(job_id, 0.0)
+
+        if current_position > last_position:
+            last_position = current_position
+            stall_start = None
+        else:
+            if stall_start is None:
+                stall_start = time.monotonic()
+            stalled_for = time.monotonic() - stall_start
+            if stalled_for >= _FFMPEG_STALL_TIMEOUT_SECS:
+                logger.error(
+                    '[%s] FFmpeg stalled (no encode progress for %.0fs), terminating process',
+                    job_tag,
+                    stalled_for,
+                )
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+                break
+
+
 def _run_ffmpeg(
     job_id: int | None,
     ffmpeg_command: list[str],
@@ -623,10 +677,18 @@ def _run_ffmpeg(
         logger.error('[%s] Failed to launch FFmpeg: %s', job_tag, exc)
         return None, 0.0, None, False, []
 
+    _watchdog_stop: Event | None = None
     if job_id is not None:
         with _ACTIVE_FFMPEG_LOCK:
             _ACTIVE_FFMPEG_PROCESSES[job_id] = process
             _ACTIVE_FFMPEG_POSITIONS[job_id] = 0.0
+        _watchdog_stop = Event()
+        Thread(
+            target=_run_ffmpeg_watchdog,
+            args=(job_id, process, job_tag, _watchdog_stop),
+            daemon=True,
+            name=f'ffmpeg-watchdog-{job_id}',
+        ).start()
 
     current_fps: float | None = None
     processed_seconds = 0.0
@@ -677,6 +739,9 @@ def _run_ffmpeg(
                 eta_seconds = int(remaining / processing_rate) if processing_rate > 0 else int(remaining)
 
             progress_callback({'progress_percent': progress_percent, 'fps': current_fps, 'eta_seconds': eta_seconds})
+
+    if _watchdog_stop is not None:
+        _watchdog_stop.set()
 
     process.wait()
     if job_id is not None:

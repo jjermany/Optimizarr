@@ -1,4 +1,6 @@
 from pathlib import Path
+from threading import Event
+from unittest.mock import MagicMock
 
 from app.services import optimization_service
 
@@ -15,6 +17,12 @@ class DummyPopen:
 
     def wait(self):
         return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        pass
 
 
 def test_optimize_video_skips_when_output_exists(tmp_path):
@@ -943,3 +951,113 @@ def test_vaapi_tonemap_failure_falls_back_to_sw_decode_when_qsv_unavailable(monk
     # CPU zscale chain is present in the filter for sw-decode + tone mapping.
     second_vf = second_cmd[second_cmd.index('-vf') + 1]
     assert 'zscale' in second_vf
+
+
+# ---------------------------------------------------------------------------
+# Watchdog tests
+# ---------------------------------------------------------------------------
+
+def test_watchdog_terminates_stalled_process(monkeypatch):
+    """Watchdog kills FFmpeg when encode position stops advancing."""
+    job_id = 88001
+    process = MagicMock()
+    process.poll.return_value = None  # Pretend process is still running.
+    stop_flag = Event()
+
+    # Speed up the watchdog: tiny poll interval and stall timeout so the test
+    # doesn't have to wait 30+ seconds.
+    monkeypatch.setattr(optimization_service, '_FFMPEG_WATCHDOG_POLL_SECS', 0.05)
+    monkeypatch.setattr(optimization_service, '_FFMPEG_STALL_TIMEOUT_SECS', 0.05)
+
+    with optimization_service._ACTIVE_FFMPEG_LOCK:
+        optimization_service._ACTIVE_FFMPEG_POSITIONS[job_id] = 100.0
+
+    try:
+        optimization_service._run_ffmpeg_watchdog(job_id, process, 'test-stall', stop_flag)
+    finally:
+        with optimization_service._ACTIVE_FFMPEG_LOCK:
+            optimization_service._ACTIVE_FFMPEG_POSITIONS.pop(job_id, None)
+
+    process.terminate.assert_called_once()
+
+
+def test_watchdog_does_not_kill_process_that_finished_naturally(monkeypatch):
+    """Watchdog exits cleanly when process already exited (poll returns non-None)."""
+    job_id = 88002
+    process = MagicMock()
+    process.poll.return_value = 0  # Process already finished.
+    stop_flag = Event()
+
+    monkeypatch.setattr(optimization_service, '_FFMPEG_WATCHDOG_POLL_SECS', 0.05)
+    monkeypatch.setattr(optimization_service, '_FFMPEG_STALL_TIMEOUT_SECS', 0.05)
+
+    with optimization_service._ACTIVE_FFMPEG_LOCK:
+        optimization_service._ACTIVE_FFMPEG_POSITIONS[job_id] = 50.0
+
+    try:
+        optimization_service._run_ffmpeg_watchdog(job_id, process, 'test-finished', stop_flag)
+    finally:
+        with optimization_service._ACTIVE_FFMPEG_LOCK:
+            optimization_service._ACTIVE_FFMPEG_POSITIONS.pop(job_id, None)
+
+    process.terminate.assert_not_called()
+
+
+def test_watchdog_exits_immediately_when_stop_flag_set():
+    """Watchdog returns without doing anything when stop_flag is pre-set."""
+    job_id = 88003
+    process = MagicMock()
+    process.poll.return_value = None
+    stop_flag = Event()
+    stop_flag.set()  # Already signalled to stop before the loop starts.
+
+    with optimization_service._ACTIVE_FFMPEG_LOCK:
+        optimization_service._ACTIVE_FFMPEG_POSITIONS[job_id] = 200.0
+
+    try:
+        optimization_service._run_ffmpeg_watchdog(job_id, process, 'test-stop', stop_flag)
+    finally:
+        with optimization_service._ACTIVE_FFMPEG_LOCK:
+            optimization_service._ACTIVE_FFMPEG_POSITIONS.pop(job_id, None)
+
+    process.terminate.assert_not_called()
+
+
+def test_watchdog_does_not_kill_advancing_process(monkeypatch):
+    """Watchdog leaves FFmpeg alone while encode position keeps advancing."""
+    job_id = 88004
+    process = MagicMock()
+    process.poll.return_value = None
+    stop_flag = Event()
+
+    monkeypatch.setattr(optimization_service, '_FFMPEG_WATCHDOG_POLL_SECS', 0.05)
+    # Stall timeout larger than a single poll so two polls are needed to trigger.
+    monkeypatch.setattr(optimization_service, '_FFMPEG_STALL_TIMEOUT_SECS', 10.0)
+
+    with optimization_service._ACTIVE_FFMPEG_LOCK:
+        optimization_service._ACTIVE_FFMPEG_POSITIONS[job_id] = 0.0
+
+    import threading
+
+    def advance_and_stop():
+        # Advance position twice then signal stop — all within one poll window.
+        import time
+        time.sleep(0.01)
+        with optimization_service._ACTIVE_FFMPEG_LOCK:
+            optimization_service._ACTIVE_FFMPEG_POSITIONS[job_id] = 10.0
+        time.sleep(0.01)
+        with optimization_service._ACTIVE_FFMPEG_LOCK:
+            optimization_service._ACTIVE_FFMPEG_POSITIONS[job_id] = 20.0
+        stop_flag.set()
+
+    t = threading.Thread(target=advance_and_stop, daemon=True)
+    t.start()
+
+    try:
+        optimization_service._run_ffmpeg_watchdog(job_id, process, 'test-advance', stop_flag)
+    finally:
+        with optimization_service._ACTIVE_FFMPEG_LOCK:
+            optimization_service._ACTIVE_FFMPEG_POSITIONS.pop(job_id, None)
+        t.join(timeout=2)
+
+    process.terminate.assert_not_called()
