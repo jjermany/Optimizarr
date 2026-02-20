@@ -55,6 +55,15 @@ _LIBPLACEBO_TONEMAP_FILTER = (
     ':colorspace=bt709:color_primaries=bt709:color_trc=bt709'
     ':format=nv12'
 )
+# HDR-to-SDR GPU tone mapping via Intel QSV VPP (vpp_qsv).
+# Operates entirely within QSV surfaces; no CPU round-trip.  Handles DV/HDR10+
+# dynamic metadata (unlike tonemap_vaapi/VEBOX).  Explicit BT.709 color metadata
+# parameters are required — without them the encoder inherits the input's
+# BT.2020/PQ tags and the output is incorrectly flagged as HDR.
+_VPP_QSV_TONEMAP_FILTER = (
+    'vpp_qsv=tonemap=1'
+    ':color_primaries=bt709:color_transfer=bt709:color_matrix=bt709'
+)
 ENCODER_OPTIONS_BY_CODEC = {
     # VAAPI is listed first: it uses the iHD driver directly (same as Plex) and
     # works without the Intel oneVPL GPU runtime that QSV requires.  QSV remains
@@ -499,9 +508,9 @@ def _build_command_with_selection(
         # surfaces in their native bit depth. vpp_qsv reads the stream's HDR
         # metadata and performs tone mapping entirely within the QSV pipeline —
         # no VEBOX (tonemap_vaapi) involved, so DV/HDR10+ content is handled.
-        filters = ['hwupload=extra_hw_frames=64', 'vpp_qsv=tonemap=1']
+        filters = ['hwupload=extra_hw_frames=64', _VPP_QSV_TONEMAP_FILTER]
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv and apply_tonemap:
         # QSV encode with CPU tone mapping — used when vpp_qsv=tonemap=1 failed
@@ -510,13 +519,13 @@ def _build_command_with_selection(
         filters = list(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
         filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     else:
         filters = []
@@ -726,6 +735,71 @@ def _run_ffprobe_stream_json(input_path: str) -> dict[str, Any] | None:
     return payload
 
 
+def _probe_first_frame_hdr_format(input_path: str) -> str | None:
+    """Probe the first video frame for DV or HDR10+ side data.
+
+    DV Profile 8 in MKV containers embeds the Dolby Vision RPU inside the HEVC
+    bitstream rather than as a container-level side-data record.  As a result,
+    ffprobe's stream-level side_data_list never sees a DOVI Configuration Record
+    for these files, and stream-level detection returns 'hdr10' instead of
+    'dolby_vision' or 'hdr10plus'.  Frame-level side data (emitted once the
+    demuxer has read at least one packet) exposes the RPU/SMPTE 2094-40 records
+    that the stream-level probe misses.
+
+    This function reads only the first video frame (-read_intervals "%+#1") so the
+    overhead is minimal — typically a single packet read.
+
+    Returns 'dolby_vision', 'hdr10plus', or None (inconclusive; caller keeps its
+    own detection result).
+    """
+    command = [
+        'ffprobe',
+        '-v', 'error',
+        '-select_streams', 'v:0',
+        '-read_intervals', '%+#1',
+        '-show_frames',
+        '-of', 'json',
+        input_path,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    _dv_frame_markers = {'dovi', 'dolby vision', 'dovi metadata', 'dovi configuration'}
+    has_dv = False
+    has_hdr10plus = False
+
+    for frame in payload.get('frames', []):
+        if not isinstance(frame, dict):
+            continue
+        for side_data in frame.get('side_data_list', []):
+            if not isinstance(side_data, dict):
+                continue
+            sdt = str(side_data.get('side_data_type', '')).lower()
+            if any(m in sdt for m in _dv_frame_markers):
+                has_dv = True
+            if 'smpte2094-40' in sdt or 'hdr10plus' in sdt or 'hdr10+' in sdt:
+                has_hdr10plus = True
+
+    if has_dv:
+        return 'dolby_vision'
+    if has_hdr10plus:
+        return 'hdr10plus'
+    return None
+
+
 def is_hdr_video(input_path: str) -> bool:
     # Plex surfaces HDR flags from stream metadata (transfer/primaries/colorspace and Dolby Vision side-data).
     hdr_transfer_markers = {'smpte2084', 'arib-std-b67'}
@@ -834,16 +908,22 @@ def _detect_hdr_format(input_path: str) -> str | None:
             # 3. HLG
             if transfer == 'arib-std-b67':
                 return 'hlg'
-            # 4. HDR10 (PQ without DV/HDR10+ side data)
+            # 4. HDR10 (PQ) — but DV Profile 8 in MKV also uses smpte2084 transfer
+            # without exposing a DOVI Configuration Record at the stream level.  The
+            # DV RPU (and HDR10+ SMPTE 2094-40 records) only appear as frame-level
+            # side data once the demuxer reads a packet.  Do a secondary frame probe
+            # before concluding this is plain HDR10.
             if transfer == 'smpte2084':
-                return 'hdr10'
+                frame_fmt = _probe_first_frame_hdr_format(input_path)
+                return frame_fmt if frame_fmt else 'hdr10'
 
     # Scalar fallback for minimal ffprobe output.
     transfer = (_run_ffprobe_value(input_path, 'stream=color_transfer') or '').strip().lower()
     if transfer == 'arib-std-b67':
         return 'hlg'
     if transfer == 'smpte2084':
-        return 'hdr10'
+        frame_fmt = _probe_first_frame_hdr_format(input_path)
+        return frame_fmt if frame_fmt else 'hdr10'
 
     return None
 
@@ -958,22 +1038,22 @@ def _build_resume_command(
         # QSV GPU tone mapping via Intel VPP.  SW decode keeps native 10-bit HDR
         # frames; hwupload pushes them into QSV surfaces; vpp_qsv=tonemap=1 converts
         # to SDR fully on-GPU without involving VEBOX / tonemap_vaapi.
-        filters = ['hwupload=extra_hw_frames=64', 'vpp_qsv=tonemap=1']
+        filters = ['hwupload=extra_hw_frames=64', _VPP_QSV_TONEMAP_FILTER]
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv and apply_tonemap:
         # CPU tone-map fallback (vpp_qsv unsupported on this host).
         filters = list(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
         filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(f'scale_qsv=-2:{target_height}')
         command.extend(['-vf', ','.join(filters)])
     else:
         filters = []
@@ -1313,6 +1393,13 @@ def optimize_video(
     ):
         _vaapi_tonemap_failed = True
         qsv_tonemap_encoder = _VAAPI_QSV_FALLBACK.get(selection.encoder)
+        # Guard against the circular retry: QSV-vpp fail → VAAPI-tonemap fail →
+        # QSV-vpp again (same failure).  When the VAAPI selection was itself a
+        # fallback from a QSV failure (fallback_reason == 'qsv_failed_vaapi_fallback'),
+        # QSV VPP was already the original encoder and already failed; retrying it
+        # achieves nothing.  Go straight to the sw-decode path instead.
+        if metrics.fallback_reason == 'qsv_failed_vaapi_fallback':
+            qsv_tonemap_encoder = None
         if qsv_tonemap_encoder and _encoder_available(qsv_tonemap_encoder):
             logger.warning(
                 '[%s] VAAPI tonemap_vaapi failed (rc=%s); retrying with %r + vpp_qsv=tonemap=1 '
@@ -1376,6 +1463,8 @@ def optimize_video(
                 '[%s] %s (rc=%s); retrying with software decode + hwupload',
                 job_tag, _sw_reason, return_code,
             )
+            if encoder_selected_callback:
+                encoder_selected_callback(_vaapi_sw_encoder, True)
             if not can_resume:
                 try:
                     _ensure_clean_workspace(workspace_path)
