@@ -522,12 +522,11 @@ def _build_command_with_selection(
         if hdr_format in ('dolby_vision', 'hdr10plus'):
             # DV/HDR10+ carry dynamic/complex metadata that tonemap_vaapi (VEBOX)
             # handles unreliably.  Keep the fast VAAPI HW decoder, then hwdownload
-            # to CPU.  Prefer libplacebo (Vulkan GPU tonemap — fast) when the FFmpeg
-            # build includes it; fall back to the CPU zscale chain otherwise.
-            if _libplacebo_available():
-                filters = ['hwdownload,format=p010le', _LIBPLACEBO_TONEMAP_FILTER, 'hwupload']
-            else:
-                filters = ['hwdownload,format=p010le'] + list(_HDR_TONEMAP_FILTERS) + ['format=nv12', 'hwupload']
+            # to CPU for zscale tone mapping.  libplacebo (Vulkan) is intentionally
+            # avoided here: running Vulkan shaders and VAAPI VDEnc simultaneously
+            # causes GPU resource contention that makes encoding significantly slower
+            # than letting the CPU handle tone mapping while the GPU encodes freely.
+            filters = ['hwdownload,format=p010le'] + list(_HDR_TONEMAP_FILTERS) + ['format=nv12', 'hwupload']
         else:
             # HDR10/HLG: static metadata only — VEBOX (tonemap_vaapi) handles it well.
             # Full GPU pipeline: hardware decode → tonemap_vaapi → VAAPI encode.
@@ -1089,12 +1088,10 @@ def _build_resume_command(
     elif selection.use_vaapi and selection.hw_decode and apply_tonemap:
         hdr_format = profile.get('source_hdr_format')
         if hdr_format in ('dolby_vision', 'hdr10plus'):
-            # DV/HDR10+: keep VAAPI HW decode, download to CPU, then GPU tonemap via
-            # libplacebo (Vulkan) if available; CPU zscale otherwise.
-            if _libplacebo_available():
-                filters = ['hwdownload,format=p010le', _LIBPLACEBO_TONEMAP_FILTER, 'hwupload']
-            else:
-                filters = ['hwdownload,format=p010le'] + list(_HDR_TONEMAP_FILTERS) + ['format=nv12', 'hwupload']
+            # DV/HDR10+: keep VAAPI HW decode, download to CPU for zscale tone mapping.
+            # libplacebo (Vulkan) is intentionally avoided — Vulkan shaders and VAAPI
+            # VDEnc competing for the same GPU causes significant slowdowns.
+            filters = ['hwdownload,format=p010le'] + list(_HDR_TONEMAP_FILTERS) + ['format=nv12', 'hwupload']
         else:
             # HDR10/HLG: static metadata — VEBOX handles it reliably.
             filters = [_VAAPI_TONEMAP_FILTER]
@@ -1289,14 +1286,10 @@ def optimize_video(
             job_tag, profile['source_hdr_format'] or 'hdr',
         )
         if profile['source_hdr_format'] in ('dolby_vision', 'hdr10plus'):
-            _tonemap_method = (
-                'libplacebo (Vulkan/GPU)' if _libplacebo_available()
-                else 'CPU zscale (libplacebo unavailable)'
-            )
             logger.info(
-                '[%s] %s detected — using VAAPI hw-decode + %s for tone mapping '
+                '[%s] %s detected — using VAAPI hw-decode + CPU zscale for tone mapping '
                 '(tonemap_vaapi/VEBOX unreliable for DV/HDR10+; skipping that path entirely)',
-                job_tag, profile['source_hdr_format'], _tonemap_method,
+                job_tag, profile['source_hdr_format'],
             )
     elif profile['source_is_hdr']:
         logger.info(
@@ -1337,9 +1330,8 @@ def optimize_video(
             if _vaapi_enc_dv and _encoder_available(_vaapi_enc_dv):
                 logger.info(
                     '[%s] %s + tone mapping: switching %r → %r upfront '
-                    '(vpp_qsv unreliable for DV/HDR10+; using VAAPI hw-decode + %s instead)',
+                    '(vpp_qsv unreliable for DV/HDR10+; using VAAPI hw-decode + CPU zscale instead)',
                     job_tag, _hdr_fmt_early, selection.encoder, _vaapi_enc_dv,
-                    'libplacebo' if _libplacebo_available() else 'CPU zscale',
                 )
                 selection = EncoderSelection(
                     codec=selection.codec,
