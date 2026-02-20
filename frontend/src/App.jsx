@@ -881,14 +881,11 @@ export default function App() {
       else if (action === 'start') await startJob(jobId);
       else if (action === 'start_paused') { await resumeJob(jobId); await startJob(jobId); }
       else if (action === 'abort') {
-        // For active or paused-with-progress jobs, ask the user whether they want
+        // For any active or paused job, ask the user whether they want
         // to remove the job entirely or just stop it and re-queue it.
         const job = jobs.find((j) => j.id === jobId);
         const jobStatus = job?.status?.toLowerCase();
-        const needsDialog = job && (
-          ACTIVE_STATUSES.has(jobStatus)
-          || (PAUSED_STATUSES.has(jobStatus) && (job.progress_percent > 0 || job.resume_position_seconds > 0))
-        );
+        const needsDialog = job && (ACTIVE_STATUSES.has(jobStatus) || PAUSED_STATUSES.has(jobStatus));
         if (needsDialog) {
           setAbortDialogJobId(jobId);
           return; // wait for dialog selection
