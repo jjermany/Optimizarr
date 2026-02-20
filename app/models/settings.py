@@ -52,3 +52,4 @@ class Settings(Base):
     min_free_gb: Mapped[int] = mapped_column(Integer, default=25, nullable=False)
     requeue_interrupted_jobs: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     cleanup_workspaces_on_startup: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    queue_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

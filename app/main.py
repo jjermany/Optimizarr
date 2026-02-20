@@ -15,7 +15,8 @@ from app.services.notification_service import start_notification_worker, stop_no
 from app.services.optimization_service import refresh_encoder_cache
 from app.services.recovery_service import run_startup_recovery, run_workspace_cleanup
 from app.services.realtime_service import broker
-from app.workers.queue import start_worker, stop_worker
+from app.models.settings import Settings
+from app.workers.queue import pause_queue, start_worker, stop_worker
 
 logger = logging.getLogger(__name__)
 CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
@@ -48,8 +49,12 @@ async def lifespan(_: FastAPI):
     logger.info('Starting Optimizarr application')
     init_db()
     with SessionLocal() as db:
+        persisted_settings = db.query(Settings).first()
+        initial_queue_paused = bool(persisted_settings and persisted_settings.queue_paused)
         summary = run_startup_recovery(db)
         cleanup_summary = run_workspace_cleanup(db)
+    if initial_queue_paused:
+        pause_queue(reason='manual')
     refresh_encoder_cache()
     broker.start()
     for job_id in summary.get('interrupted_job_ids', []):

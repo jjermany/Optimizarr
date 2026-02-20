@@ -575,11 +575,27 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
     return None
 
 
+def _persist_queue_paused(paused: bool) -> None:
+    try:
+        db = SessionLocal()
+        try:
+            settings = db.query(Settings).first()
+            if settings is not None:
+                settings.queue_paused = paused
+                db.commit()
+        finally:
+            db.close()
+    except Exception:
+        logger.warning('Failed to persist queue pause state', exc_info=True)
+
+
 def pause_queue(reason: str = 'manual') -> None:
     global _queue_paused
     if _queue_paused:
         return
     _queue_paused = True
+    if reason == 'manual':
+        _persist_queue_paused(True)
     broker.publish_system_event('queue_paused', reason=reason)
 
 
@@ -588,6 +604,8 @@ def resume_queue(reason: str = 'manual') -> None:
     if not _queue_paused:
         return
     _queue_paused = False
+    if reason == 'manual':
+        _persist_queue_paused(False)
     broker.publish_system_event('queue_resumed', reason=reason)
 
 
