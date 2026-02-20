@@ -47,8 +47,8 @@ const FALLBACK_POLL_MS = 10000;
 const METRICS_POLL_MS = 10000;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
-const JOBS_PAGE_SIZE = 50;
-const HISTORY_PAGE_SIZE = 50;
+const JOBS_PAGE_SIZE = 25;
+const HISTORY_PAGE_SIZE = 25;
 const JOBS_UI_PREFS_KEY = 'optimizarr.jobsUiPrefs.v1';
 
 const PAGE_KEYS = {
@@ -867,17 +867,16 @@ export default function App() {
 
   async function handleJobAction(action, jobId) {
     try {
-      if (action === 'cancel') await cancelJob(jobId);
-      else if (action === 'requeue') await requeueJob(jobId);
-      else if (action === 'retry') await retryJob(jobId);
-      else if (action === 'pause') await pauseJob(jobId);
-      else if (action === 'resume') await resumeJob(jobId);
-      else if (action === 'start') await startJob(jobId);
-      else if (action === 'start_paused') { await resumeJob(jobId); await startJob(jobId); }
-      else if (action === 'abort') { await abortJob(jobId); }
-      else if (action === 'discard') { await discardJobProgress(jobId); }
-      else if (action === 'remove') await deleteJob(jobId);
-      await refreshAll();
+      if (action === 'cancel') mergeJobUpdate(await cancelJob(jobId));
+      else if (action === 'requeue') mergeJobUpdate(await requeueJob(jobId));
+      else if (action === 'retry') mergeJobUpdate(await retryJob(jobId));
+      else if (action === 'pause') mergeJobUpdate(await pauseJob(jobId));
+      else if (action === 'resume') mergeJobUpdate(await resumeJob(jobId));
+      else if (action === 'start') mergeJobUpdate(await startJob(jobId));
+      else if (action === 'start_paused') { await resumeJob(jobId); mergeJobUpdate(await startJob(jobId)); }
+      else if (action === 'abort') mergeJobUpdate(await abortJob(jobId));
+      else if (action === 'discard') mergeJobUpdate(await discardJobProgress(jobId));
+      else if (action === 'remove') { await deleteJob(jobId); setJobs((prev) => prev.filter((j) => j.id !== jobId)); }
     } catch (actionError) {
       pushToast(actionError.message || 'Job action failed.', 'error');
     }
