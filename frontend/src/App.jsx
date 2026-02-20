@@ -545,15 +545,7 @@ export default function App() {
   }
 
   const filteredActiveJobs = useMemo(
-    () => sortedActiveJobs.filter((job) => {
-      const status = job.status?.toLowerCase();
-      // Always show actively running jobs.
-      if (ACTIVE_STATUSES.has(status)) return true;
-      // Always show paused jobs that have progress so the user can always find
-      // them near the top, regardless of any active search filter.
-      if (PAUSED_STATUSES.has(status) && (job.progress_percent > 0 || job.resume_position_seconds > 0)) return true;
-      return jobMatchesSearch(job, queueSearch);
-    }),
+    () => sortedActiveJobs.filter((job) => jobMatchesSearch(job, queueSearch)),
     [sortedActiveJobs, queueSearch, libraryById],
   );
 
