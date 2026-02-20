@@ -253,6 +253,37 @@ def abort_job(db: Session, job_id: int) -> Job | None:
     return job
 
 
+def discard_progress_and_requeue(db: Session, job_id: int) -> Job | None:
+    """Stop the job (if running), wipe its partial workspace and progress
+    data, then return it to the queue so it restarts from the beginning.
+
+    This is offered as an alternative to a full abort when the job is paused
+    and has partial progress – the user can choose to keep the item in the
+    queue rather than removing it entirely.
+    """
+    job = get_job(db, job_id)
+    if not job:
+        return None
+
+    settings = _get_settings(db)
+    optimization_service.stop_active_ffmpeg(job_id)
+    optimization_service.delete_workspace(settings, job_id)
+
+    job.status = 'queued'
+    job.progress_percent = 0
+    job.resume_position_seconds = None
+    job.fps = None
+    job.eta_seconds = None
+    job.output_path = None
+    job.error_message = None
+    job.cancel_requested = False
+    job.completed_at = None
+    job.retry_count = 0
+    db.commit()
+    db.refresh(job)
+    return job
+
+
 def prune_job_history(db: Session, retention_days: int) -> int:
     if retention_days <= 0:
         return 0

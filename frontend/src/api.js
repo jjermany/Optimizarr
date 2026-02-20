@@ -115,6 +115,10 @@ export function abortJob(jobId) {
   return request(`/jobs/${jobId}/abort`, { method: 'POST' });
 }
 
+export function discardJobProgress(jobId) {
+  return request(`/jobs/${jobId}/discard-progress`, { method: 'POST' });
+}
+
 
 export function deleteJob(jobId) {
   return request(`/jobs/${jobId}`, { method: 'DELETE' });
