@@ -422,26 +422,27 @@ def get_gpu_metrics() -> dict[str, float]:
         if _has_nonzero_gpu_activity(sysfs):
             return sysfs
 
-    # 2. GT clock frequency — best proxy for Intel VDEnc/QSV which runs in
-    #    sub-millisecond bursts that perf counters miss.  No CAP_PERFMON needed.
+    # 2. intel_gpu_top engine % — accurate per-engine load (matches GPU Statistics
+    #    tool), requires CAP_PERFMON.  Preferred over the MHz proxy because it
+    #    reports actual utilisation rather than clock frequency ratio.
+    intel = _get_intel_gpu_metrics()
+    if intel is not None:
+        if _has_nonzero_gpu_activity(intel):
+            return intel
+
+    # Keep the best available zero-activity reading as the idle fallback.
+    # Prefer sysfs (per-engine), then intel_gpu_top, then the generic default.
+    if sysfs is not None:
+        default_metrics = sysfs
+    elif intel is not None:
+        default_metrics = intel
+
+    # 3. GT clock frequency — last-resort proxy when neither sysfs nor
+    #    intel_gpu_top are available.  Reports clock ratio, not true utilisation.
     freq = _get_intel_gpu_metrics_freq()
     if freq is not None:
         if _has_nonzero_gpu_activity(freq):
             return freq
-
-    # Keep the best available zero-activity reading as the idle fallback.
-    # Prefer sysfs (per-engine), then freq, then the generic default.
-    # Do NOT return early here — always let intel_gpu_top run so CAP_PERFMON
-    # is used when the caller has granted it (e.g. via --cap-add=PERFMON).
-    if sysfs is not None:
-        default_metrics = sysfs
-    elif freq is not None:
-        default_metrics = freq
-
-    # 3. intel_gpu_top engine % — accurate for 3D/Compute, requires CAP_PERFMON.
-    intel = _get_intel_gpu_metrics()
-    if intel is not None:
-        return intel
 
     # 4. NVIDIA via nvidia-smi.
     nvidia = _get_nvidia_gpu_metrics()
