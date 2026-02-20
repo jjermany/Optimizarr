@@ -69,6 +69,49 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
     assert terminal_updates[-1] == (job_id, 'failed')
 
 
+def test_worker_pauses_job_with_saved_position_when_partial_output_exists(monkeypatch):
+    queue.resume_queue()
+
+    def always_fail(*args, **kwargs):
+        return OptimizationMetrics(
+            input_path='/media/partial-test.mkv',
+            output_path=None,
+            status='failed',
+            skipped_reason='vaapi_encode_failed',
+        )
+
+    monkeypatch.setattr(queue, 'optimize_video', always_fail)
+    monkeypatch.setattr(queue, 'preflight_job', lambda *_: True)
+    monkeypatch.setattr(queue, '_probe_partial_duration', lambda _workspace: 1973.29)
+    failure_notifications = []
+    monkeypatch.setattr(queue, 'enqueue_job_failed', lambda job: failure_notifications.append(job.id))
+
+    with SessionLocal() as session:
+        session.query(Job).delete()
+        session.query(Settings).delete()
+        session.add(Settings(enable_optimizer=True, global_quiet_enabled=False))
+        session.commit()
+
+    with TestClient(app) as client:
+        settings_response = client.post('/settings', json={'enable_optimizer': True, 'global_quiet_enabled': False})
+        assert settings_response.status_code == 200
+
+        create_response = client.post('/jobs', json={'source_path': '/media/partial-test.mkv'})
+        assert create_response.status_code == 201
+        job_id = create_response.json()['id']
+
+        end = time.time() + 3.0
+        payload = {}
+        while time.time() < end:
+            response = client.get(f'/jobs/{job_id}')
+            payload = response.json()
+            if payload['status'] == 'paused':
+                break
+            time.sleep(0.05)
+
+    assert payload['status'] == 'paused'
+    assert payload['resume_position_seconds'] == 1973.29
+    assert failure_notifications == []
 
 
 def test_worker_marks_job_failed_when_unhandled_exception_occurs(monkeypatch):
