@@ -881,12 +881,15 @@ export default function App() {
       else if (action === 'start') await startJob(jobId);
       else if (action === 'start_paused') { await resumeJob(jobId); await startJob(jobId); }
       else if (action === 'abort') {
-        // For paused jobs with partial progress, ask the user whether they want
-        // to remove the job entirely or just clear its progress and re-queue it.
+        // For active or paused-with-progress jobs, ask the user whether they want
+        // to remove the job entirely or just stop it and re-queue it.
         const job = jobs.find((j) => j.id === jobId);
-        const isPausedWithProgress = job && PAUSED_STATUSES.has(job.status?.toLowerCase())
-          && (job.progress_percent > 0 || job.resume_position_seconds > 0);
-        if (isPausedWithProgress) {
+        const jobStatus = job?.status?.toLowerCase();
+        const needsDialog = job && (
+          ACTIVE_STATUSES.has(jobStatus)
+          || (PAUSED_STATUSES.has(jobStatus) && (job.progress_percent > 0 || job.resume_position_seconds > 0))
+        );
+        if (needsDialog) {
           setAbortDialogJobId(jobId);
           return; // wait for dialog selection
         }
@@ -1212,9 +1215,9 @@ export default function App() {
           return (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
               <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
-                <h2 className="mb-2 text-lg font-semibold text-slate-100">Abort job with progress?</h2>
+                <h2 className="mb-2 text-lg font-semibold text-slate-100">Stop job?</h2>
                 <p className="mb-5 text-sm text-slate-400">
-                  <span className="font-medium text-slate-200">{dialogTitle}</span> has partial progress. Choose how to handle it:
+                  Choose what to do with <span className="font-medium text-slate-200">{dialogTitle}</span>:
                 </p>
                 <div className="flex flex-col gap-3">
                   <button
