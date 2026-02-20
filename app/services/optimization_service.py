@@ -1350,6 +1350,12 @@ def optimize_video(
         # Encode only the remaining portion into a separate segment file.
         container = _container_from_profile(profile)
         resume_segment_path = workspace_path / f'output.resume.{container}'
+        # Remove any stale resume segment left by a prior interrupted attempt.
+        # FFmpeg has no -y flag here, so an existing file causes an immediate
+        # failure (stdin EOF → "Not overwriting - exiting") that bypasses all
+        # fallback logic and permanently fails the job on the second interruption.
+        for _stale in workspace_path.glob('output.resume.*'):
+            _stale.unlink(missing_ok=True)
         ffmpeg_command = _build_resume_command(
             input_path, resume_position_seconds, str(resume_segment_path), profile, selection,
         )
