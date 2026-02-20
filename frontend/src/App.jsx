@@ -42,12 +42,11 @@ import {
 import StatCard from './components/StatCard';
 
 const WS_PATH = '/ws';
-const FALLBACK_AFTER_MS = 30000;
+const FALLBACK_AFTER_MS = 5000;
 const FALLBACK_POLL_MS = 10000;
 const METRICS_POLL_MS = 10000;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
-const MESSAGE_DISMISS_MS = 5000;
 const JOBS_PAGE_SIZE = 50;
 const HISTORY_PAGE_SIZE = 50;
 const JOBS_UI_PREFS_KEY = 'optimizarr.jobsUiPrefs.v1';
@@ -466,8 +465,6 @@ export default function App() {
   const [libraryFormErrors, setLibraryFormErrors] = useState({});
   const [savingLibrary, setSavingLibrary] = useState(false);
   const [deletingLibraryId, setDeletingLibraryId] = useState(null);
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
   const [savingSettings, setSavingSettings] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [fallbackPollingEnabled, setFallbackPollingEnabled] = useState(false);
@@ -638,9 +635,8 @@ export default function App() {
       if (nextPlexSettings?.enabled && nextPlexSettings?.token) {
         fetchPlexLibraries().then((sections) => setPlexLibraries(sections ?? [])).catch(() => {});
       }
-      setError('');
     } catch (refreshError) {
-      setError(refreshError.message || 'Could not refresh data.');
+      pushToast(refreshError.message || 'Could not refresh data.', 'error');
     }
   }
 
@@ -652,7 +648,7 @@ export default function App() {
       const updated = await updateSettings({ queue_sort: nextSort });
       setSettings(updated);
     } catch (err) {
-      setError(err.message || 'Failed to update queue sort order.');
+      pushToast(err.message || 'Failed to update queue sort order.', 'error');
     }
   }
 
@@ -670,9 +666,8 @@ export default function App() {
         }),
       );
       setLibraryProfiles(Object.fromEntries(profileEntries));
-      setError('');
     } catch (refreshError) {
-      setError(refreshError.message || 'Could not refresh libraries.');
+      pushToast(refreshError.message || 'Could not refresh libraries.', 'error');
     }
   }
 
@@ -739,12 +734,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!message) return undefined;
-    const timer = window.setTimeout(() => setMessage(''), MESSAGE_DISMISS_MS);
-    return () => window.clearTimeout(timer);
-  }, [message]);
-
-  useEffect(() => {
     if (!selectedLibraryId || !selectedLibraryProfile) {
       setProfileDraft(null);
       setProfileErrors({});
@@ -766,6 +755,15 @@ export default function App() {
     const timer = setInterval(refreshAll, FALLBACK_POLL_MS);
     return () => clearInterval(timer);
   }, [fallbackPollingEnabled]);
+
+  // When jobs are actively processing, poll every 5 s so status changes
+  // (e.g. queued → running) are visible quickly even if a WebSocket update
+  // is missed or the connection is still establishing.
+  useEffect(() => {
+    if (activeJobs.length === 0) return undefined;
+    const timer = setInterval(refreshAll, 5000);
+    return () => clearInterval(timer);
+  }, [activeJobs.length]);
 
   useEffect(() => {
     const timer = setInterval(async () => {
@@ -881,40 +879,37 @@ export default function App() {
       else if (action === 'remove') await deleteJob(jobId);
       await refreshAll();
     } catch (actionError) {
-      setError(actionError.message || 'Job action failed.');
+      pushToast(actionError.message || 'Job action failed.', 'error');
     }
   }
 
   async function handleAbortAllJobs() {
     try {
       const result = await abortAllJobs();
-      setMessage(`Aborted ${result.aborted_job_ids.length} job(s).`);
-      setError('');
+      pushToast(`Aborted ${result.aborted_job_ids.length} job(s).`, 'success');
       await refreshAll();
     } catch (actionError) {
-      setError(actionError.message || 'Abort all failed.');
+      pushToast(actionError.message || 'Abort all failed.', 'error');
     }
   }
 
   async function handleRemoveAllJobs() {
     try {
       const result = await removeAllJobs();
-      setMessage(`Removed ${result.removed_job_ids.length} job(s).`);
-      setError('');
+      pushToast(`Removed ${result.removed_job_ids.length} job(s).`, 'success');
       await refreshAll();
     } catch (actionError) {
-      setError(actionError.message || 'Remove all failed.');
+      pushToast(actionError.message || 'Remove all failed.', 'error');
     }
   }
 
   async function handlePurgeHistory() {
     try {
       const result = await purgeHistory();
-      setMessage(`Purged ${result.removed_job_ids.length} history item(s).`);
-      setError('');
+      pushToast(`Purged ${result.removed_job_ids.length} history item(s).`, 'success');
       await refreshAll();
     } catch (actionError) {
-      setError(actionError.message || 'Purge history failed.');
+      pushToast(actionError.message || 'Purge history failed.', 'error');
     }
   }
 
@@ -924,7 +919,7 @@ export default function App() {
       else { await resumeQueue(); setQueuePaused(false); }
       await refreshAll();
     } catch (actionError) {
-      setError(actionError.message || 'Queue action failed.');
+      pushToast(actionError.message || 'Queue action failed.', 'error');
     }
   }
 
@@ -939,10 +934,9 @@ export default function App() {
       setSelectedLibraryId(created.id);
       setLibraryDraft({ name: '', path: '/media/', enabled: true });
       setLibraryFormErrors({});
-      setMessage(`Added library ${created.name}.`);
-      setError('');
+      pushToast(`Added library ${created.name}.`, 'success');
     } catch (createError) {
-      setError(createError.message || 'Could not create library.');
+      pushToast(createError.message || 'Could not create library.', 'error');
     } finally {
       setSavingLibrary(false);
     }
@@ -955,11 +949,10 @@ export default function App() {
       const remaining = libraries.filter((library) => library.id !== libraryId);
       setLibraries(remaining);
       setSelectedLibraryId((prev) => prev !== libraryId ? prev : (remaining[0]?.id ?? null));
-      setMessage('Library deleted.');
-      setError('');
+      pushToast('Library deleted.', 'success');
       await refreshLibrariesAndProfiles();
     } catch (deleteError) {
-      setError(deleteError.message || 'Could not delete library.');
+      pushToast(deleteError.message || 'Could not delete library.', 'error');
     } finally {
       setDeletingLibraryId(null);
     }
@@ -975,11 +968,10 @@ export default function App() {
       const updated = await updateLibrary(selectedLibrary.id, { name: selectedLibrary.name.trim(), path: selectedLibrary.path.trim(), enabled: selectedLibrary.enabled });
       setLibraries((prev) => prev.map((library) => (library.id === updated.id ? updated : library)));
       setLibraryFormErrors({});
-      setMessage('Library details saved.');
-      setError('');
+      pushToast('Library details saved.', 'success');
       await refreshLibrariesAndProfiles();
     } catch (saveError) {
-      setError(saveError.message || 'Failed to save library details.');
+      pushToast(saveError.message || 'Failed to save library details.', 'error');
     } finally {
       setSavingLibrary(false);
     }
@@ -990,10 +982,9 @@ export default function App() {
     setLibraries((prev) => prev.map((library) => (library.id === libraryId ? { ...library, enabled } : library)));
     try {
       await updateLibrary(libraryId, { enabled });
-      setError('');
     } catch (updateError) {
       setLibraries(previous);
-      setError(updateError.message || 'Failed to update library state.');
+      pushToast(updateError.message || 'Failed to update library state.', 'error');
     }
   }
 
@@ -1002,9 +993,8 @@ export default function App() {
     try {
       await scanLibrary(libraryId);
       await refreshAll();
-      setError('');
     } catch (scanError) {
-      setError(scanError.message || 'Failed to start library scan.');
+      pushToast(scanError.message || 'Failed to start library scan.', 'error');
     } finally {
       setScanningLibraries((prev) => ({ ...prev, [libraryId]: false }));
     }
@@ -1020,9 +1010,9 @@ export default function App() {
       const updated = await updateLibraryProfile(selectedLibrary.id, profileDraft);
       setLibraryProfiles((prev) => ({ ...prev, [selectedLibrary.id]: updated }));
       setProfileDraft({ ...updated });
-      setError('');
+      pushToast('Library profile saved.', 'success');
     } catch (saveError) {
-      setError(saveError.message || 'Failed to save library profile.');
+      pushToast(saveError.message || 'Failed to save library profile.', 'error');
     } finally {
       setSavingProfile(false);
     }
@@ -1034,9 +1024,9 @@ export default function App() {
     try {
       const updated = await updateSettings(settings);
       setSettings(updated);
-      setError('');
+      pushToast('Settings saved.', 'success');
     } catch (saveError) {
-      setError(saveError.message || 'Failed to save settings.');
+      pushToast(saveError.message || 'Failed to save settings.', 'error');
     } finally {
       setSavingSettings(false);
     }
@@ -1048,10 +1038,9 @@ export default function App() {
     try {
       const updated = await updateNotificationSettings(notificationSettings);
       setNotificationSettings(updated);
-      setMessage('Notification settings saved.');
-      setError('');
+      pushToast('Notification settings saved.', 'success');
     } catch (saveError) {
-      setError(saveError.message || 'Could not save notification settings.');
+      pushToast(saveError.message || 'Could not save notification settings.', 'error');
     } finally {
       setSavingSettings(false);
     }
@@ -1060,10 +1049,9 @@ export default function App() {
   async function sendNotificationTest() {
     try {
       await sendTestNotification();
-      setMessage('Queued a test notification email.');
-      setError('');
+      pushToast('Queued a test notification email.', 'success');
     } catch (saveError) {
-      setError(saveError.message || 'Could not queue test email.');
+      pushToast(saveError.message || 'Could not queue test email.', 'error');
     }
   }
 
@@ -1073,10 +1061,9 @@ export default function App() {
     try {
       const updated = await updatePlexSettings(plexSettings);
       setPlexSettings(updated);
-      setMessage('Plex settings saved.');
-      setError('');
+      pushToast('Plex settings saved.', 'success');
     } catch (saveError) {
-      setError(saveError.message || 'Could not save Plex settings.');
+      pushToast(saveError.message || 'Could not save Plex settings.', 'error');
     } finally {
       setSavingPlexSettings(false);
     }
@@ -1087,9 +1074,8 @@ export default function App() {
     try {
       const sections = await fetchPlexLibraries();
       setPlexLibraries(sections ?? []);
-      setError('');
     } catch (fetchError) {
-      setError(fetchError.message || 'Could not fetch Plex library sections.');
+      pushToast(fetchError.message || 'Could not fetch Plex library sections.', 'error');
     } finally {
       setLoadingPlexLibraries(false);
     }
@@ -1100,14 +1086,13 @@ export default function App() {
     try {
       const result = await testPlexConnection();
       if (result?.success) {
-        setMessage('Plex connection successful.');
-        setError('');
+        pushToast('Plex connection successful.', 'success');
         await loadPlexLibraries();
       } else {
-        setError(result?.error || 'Plex connection failed.');
+        pushToast(result?.error || 'Plex connection failed.', 'error');
       }
     } catch (testError) {
-      setError(testError.message || 'Plex connection test failed.');
+      pushToast(testError.message || 'Plex connection test failed.', 'error');
     } finally {
       setTestingPlexConnection(false);
     }
@@ -1116,33 +1101,30 @@ export default function App() {
   async function handleRecoveryRun() {
     try {
       const result = await runRecovery();
-      setMessage(`Recovered ${result.recovered_jobs} jobs`);
-      setError('');
+      pushToast(`Recovered ${result.recovered_jobs} jobs.`, 'success');
       await refreshAll();
     } catch (recoveryError) {
-      setError(recoveryError.message || 'Recovery failed.');
+      pushToast(recoveryError.message || 'Recovery failed.', 'error');
     }
   }
 
   async function handleCleanupRun() {
     try {
       const result = await runCleanup();
-      setMessage(`Cleanup removed ${result.cleaned_workspaces} workspace(s)`);
-      setError('');
+      pushToast(`Cleanup removed ${result.cleaned_workspaces} workspace(s).`, 'success');
       await refreshAll();
     } catch (cleanupError) {
-      setError(cleanupError.message || 'Cleanup failed.');
+      pushToast(cleanupError.message || 'Cleanup failed.', 'error');
     }
   }
 
   async function handleOptimizedCleanupRun() {
     try {
       const result = await runOptimizedCleanup();
-      setMessage(`Deleted ${result.deleted_files} optimized file(s) from ${result.affected_job_ids.length} job(s)`);
-      setError('');
+      pushToast(`Deleted ${result.deleted_files} optimized file(s) from ${result.affected_job_ids.length} job(s).`, 'success');
       await refreshAll();
     } catch (cleanupError) {
-      setError(cleanupError.message || 'Optimized cleanup failed.');
+      pushToast(cleanupError.message || 'Optimized cleanup failed.', 'error');
     }
   }
 
@@ -1177,18 +1159,6 @@ export default function App() {
           </nav>
         </header>
 
-        {/* Inline alerts */}
-        {error && (
-          <div className="animate-fade-in rounded-xl border border-red-800/60 bg-red-950/60 px-4 py-3 text-sm text-red-300">
-            {error}
-          </div>
-        )}
-        {message && (
-          <div className="animate-fade-in rounded-xl border border-emerald-800/60 bg-emerald-950/60 px-4 py-3 text-sm text-emerald-300">
-            {message}
-          </div>
-        )}
-
         {/* Toast stack */}
         <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col gap-2">
           {toasts.map((toast) => (
@@ -1199,7 +1169,9 @@ export default function App() {
                   ? 'border-red-700/60 bg-red-950/90 text-red-200'
                   : toast.tone === 'warn'
                     ? 'border-amber-600/60 bg-amber-950/90 text-amber-200'
-                    : 'border-cyan-700/60 bg-slate-900/95 text-cyan-200'
+                    : toast.tone === 'success'
+                      ? 'border-emerald-700/60 bg-emerald-950/90 text-emerald-200'
+                      : 'border-cyan-700/60 bg-slate-900/95 text-cyan-200'
               }`}
             >
               {toast.message}
