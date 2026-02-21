@@ -1124,7 +1124,7 @@ def _build_resume_command(
     if selection.encoder in {'h264_qsv', 'hevc_qsv', 'av1_qsv'}:
         video_preset_args = ['-preset', _qsv_preset(speed_preset)]
     elif selection.encoder in {'h264_vaapi', 'hevc_vaapi', 'av1_vaapi'}:
-        video_preset_args = []
+        video_preset_args = ['-compression_level', _vaapi_compression_level(speed_preset)]
     elif selection.encoder == 'libsvtav1':
         video_preset_args = ['-preset', _svt_av1_preset(speed_preset)]
     else:
