@@ -1331,6 +1331,13 @@ def optimize_video(
             job_tag, resume_position_seconds, str(existing_partial),
         )
         # Workspace already has the partial; no clean needed.
+        # Re-create the directory if it vanished between the exists() check above
+        # and now (e.g. cache volume remount, container restart).  Preserve the
+        # partial file — it's what justifies can_resume=True in the first place.
+        try:
+            workspace_path.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
     else:
         if resume_position_seconds is not None:
             logger.info(
