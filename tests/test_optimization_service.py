@@ -287,6 +287,30 @@ def test_build_encoder_command_hdr_software_applies_tonemap_and_scale(monkeypatc
     assert vf.endswith(',scale=-2:1080')
 
 
+def test_build_encoder_command_vaapi_sets_compression_level(monkeypatch):
+    """VAAPI encodes include -compression_level mapped from speed_preset."""
+    base_profile = {
+        'codec': 'hevc',
+        'bitrate_mode': 'cbr',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1080)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'hevc_vaapi')
+
+    for speed_preset, expected_level in (('fast', '0'), ('medium', '2'), ('slow', '4')):
+        profile = {**base_profile, 'speed_preset': speed_preset}
+        command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+        assert '-compression_level' in command, f'missing -compression_level for preset={speed_preset}'
+        assert command[command.index('-compression_level') + 1] == expected_level, (
+            f'expected compression_level={expected_level} for preset={speed_preset}'
+        )
+
+
 def test_build_encoder_command_hdr_vaapi_applies_tonemap(monkeypatch):
     """Plain HDR10 uses VAAPI hw-decode + tonemap_vaapi (Intel VEBOX) — reliable for static metadata."""
     profile = {

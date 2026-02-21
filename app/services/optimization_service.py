@@ -399,6 +399,16 @@ def _qsv_preset(speed_preset: str) -> str:
     }.get(speed_preset, 'medium')
 
 
+def _vaapi_compression_level(speed_preset: str) -> str:
+    # VAAPI exposes speed/quality trade-offs via -compression_level (Mesa 22.3+ / VCN).
+    # 0 = speed (fastest, lower quality), 2 = balanced, 4 = quality (slowest, best quality).
+    return {
+        'fast': '0',
+        'medium': '2',
+        'slow': '4',
+    }.get(speed_preset, '2')
+
+
 def _svt_av1_preset(speed_preset: str) -> str:
     return {
         'fast': '8',
@@ -463,8 +473,8 @@ def _build_command_with_selection(
     if selection.encoder in {'h264_qsv', 'hevc_qsv', 'av1_qsv'}:
         video_preset_args = ['-preset', _qsv_preset(speed_preset)]
     elif selection.encoder in {'h264_vaapi', 'hevc_vaapi', 'av1_vaapi'}:
-        # VAAPI quality is governed by bitrate/QP, not a preset flag.
-        video_preset_args = []
+        # VAAPI exposes speed/quality trade-offs via -compression_level (Mesa 22.3+ / VCN).
+        video_preset_args = ['-compression_level', _vaapi_compression_level(speed_preset)]
     elif selection.encoder == 'libsvtav1':
         video_preset_args = ['-preset', _svt_av1_preset(speed_preset)]
     else:
