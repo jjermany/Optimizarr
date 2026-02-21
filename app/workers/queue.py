@@ -539,7 +539,7 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         .filter(Job.status == 'queued')
         .all()
     )
-    sort_option = str(getattr(settings, 'queue_sort', QueueSortEnum.default.value) or QueueSortEnum.default.value)
+    sort_option = getattr(settings, 'queue_sort', QueueSortEnum.default) or QueueSortEnum.default
 
     def sort_key(row: tuple[Job, Library | None, LibraryProfile | None]) -> tuple:
         job = row[0]
