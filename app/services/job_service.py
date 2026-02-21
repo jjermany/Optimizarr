@@ -67,6 +67,28 @@ def create_job(
     return job
 
 
+def refresh_queued_job_snapshots(db: Session, library_id: int, profile: LibraryProfile) -> int:
+    """Re-snapshot the profile onto every queued job for a library.
+
+    Called after a library profile is updated so that jobs waiting in the queue
+    pick up the new settings (e.g. speed_preset, codec, bitrate) rather than
+    the stale snapshot that was taken when they were originally created.
+
+    Returns the number of jobs updated.
+    """
+    snapshot = _profile_snapshot(profile)
+    updated = (
+        db.query(Job)
+        .filter(Job.library_id == library_id, Job.status == 'queued')
+        .all()
+    )
+    for job in updated:
+        job.profile_snapshot_json = snapshot
+    if updated:
+        db.commit()
+    return len(updated)
+
+
 def job_exists_for_source(db: Session, source_path: str, library_id: int | None = None) -> bool:
     # 'complete' is intentionally excluded so successfully-finished jobs prevent re-queuing.
     # Only failed/skipped/cancelled jobs are retryable on the next scan.

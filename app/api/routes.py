@@ -36,6 +36,7 @@ from app.services.job_service import (
     get_job,
     list_jobs,
     pause_job,
+    refresh_queued_job_snapshots,
     remove_all_terminal_jobs,
     resume_job,
     retry_job,
@@ -710,6 +711,7 @@ def update_library_profile(
 
     db.commit()
     db.refresh(profile)
+    refresh_queued_job_snapshots(db, library_id, profile)
     broker.publish_library_update('profile_updated', {'library_id': library_id})
     return LibraryProfileResponse.from_orm_profile(profile)
 

@@ -5,7 +5,7 @@ from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
 from app.services import optimization_service
-from app.services.job_service import create_job, pause_job, prune_job_history, resume_job, retry_job
+from app.services.job_service import create_job, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
 
 
 def test_create_job_stores_profile_snapshot():
@@ -174,3 +174,48 @@ def test_retry_job_resets_progress_when_no_partial_workspace_resume_state(monkey
         assert updated.status == 'queued'
         assert updated.progress_percent == 0
         assert updated.resume_position_seconds is None
+
+
+def test_refresh_queued_job_snapshots_updates_queued_only():
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, codec='h264', speed_preset='medium')
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        queued_job = create_job(db, '/media/movies/a.mkv', library_id=library.id, profile=profile)
+        running_job = Job(input_path='/media/movies/b.mkv', status='running', library_id=library.id,
+                          profile_snapshot_json=queued_job.profile_snapshot_json)
+        db.add(running_job)
+        db.commit()
+
+        # Update the profile to 'fast'
+        profile.speed_preset = 'fast'
+        db.commit()
+        db.refresh(profile)
+
+        count = refresh_queued_job_snapshots(db, library.id, profile)
+
+        db.refresh(queued_job)
+        db.refresh(running_job)
+
+        assert count == 1
+        assert '"speed_preset": "fast"' in queued_job.profile_snapshot_json
+        # Running job must not be touched
+        assert '"speed_preset": "medium"' in running_job.profile_snapshot_json
+
+        db.delete(queued_job)
+        db.delete(running_job)
+        db.delete(profile)
+        db.delete(library)
+        db.commit()
