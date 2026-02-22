@@ -1407,6 +1407,7 @@ def optimize_video(
         if (
             selection.use_qsv and _apply_tonemap_early
             and _hdr_fmt_early in ('dolby_vision', 'hdr10plus')
+            and not selection.is_explicit_preference
         ):
             _vaapi_enc_dv = _QSV_VAAPI_FALLBACK.get(selection.encoder)
             if _vaapi_enc_dv and _encoder_available(_vaapi_enc_dv):
@@ -1591,7 +1592,7 @@ def optimize_video(
 
     if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv:
         vaapi_encoder = _QSV_VAAPI_FALLBACK.get(selection.encoder)
-        if vaapi_encoder and _encoder_available(vaapi_encoder):
+        if vaapi_encoder and _encoder_available(vaapi_encoder) and not selection.is_explicit_preference:
             logger.warning(
                 '[%s] QSV encoder %r failed (rc=%s); retrying with VAAPI encoder %r '
                 '(same iGPU, no VPL runtime required)',
@@ -1652,7 +1653,7 @@ def optimize_video(
         # achieves nothing.  Go straight to the sw-decode path instead.
         if metrics.fallback_reason == 'qsv_failed_vaapi_fallback':
             qsv_tonemap_encoder = None
-        if qsv_tonemap_encoder and _encoder_available(qsv_tonemap_encoder):
+        if qsv_tonemap_encoder and _encoder_available(qsv_tonemap_encoder) and not selection.is_explicit_preference:
             logger.warning(
                 '[%s] VAAPI tonemap_vaapi failed (rc=%s); retrying with %r + vpp_qsv=tonemap=1 '
                 '(Intel VPP — handles DV/HDR10+ dynamic metadata on the same iGPU)',
