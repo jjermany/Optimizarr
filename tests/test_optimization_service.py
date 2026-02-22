@@ -575,12 +575,17 @@ def test_optimize_video_fails_when_h264_qsv_encode_fails(monkeypatch, tmp_path):
     assert metrics.error_message == 'qsv_encode_failed'
 
 
-def test_qsv_to_vaapi_fallback_enables_hw_decode_for_dv(monkeypatch, tmp_path):
+def test_qsv_to_vaapi_fallback_enables_hw_decode(monkeypatch, tmp_path):
     """When QSV fails and falls back to VAAPI, the VAAPI selection must use hw_decode=True.
 
     Before the fix, hw_decode was omitted from the fallback EncoderSelection, causing
-    the VAAPI retry to use software decode (no -hwaccel) and skip the libplacebo/zscale
-    hw_decode path entirely — defeating the GPU optimisations for DV/HDR10+ content.
+    the VAAPI retry to use software decode (no -hwaccel) and skip the hardware-decode
+    path entirely — defeating the GPU optimisations for HDR content.
+
+    Note: Dolby Vision / HDR10+ triggers a proactive upfront QSV→VAAPI swap before
+    any FFmpeg call (vpp_qsv is unreliable for those formats), so the runtime
+    QSV-fail→VAAPI path is never reached for DV/HDR10+.  HDR10 is used here so
+    the runtime QSV→VAAPI fallback is exercised correctly.
     """
     input_path = tmp_path / 'movie.mkv'
     input_path.write_text('placeholder')
@@ -588,7 +593,7 @@ def test_qsv_to_vaapi_fallback_enables_hw_decode_for_dv(monkeypatch, tmp_path):
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
     monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 60.0)
     monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: True)
-    monkeypatch.setattr(optimization_service, '_detect_hdr_format', lambda _: 'dolby_vision')
+    monkeypatch.setattr(optimization_service, '_detect_hdr_format', lambda _: 'hdr10')
     monkeypatch.setattr(optimization_service, '_libplacebo_available', lambda: False)
     # Force QSV as the primary selection so the QSV→VAAPI fallback path is exercised.
     # (Without this, _select_encoder would pick VAAPI first since it is listed before QSV.)
@@ -617,7 +622,7 @@ def test_qsv_to_vaapi_fallback_enables_hw_decode_for_dv(monkeypatch, tmp_path):
     monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
     monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *a, **kw: True)
 
-    class DVSettings:
+    class HDRSettings:
         profile_snapshot_json = (
             '{"codec":"hevc","bitrate_mode":"cbr","speed_preset":"medium",'
             '"audio_mode":"copy","container":"mkv","target_resolution":1080,'
@@ -626,7 +631,7 @@ def test_qsv_to_vaapi_fallback_enables_hw_decode_for_dv(monkeypatch, tmp_path):
         workspace_root = str(tmp_path / 'workspaces')
         bitrate_mbps = 8
 
-    metrics = optimization_service.optimize_video(str(input_path), DVSettings())
+    metrics = optimization_service.optimize_video(str(input_path), HDRSettings())
 
     assert metrics.status == 'complete'
     assert metrics.used_fallback is True
@@ -635,15 +640,14 @@ def test_qsv_to_vaapi_fallback_enables_hw_decode_for_dv(monkeypatch, tmp_path):
 
     # The VAAPI fallback command must use hardware decode (-hwaccel vaapi).
     # Prior to the fix, hw_decode was False in the fallback selection, so -hwaccel
-    # was absent and the filter chain used slow software decode + zscale without
-    # hwdownload.
+    # was absent and the filter chain used slow software decode without hwdownload.
     second_cmd = commands_run[1]
     assert '-hwaccel' in second_cmd, 'VAAPI fallback must enable hardware decode'
     assert '-hwaccel_output_format' in second_cmd
-    # DV path: hwdownload (hw_decode branch) must be present in the filter chain.
+    # HDR10 path: tonemap_vaapi (VEBOX) should be present in the hw-decode filter chain.
     second_vf = second_cmd[second_cmd.index('-vf') + 1]
-    assert second_vf.startswith('hwdownload,format=p010le,'), (
-        f'Expected hwdownload at start of filter chain, got: {second_vf!r}'
+    assert 'tonemap_vaapi' in second_vf, (
+        f'Expected tonemap_vaapi in VAAPI hw-decode filter chain, got: {second_vf!r}'
     )
 
 
@@ -975,6 +979,148 @@ def test_vaapi_tonemap_failure_falls_back_to_sw_decode_when_qsv_unavailable(monk
     # CPU zscale chain is present in the filter for sw-decode + tone mapping.
     second_vf = second_cmd[second_cmd.index('-vf') + 1]
     assert 'zscale' in second_vf
+
+
+def test_vaapi_tonemap_failure_does_not_fall_back_to_qsv_when_vaapi_is_explicitly_preferred(monkeypatch, tmp_path):
+    """When VAAPI is the explicit encoder preference and tonemap_vaapi fails, the job must NOT fall
+    back to QSV even if QSV is available.  The sw-decode VAAPI path should be used instead so the
+    user's choice of VAAPI is always honoured."""
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 60.0)
+    monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: True)
+    monkeypatch.setattr(optimization_service, '_detect_hdr_format', lambda _: 'hdr10')
+    # Both VAAPI and QSV are available — without the fix the code would choose QSV as
+    # an intermediate GPU fallback when tonemap_vaapi fails.
+    monkeypatch.setattr(
+        optimization_service,
+        '_encoder_available',
+        lambda name: name in {'h264_vaapi', 'h264_qsv'},
+    )
+
+    commands_run = []
+
+    def fake_run_ffmpeg(job_id, command, *args, **kwargs):
+        commands_run.append(command)
+        # First call: VAAPI hw-decode + tonemap_vaapi — simulate failure.
+        # Second call (sw-decode VAAPI): success.
+        rc = 1 if len(commands_run) == 1 else 0
+        return rc, 60.0, 24.0, False, ['Error opening filters'] if rc == 1 else []
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *a, **kw: True)
+
+    class HDRSettings:
+        profile_snapshot_json = (
+            '{"codec":"h264","bitrate_mode":"cbr","speed_preset":"medium",'
+            '"audio_mode":"copy","container":"mkv","target_resolution":1080,'
+            '"bitrate_mbps":8,"crf":23,"tone_map_hdr":true,"hdr_only":true,'
+            '"preferred_video_encoder":"h264_vaapi"}'
+        )
+        workspace_root = str(tmp_path / 'workspaces')
+        bitrate_mbps = 8
+
+    metrics = optimization_service.optimize_video(str(input_path), HDRSettings())
+
+    assert metrics.status == 'complete'
+    assert metrics.used_fallback is True
+    assert metrics.fallback_reason == 'vaapi_tonemap_failed_swdecode_fallback'
+    assert len(commands_run) == 2, 'Expected exactly 2 attempts: hw-decode fail then sw-decode success'
+    # The second command must be the sw-decode VAAPI path — NOT a QSV command.
+    second_cmd = commands_run[1]
+    assert 'h264_vaapi' in ' '.join(second_cmd) or '-vaapi_device' in second_cmd, \
+        'Second attempt must still use VAAPI encoder'
+    assert 'vpp_qsv' not in ' '.join(second_cmd), 'Second attempt must NOT use QSV'
+    assert 'h264_qsv' not in second_cmd, 'Second attempt must NOT use QSV encoder'
+    assert metrics.encoder_used == 'h264_vaapi', 'Final encoder_used must be VAAPI'
+
+
+def test_qsv_failure_does_not_fall_back_to_vaapi_when_qsv_is_explicitly_preferred(monkeypatch, tmp_path):
+    """When QSV is the explicit encoder preference and the QSV encode fails, the job must NOT
+    silently fall back to VAAPI even when VAAPI is available."""
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 60.0)
+    monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: False)
+    # Both encoders available — without the fix the code would silently switch to VAAPI.
+    monkeypatch.setattr(
+        optimization_service,
+        '_encoder_available',
+        lambda name: name in {'h264_vaapi', 'h264_qsv'},
+    )
+
+    commands_run = []
+
+    def fake_run_ffmpeg(job_id, command, *args, **kwargs):
+        commands_run.append(command)
+        return 1, 0.0, None, False, ['MFX init failed']
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+
+    class QSVSettings:
+        profile_snapshot_json = (
+            '{"codec":"h264","bitrate_mode":"cbr","speed_preset":"medium",'
+            '"audio_mode":"copy","container":"mkv","target_resolution":1080,'
+            '"bitrate_mbps":8,"crf":23,"tone_map_hdr":false,"hdr_only":false,'
+            '"preferred_video_encoder":"h264_qsv"}'
+        )
+        workspace_root = str(tmp_path / 'workspaces')
+        bitrate_mbps = 8
+
+    metrics = optimization_service.optimize_video(str(input_path), QSVSettings())
+
+    assert len(commands_run) == 1, 'Only the QSV attempt should run — no VAAPI fallback'
+    assert metrics.status == 'failed'
+    assert metrics.used_fallback is False
+
+
+def test_dv_content_does_not_upfront_switch_to_vaapi_when_qsv_is_explicitly_preferred(monkeypatch, tmp_path):
+    """When QSV is the explicit encoder preference and the source is Dolby Vision, the upfront
+    QSV→VAAPI swap must be skipped so the user's choice is honoured."""
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 60.0)
+    monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: True)
+    monkeypatch.setattr(optimization_service, '_detect_hdr_format', lambda _: 'dolby_vision')
+    monkeypatch.setattr(optimization_service, '_libplacebo_available', lambda: False)
+    monkeypatch.setattr(
+        optimization_service,
+        '_encoder_available',
+        lambda name: name in {'h264_vaapi', 'h264_qsv'},
+    )
+
+    commands_run = []
+
+    def fake_run_ffmpeg(job_id, command, *args, **kwargs):
+        commands_run.append(command)
+        return 0, 60.0, 24.0, False, []
+
+    monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *a, **kw: True)
+
+    class DVSettings:
+        profile_snapshot_json = (
+            '{"codec":"h264","bitrate_mode":"cbr","speed_preset":"medium",'
+            '"audio_mode":"copy","container":"mkv","target_resolution":1080,'
+            '"bitrate_mbps":8,"crf":23,"tone_map_hdr":true,"hdr_only":true,'
+            '"preferred_video_encoder":"h264_qsv"}'
+        )
+        workspace_root = str(tmp_path / 'workspaces')
+        bitrate_mbps = 8
+
+    metrics = optimization_service.optimize_video(str(input_path), DVSettings())
+
+    assert metrics.status == 'complete'
+    assert len(commands_run) == 1, 'Only one attempt — no upfront swap to VAAPI'
+    assert 'h264_qsv' in commands_run[0], 'First (and only) command must use QSV encoder'
+    assert 'h264_vaapi' not in commands_run[0], 'Must NOT silently switch to VAAPI'
+    assert metrics.encoder_used == 'h264_qsv'
 
 
 # ---------------------------------------------------------------------------
