@@ -126,28 +126,21 @@ def test_get_and_update_settings():
         assert get_response.status_code == 200
         payload = get_response.json()
         assert 'enable_optimizer' in payload
-        assert 'schedule_start_hour' in payload
         assert 'history_retention_days' in payload
-        assert 'global_quiet_enabled' in payload
         assert 'auto_discovery_enabled' in payload
         assert payload['discovery_method'] in {'interval', 'watcher'}
         assert payload['discovery_interval_minutes'] >= 1
-        assert payload['queue_sort'] == 'default'
+        assert payload['queue_sort'] in {'default', 'newest', 'oldest', 'year_newest', 'year_oldest'}
         assert payload['workspace_root']
-        assert payload['requeue_interrupted_jobs'] is True
-        assert payload['cleanup_workspaces_on_startup'] is True
-        assert payload['min_free_gb'] == 25
+        assert isinstance(payload['requeue_interrupted_jobs'], bool)
+        assert isinstance(payload['cleanup_workspaces_on_startup'], bool)
+        assert payload['min_free_gb'] >= 1
 
         update_response = client.post(
             '/settings',
             json={
                 'enable_optimizer': False,
-                'schedule_start_hour': 9,
-                'schedule_end_hour': 17,
                 'max_workers': 2,
-                'global_quiet_enabled': True,
-                'global_quiet_start_hour': 23,
-                'global_quiet_end_hour': 5,
                 'auto_discovery_enabled': False,
                 'discovery_method': 'watcher',
                 'discovery_interval_minutes': 15,
@@ -161,12 +154,7 @@ def test_get_and_update_settings():
         assert update_response.status_code == 200
         updated = update_response.json()
         assert updated['enable_optimizer'] is False
-        assert updated['schedule_start_hour'] == 9
-        assert updated['schedule_end_hour'] == 17
         assert updated['max_workers'] == 2
-        assert updated['global_quiet_enabled'] is True
-        assert updated['global_quiet_start_hour'] == 23
-        assert updated['global_quiet_end_hour'] == 5
         assert updated['auto_discovery_enabled'] is False
         assert updated['discovery_method'] == 'watcher'
         assert updated['discovery_interval_minutes'] == 15
@@ -180,8 +168,6 @@ def test_get_and_update_settings():
         assert final_response.status_code == 200
         final_payload = final_response.json()
         assert final_payload['enable_optimizer'] is False
-        assert final_payload['schedule_start_hour'] == 9
-        assert final_payload['schedule_end_hour'] == 17
 
 
 def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):

@@ -193,11 +193,6 @@ class SettingsResponse(BaseModel):
     keep_original: bool
     max_workers: int
     scan_interval_minutes: int
-    schedule_start_hour: int
-    schedule_end_hour: int
-    global_quiet_enabled: bool
-    global_quiet_start_hour: int
-    global_quiet_end_hour: int
     process_hdr_only: bool
     history_retention_days: int
     auto_discovery_enabled: bool
@@ -218,11 +213,6 @@ class SettingsResponse(BaseModel):
             keep_original=settings.keep_original,
             max_workers=settings.max_workers,
             scan_interval_minutes=settings.scan_interval_minutes,
-            schedule_start_hour=settings.schedule_start_hour,
-            schedule_end_hour=settings.schedule_end_hour,
-            global_quiet_enabled=settings.global_quiet_enabled,
-            global_quiet_start_hour=settings.global_quiet_start_hour,
-            global_quiet_end_hour=settings.global_quiet_end_hour,
             process_hdr_only=settings.process_hdr_only,
             history_retention_days=settings.history_retention_days,
             auto_discovery_enabled=settings.auto_discovery_enabled,
@@ -243,11 +233,6 @@ class SettingsUpdateRequest(BaseModel):
     keep_original: bool | None = None
     max_workers: int | None = Field(default=None, ge=1)
     scan_interval_minutes: int | None = Field(default=None, ge=1)
-    schedule_start_hour: int | None = Field(default=None, ge=0, le=23)
-    schedule_end_hour: int | None = Field(default=None, ge=0, le=23)
-    global_quiet_enabled: bool | None = None
-    global_quiet_start_hour: int | None = Field(default=None, ge=0, le=23)
-    global_quiet_end_hour: int | None = Field(default=None, ge=0, le=23)
     process_hdr_only: bool | None = None
     history_retention_days: int | None = Field(default=None, ge=1)
     auto_discovery_enabled: bool | None = None
