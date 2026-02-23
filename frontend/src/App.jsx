@@ -40,6 +40,7 @@ import {
   updateSettings,
 } from './api';
 import StatCard from './components/StatCard';
+import { isWithinWindow } from './scheduleWindow';
 
 const WS_PATH = '/ws';
 const FALLBACK_AFTER_MS = 5000;
@@ -124,13 +125,6 @@ function formatHour(hour) {
 function parseHour(timeValue) {
   const [hour] = timeValue.split(':');
   return Number(hour);
-}
-
-function isWithinWindow(currentHour, startHour, endHour) {
-  if (startHour <= endHour) {
-    return currentHour >= startHour && currentHour <= endHour;
-  }
-  return currentHour >= startHour || currentHour <= endHour;
 }
 
 const ACTIVE_STATUSES = new Set(['starting', 'running', 'preflight']);
@@ -1529,7 +1523,7 @@ export default function App() {
                     {/* Schedule */}
                     <div className="rounded-lg border border-slate-800/60 bg-slate-950/30 p-3 md:col-span-2">
                       <p className="mb-1 text-sm font-medium text-slate-200">Scheduled Run Window</p>
-                      <p className="mb-3 text-xs text-slate-500">Restrict this library to run only within a set time window. Disable to run all day.</p>
+                      <p className="mb-3 text-xs text-slate-500">Restrict this library to run only within a set time window. End hour is exclusive (runs up to, but not including, end hour). Disable to run all day.</p>
                       <Toggle
                         checked={profileDraft.schedule_enabled !== false}
                         onChange={(e) => setProfileDraft((prev) => ({ ...prev, schedule_enabled: e.target.checked }))}
