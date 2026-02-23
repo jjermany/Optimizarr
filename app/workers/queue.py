@@ -416,8 +416,8 @@ def _process_job(job_id: int) -> None:
 
 def _is_within_schedule_window(current_hour: int, start_hour: int, end_hour: int) -> bool:
     if start_hour <= end_hour:
-        return start_hour <= current_hour <= end_hour
-    return current_hour >= start_hour or current_hour <= end_hour
+        return start_hour <= current_hour < end_hour
+    return current_hour >= start_hour or current_hour < end_hour
 
 
 def _library_job_can_start(settings: Settings, now: datetime, library: Library | None, profile: LibraryProfile | None) -> bool:

@@ -169,6 +169,19 @@ def test_library_job_can_start_honors_library_schedule_and_enablement():
     assert queue._library_job_can_start(settings, datetime(2024, 1, 1, 23, 0, 0), library, profile) is False
 
 
+def test_is_within_schedule_window_includes_start_hour_excludes_end_hour_for_same_day_window():
+    assert queue._is_within_schedule_window(current_hour=9, start_hour=9, end_hour=17) is True
+    assert queue._is_within_schedule_window(current_hour=16, start_hour=9, end_hour=17) is True
+    assert queue._is_within_schedule_window(current_hour=17, start_hour=9, end_hour=17) is False
+
+
+def test_is_within_schedule_window_overnight_wraps_and_excludes_end_hour():
+    assert queue._is_within_schedule_window(current_hour=22, start_hour=22, end_hour=6) is True
+    assert queue._is_within_schedule_window(current_hour=2, start_hour=22, end_hour=6) is True
+    assert queue._is_within_schedule_window(current_hour=6, start_hour=22, end_hour=6) is False
+    assert queue._is_within_schedule_window(current_hour=12, start_hour=22, end_hour=6) is False
+
+
 
 
 def test_stop_worker_does_not_mark_active_jobs_cancel_requested():
