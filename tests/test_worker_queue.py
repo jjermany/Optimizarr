@@ -429,6 +429,55 @@ def test_claim_next_queued_job_honors_oldest_sort_when_no_resume_priority(tmp_pa
 
         assert selected_id == oldest.id
 
+
+def test_process_job_ignores_late_progress_after_pause(monkeypatch):
+    queue.resume_queue()
+    queue.stop_event.clear()
+
+    monkeypatch.setattr(queue, 'preflight_job', lambda *_: True)
+    monkeypatch.setattr(queue, '_publish_job', lambda *_args, **_kwargs: None)
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, global_quiet_enabled=False))
+        job = Job(input_path='/media/pause-race.mkv', status='queued', progress_percent=0)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    def fake_optimize_video(_input_path, _settings, **kwargs):
+        progress_callback = kwargs['progress_callback']
+        progress_callback({'progress_percent': 41, 'fps': 24.0, 'eta_seconds': 5})
+
+        with SessionLocal() as db:
+            paused_job = db.query(Job).filter(Job.id == job_id).first()
+            assert paused_job is not None
+            paused_job.status = 'paused'
+            paused_job.progress_percent = 41
+            db.commit()
+
+        # Simulate a delayed callback that arrives after pause was requested.
+        progress_callback({'progress_percent': 99, 'fps': 60.0, 'eta_seconds': 1})
+
+        return OptimizationMetrics(
+            input_path='/media/pause-race.mkv',
+            output_path='/media/pause-race-1080p.mkv',
+            status='cancelled',
+            processed_seconds=99.0,
+        )
+
+    monkeypatch.setattr(queue, 'optimize_video', fake_optimize_video)
+
+    queue._process_job(job_id)
+
+    with SessionLocal() as db:
+        paused_job = db.query(Job).filter(Job.id == job_id).first()
+        assert paused_job is not None
+        assert paused_job.status == 'paused'
+        assert paused_job.progress_percent == 41
+
+
 def test_start_queued_job_manual_pauses_running_job(monkeypatch):
     queue.resume_queue()
     published = []

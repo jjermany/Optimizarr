@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
+PAUSED_STATUSES = {'paused', 'paused_schedule'}
 MIN_SOURCE_HEIGHT = 2000
 _disk_space_alert_active = False
 
@@ -301,7 +302,7 @@ def _process_job(job_id: int) -> None:
 
         def on_progress(update: dict[str, float | int | None]) -> None:
             db.refresh(job)
-            if job.status in TERMINAL_STATUSES:
+            if job.status in TERMINAL_STATUSES or job.status in PAUSED_STATUSES:
                 return
             job.progress_percent = int(update.get('progress_percent') or 0)
             job.fps = update.get('fps') if isinstance(update.get('fps'), float) else None

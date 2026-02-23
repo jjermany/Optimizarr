@@ -1833,7 +1833,7 @@ def optimize_video(
             job_tag, metrics.skipped_reason, metrics.encoder_used, metrics.hwaccel_used,
         )
 
-    if progress_callback:
+    if progress_callback and metrics.status in {'complete', 'failed'}:
         progress_callback(
             {
                 'progress_percent': 100 if metrics.status == 'complete' else min(99, int(metrics.processed_seconds)),
