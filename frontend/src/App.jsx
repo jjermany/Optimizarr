@@ -3,10 +3,13 @@ import {
   abortAllJobs,
   abortJob,
   cancelJob,
+  cancelDownloadJob,
   discardJobProgress,
   createLibrary,
   deleteJob,
   deleteLibrary,
+  fetchDownloadClientSettings,
+  fetchDownloadJobs,
   fetchLibraries,
   fetchEncoders,
   fetchLibraryProfile,
@@ -15,6 +18,7 @@ import {
   fetchNotificationSettings,
   fetchPlexLibraries,
   fetchPlexSettings,
+  fetchProwlarrSettings,
   fetchQueueStatus,
   fetchSettings,
   fetchWsToken,
@@ -25,6 +29,7 @@ import {
   requeueJob,
   resumeJob,
   resumeQueue,
+  retryDownloadJob,
   retryJob,
   startJob,
   runCleanup,
@@ -32,11 +37,15 @@ import {
   runRecovery,
   scanLibrary,
   sendTestNotification,
+  testDownloadClientConnection,
   testPlexConnection,
+  testProwlarrConnection,
+  updateDownloadClientSettings,
   updateLibrary,
   updateLibraryProfile,
   updateNotificationSettings,
   updatePlexSettings,
+  updateProwlarrSettings,
   updateSettings,
 } from './api';
 import StatCard from './components/StatCard';
@@ -449,6 +458,13 @@ export default function App() {
   const [loadingPlexLibraries, setLoadingPlexLibraries] = useState(false);
   const [savingPlexSettings, setSavingPlexSettings] = useState(false);
   const [testingPlexConnection, setTestingPlexConnection] = useState(false);
+  const [prowlarrSettings, setProwlarrSettings] = useState();
+  const [savingProwlarrSettings, setSavingProwlarrSettings] = useState(false);
+  const [testingProwlarrConnection, setTestingProwlarrConnection] = useState(false);
+  const [downloadClientSettings, setDownloadClientSettings] = useState();
+  const [savingDownloadClientSettings, setSavingDownloadClientSettings] = useState(false);
+  const [testingDownloadClientConnection, setTestingDownloadClientConnection] = useState(false);
+  const [downloadJobs, setDownloadJobs] = useState([]);
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
   const [profileErrors, setProfileErrors] = useState({});
@@ -609,7 +625,7 @@ export default function App() {
 
   async function refreshAll() {
     try {
-      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus] = await Promise.all([
+      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus, nextProwlarrSettings, nextDownloadClientSettings, nextDownloadJobs] = await Promise.all([
         fetchMetrics(),
         fetchJobs(),
         fetchSettings(),
@@ -617,12 +633,18 @@ export default function App() {
         fetchPlexSettings(),
         fetchEncoders(),
         fetchQueueStatus(),
+        fetchProwlarrSettings().catch(() => null),
+        fetchDownloadClientSettings().catch(() => null),
+        fetchDownloadJobs().catch(() => []),
       ]);
       setMetrics(nextMetrics);
       setJobs(nextJobs.filter((job) => !isAbortedJob(job)));
       setSettings(nextSettings);
       setNotificationSettings(nextNotificationSettings);
       setPlexSettings(nextPlexSettings);
+      if (nextProwlarrSettings) setProwlarrSettings(nextProwlarrSettings);
+      if (nextDownloadClientSettings) setDownloadClientSettings(nextDownloadClientSettings);
+      setDownloadJobs(nextDownloadJobs ?? []);
       const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
       setAvailableEncodersByCodec(encoderMap);
       setQueuePaused(nextQueueStatus?.status === 'paused');
@@ -813,6 +835,18 @@ export default function App() {
         websocket.onmessage = (event) => {
           const payload = JSON.parse(event.data);
           if (payload.type === 'job_update') { mergeJobUpdate(payload.data); return; }
+          if (payload.type === 'download_job_update') {
+            setDownloadJobs((prev) => {
+              const idx = prev.findIndex((dj) => dj.id === payload.data?.id);
+              if (idx >= 0) {
+                const updated = [...prev];
+                updated[idx] = { ...updated[idx], ...payload.data };
+                return updated;
+              }
+              return [...prev, payload.data];
+            });
+            return;
+          }
           if (payload.type === 'metrics_update') { setMetrics(payload.data); return; }
           if (payload.type === 'library_update') { refreshLibrariesAndProfiles(); return; }
           if (payload.type === 'notification') {
@@ -1088,6 +1122,89 @@ export default function App() {
       pushToast(testError.message || 'Plex connection test failed.', 'error');
     } finally {
       setTestingPlexConnection(false);
+    }
+  }
+
+  async function saveProwlarrSettings() {
+    if (!prowlarrSettings) return;
+    setSavingProwlarrSettings(true);
+    try {
+      const updated = await updateProwlarrSettings(prowlarrSettings);
+      setProwlarrSettings(updated);
+      pushToast('Prowlarr settings saved.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Could not save Prowlarr settings.', 'error');
+    } finally {
+      setSavingProwlarrSettings(false);
+    }
+  }
+
+  async function handleTestProwlarrConnection() {
+    setTestingProwlarrConnection(true);
+    try {
+      const result = await testProwlarrConnection();
+      if (result?.success) {
+        pushToast(`Prowlarr connected. Found ${result.indexer_count ?? 0} indexer(s).`, 'success');
+      } else {
+        pushToast(result?.error || 'Prowlarr connection failed.', 'error');
+      }
+    } catch (err) {
+      pushToast(err.message || 'Prowlarr connection test failed.', 'error');
+    } finally {
+      setTestingProwlarrConnection(false);
+    }
+  }
+
+  async function saveDownloadClientSettings() {
+    if (!downloadClientSettings) return;
+    setSavingDownloadClientSettings(true);
+    try {
+      const updated = await updateDownloadClientSettings(downloadClientSettings);
+      setDownloadClientSettings(updated);
+      pushToast('Download client settings saved.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Could not save download client settings.', 'error');
+    } finally {
+      setSavingDownloadClientSettings(false);
+    }
+  }
+
+  async function handleTestDownloadClientConnection() {
+    setTestingDownloadClientConnection(true);
+    try {
+      const result = await testDownloadClientConnection();
+      if (result?.success) {
+        pushToast(`Download client connected. Version: ${result.version ?? 'unknown'}.`, 'success');
+      } else {
+        pushToast(result?.error || 'Download client connection failed.', 'error');
+      }
+    } catch (err) {
+      pushToast(err.message || 'Download client connection test failed.', 'error');
+    } finally {
+      setTestingDownloadClientConnection(false);
+    }
+  }
+
+  async function handleCancelDownloadJob(jobId) {
+    try {
+      await cancelDownloadJob(jobId);
+      const updated = await fetchDownloadJobs();
+      setDownloadJobs(updated ?? []);
+      await refreshAll();
+      pushToast('Download job cancelled; fallback encode queued.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Could not cancel download job.', 'error');
+    }
+  }
+
+  async function handleRetryDownloadJob(jobId) {
+    try {
+      await retryDownloadJob(jobId);
+      const updated = await fetchDownloadJobs();
+      setDownloadJobs(updated ?? []);
+      pushToast('Download job re-queued for search.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Could not retry download job.', 'error');
     }
   }
 
@@ -1575,6 +1692,32 @@ export default function App() {
                     </div>
                   )}
 
+                  {/* Download Mode */}
+                  <div>
+                    <hr className="mb-5 border-slate-800" />
+                    <SectionTitle>Download Mode</SectionTitle>
+                    <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                      <div>
+                        <p className="text-sm font-medium text-slate-200">Enable Download Mode</p>
+                        <p className="text-xs text-slate-500">Search Prowlarr for a pre-encoded version before falling back to transcoding. Requires Prowlarr and a download client to be configured in Settings.</p>
+                      </div>
+                      <Toggle
+                        checked={profileDraft.download_enabled ?? false}
+                        onChange={(e) => setProfileDraft((prev) => ({ ...prev, download_enabled: e.target.checked }))}
+                      />
+                    </div>
+                    {profileDraft.download_enabled && (
+                      <FormField label="Download Timeout (minutes)" hint="If no completed download is found after this many minutes, the job falls back to encoding.">
+                        <TextInput
+                          type="number"
+                          min={1}
+                          value={profileDraft.download_timeout_minutes ?? 60}
+                          onChange={(e) => setProfileDraft((prev) => ({ ...prev, download_timeout_minutes: Number(e.target.value) }))}
+                        />
+                      </FormField>
+                    )}
+                  </div>
+
                   <Btn variant="primary" size="lg" disabled={savingProfile} onClick={handleSaveLibraryProfile} className="w-full sm:w-auto">
                     {savingProfile ? 'Saving…' : 'Save Profile'}
                   </Btn>
@@ -1609,6 +1752,16 @@ export default function App() {
                     History
                     <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'history' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredHistoryJobs.length}</span>
                   </button>
+                  {downloadJobs.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setJobsView('downloads')}
+                      className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'downloads' ? 'bg-violet-500 text-slate-950 shadow-sm shadow-violet-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
+                    >
+                      Downloads
+                      <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'downloads' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{downloadJobs.length}</span>
+                    </button>
+                  )}
                 </div>
                 {/* Action buttons for the active view */}
                 {jobsView === 'queue' && (
@@ -1861,6 +2014,78 @@ export default function App() {
                   )}
                 </>
               )}
+
+              {/* Downloads tab content */}
+              {jobsView === 'downloads' && (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-slate-800">
+                    <thead className="bg-slate-800/50">
+                      <tr>
+                        {['ID', 'Title', 'Library', 'Status', 'Search Query', 'Progress', 'Actions'].map((h) => (
+                          <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {downloadJobs.length === 0 && (
+                        <tr>
+                          <td colSpan={7} className="px-4 py-10 text-center text-sm text-slate-500">No download jobs.</td>
+                        </tr>
+                      )}
+                      {downloadJobs.map((dj) => {
+                        const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
+                        const fileName = dj.source_file_path ? dj.source_file_path.split('/').pop() : '—';
+                        const isActive = ['searching', 'downloading', 'stalled', 'importing'].includes(dj.status);
+                        const isTerminal = ['complete', 'failed', 'timed_out', 'fallback_queued'].includes(dj.status);
+                        const statusColor =
+                          dj.status === 'complete' ? 'text-emerald-400' :
+                          dj.status === 'downloading' ? 'text-cyan-400' :
+                          dj.status === 'importing' ? 'text-violet-400' :
+                          dj.status === 'failed' || dj.status === 'timed_out' ? 'text-red-400' :
+                          dj.status === 'stalled' ? 'text-amber-400' :
+                          dj.status === 'fallback_queued' ? 'text-slate-400' :
+                          'text-slate-300';
+                        return (
+                          <tr key={dj.id} className="transition-colors duration-100 hover:bg-slate-800/30">
+                            <td className="px-4 py-3 text-xs text-slate-500">{dj.id}</td>
+                            <td className="max-w-[200px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{fileName}</td>
+                            <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
+                            <td className="px-4 py-3 text-sm">
+                              <span className={`capitalize ${statusColor}`}>{dj.status.replace(/_/g, ' ')}</span>
+                              {dj.error_message && (
+                                <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>
+                              )}
+                            </td>
+                            <td className="max-w-[180px] truncate px-4 py-3 text-xs text-slate-400" title={dj.search_query}>{dj.search_query ?? '—'}</td>
+                            <td className="px-4 py-3">
+                              {dj.status === 'downloading' ? (
+                                <div className="flex items-center gap-2">
+                                  <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-700">
+                                    <div className="h-full rounded-full bg-violet-500 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
+                                  </div>
+                                  <span className="text-xs text-slate-400">{dj.progress_percent}%</span>
+                                </div>
+                              ) : (
+                                <span className="text-xs text-slate-600">—</span>
+                              )}
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="flex flex-wrap gap-1.5">
+                                {isActive && (
+                                  <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Cancel</Btn>
+                                )}
+                                {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
+                                  <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
 
           </section>
@@ -2015,6 +2240,132 @@ export default function App() {
                 </Btn>
               </div>
             </SectionCard>
+
+            {/* Prowlarr Integration */}
+            {prowlarrSettings && (
+              <SectionCard>
+                <SectionTitle>Prowlarr Integration</SectionTitle>
+                <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200">Enable Prowlarr</p>
+                    <p className="text-xs text-slate-500">Search Prowlarr indexers for pre-encoded releases instead of transcoding.</p>
+                  </div>
+                  <Toggle
+                    checked={prowlarrSettings.enabled}
+                    onChange={(e) => setProwlarrSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
+                  />
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <FormField label="Prowlarr Host" hint="Protocol, hostname and port, e.g. http://192.168.1.100:9696" span2>
+                    <TextInput
+                      type="text"
+                      value={prowlarrSettings.host}
+                      onChange={(e) => setProwlarrSettings((prev) => ({ ...prev, host: e.target.value }))}
+                      placeholder="http://localhost:9696"
+                    />
+                  </FormField>
+                  <FormField label="API Key" hint="Found in Prowlarr → Settings → General → API Key" span2>
+                    <TextInput
+                      type="password"
+                      value={prowlarrSettings.api_key}
+                      onChange={(e) => setProwlarrSettings((prev) => ({ ...prev, api_key: e.target.value }))}
+                      placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    />
+                  </FormField>
+                </div>
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <Btn variant="violet" disabled={savingProwlarrSettings} onClick={saveProwlarrSettings}>
+                    {savingProwlarrSettings ? 'Saving…' : 'Save Prowlarr Settings'}
+                  </Btn>
+                  <Btn variant="secondary" disabled={testingProwlarrConnection} onClick={handleTestProwlarrConnection}>
+                    {testingProwlarrConnection ? 'Testing…' : 'Test Connection'}
+                  </Btn>
+                </div>
+              </SectionCard>
+            )}
+
+            {/* Download Client */}
+            {downloadClientSettings && (
+              <SectionCard>
+                <SectionTitle>Download Client</SectionTitle>
+                <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200">Enable Download Client</p>
+                    <p className="text-xs text-slate-500">Required for Download Mode. Optimizarr polls this client for download progress and imports completed files.</p>
+                  </div>
+                  <Toggle
+                    checked={downloadClientSettings.enabled}
+                    onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
+                  />
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <FormField label="Client Type">
+                    <SelectInput
+                      value={downloadClientSettings.client_type}
+                      onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, client_type: e.target.value }))}
+                    >
+                      <option value="qbittorrent">qBittorrent</option>
+                      <option value="sabnzbd">SABnzbd</option>
+                    </SelectInput>
+                  </FormField>
+                  <FormField label="Host" hint="Protocol and hostname, e.g. http://192.168.1.100">
+                    <TextInput
+                      type="text"
+                      value={downloadClientSettings.host}
+                      onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, host: e.target.value }))}
+                      placeholder="http://localhost"
+                    />
+                  </FormField>
+                  <FormField label="Port">
+                    <TextInput
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={downloadClientSettings.port}
+                      onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, port: Number(e.target.value) }))}
+                    />
+                  </FormField>
+                  {downloadClientSettings.client_type === 'qbittorrent' && (
+                    <>
+                      <FormField label="Username">
+                        <TextInput
+                          type="text"
+                          value={downloadClientSettings.username}
+                          onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, username: e.target.value }))}
+                          placeholder="admin"
+                        />
+                      </FormField>
+                      <FormField label="Password">
+                        <TextInput
+                          type="password"
+                          value={downloadClientSettings.password}
+                          onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, password: e.target.value }))}
+                          placeholder="••••••••"
+                        />
+                      </FormField>
+                    </>
+                  )}
+                  {downloadClientSettings.client_type === 'sabnzbd' && (
+                    <FormField label="API Key" span2>
+                      <TextInput
+                        type="password"
+                        value={downloadClientSettings.api_key}
+                        onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, api_key: e.target.value }))}
+                        placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                      />
+                    </FormField>
+                  )}
+                </div>
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <Btn variant="violet" disabled={savingDownloadClientSettings} onClick={saveDownloadClientSettings}>
+                    {savingDownloadClientSettings ? 'Saving…' : 'Save Client Settings'}
+                  </Btn>
+                  <Btn variant="secondary" disabled={testingDownloadClientConnection} onClick={handleTestDownloadClientConnection}>
+                    {testingDownloadClientConnection ? 'Testing…' : 'Test Connection'}
+                  </Btn>
+                </div>
+              </SectionCard>
+            )}
 
             {/* Plex Integration */}
             <SectionCard>

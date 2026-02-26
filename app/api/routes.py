@@ -22,9 +22,12 @@ from app.models.library import (
     OutputConflictPolicyEnum,
     PreferredEncoderEnum,
 )
+from app.models.download_client_settings import DownloadClientSettings, DownloadClientTypeEnum
+from app.models.download_job import DownloadJob, DownloadJobStatus
+from app.models.prowlarr_settings import ProwlarrSettings
 from app.models.settings import DiscoveryMethodEnum, QueueSortEnum, Settings
 
-from app.services import notification_service, plex_service
+from app.services import download_client_service, notification_service, plex_service, prowlarr_service
 from app.services.job_service import (
     abort_all_jobs,
     abort_job,
@@ -319,6 +322,73 @@ class PlexLibrarySection(BaseModel):
     type: str
 
 
+class ProwlarrSettingsResponse(BaseModel):
+    enabled: bool
+    host: str
+    api_key: str
+
+
+class ProwlarrSettingsUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    host: str | None = None
+    api_key: str | None = None
+
+
+class DownloadClientSettingsResponse(BaseModel):
+    enabled: bool
+    client_type: DownloadClientTypeEnum
+    host: str
+    port: int
+    username: str
+    password: str
+    api_key: str
+
+
+class DownloadClientSettingsUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    client_type: DownloadClientTypeEnum | None = None
+    host: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = None
+    password: str | None = None
+    api_key: str | None = None
+
+
+class DownloadJobResponse(BaseModel):
+    id: int
+    library_id: int | None = None
+    source_file_path: str
+    search_query: str | None = None
+    download_hash: str | None = None
+    status: str
+    progress_percent: int
+    downloaded_file_path: str | None = None
+    imported_file_path: str | None = None
+    error_message: str | None = None
+    encode_job_id: int | None = None
+    created_at: str | None = None
+    completed_at: str | None = None
+
+    @classmethod
+    def from_orm(cls, dj: DownloadJob):
+        from datetime import timezone
+        return cls(
+            id=dj.id,
+            library_id=dj.library_id,
+            source_file_path=dj.source_file_path,
+            search_query=dj.search_query,
+            download_hash=dj.download_hash,
+            status=dj.status,
+            progress_percent=dj.progress_percent,
+            downloaded_file_path=dj.downloaded_file_path,
+            imported_file_path=dj.imported_file_path,
+            error_message=dj.error_message,
+            encode_job_id=dj.encode_job_id,
+            created_at=dj.created_at.replace(tzinfo=timezone.utc).isoformat() if dj.created_at else None,
+            completed_at=dj.completed_at.replace(tzinfo=timezone.utc).isoformat() if dj.completed_at else None,
+        )
+
+
 class LibraryBaseRequest(BaseModel):
     name: str = Field(..., min_length=1)
     path: str = Field(..., min_length=1)
@@ -392,6 +462,8 @@ class LibraryProfileResponse(BaseModel):
     av1_fallback_codec: CodecEnum
     preferred_video_encoder: PreferredEncoderEnum
     plex_library_id: str | None = None
+    download_enabled: bool = False
+    download_timeout_minutes: int = 60
 
     @classmethod
     def from_orm_profile(cls, profile: LibraryProfile):
@@ -417,6 +489,8 @@ class LibraryProfileResponse(BaseModel):
             av1_fallback_codec=profile.av1_fallback_codec,
             preferred_video_encoder=profile.preferred_video_encoder,
             plex_library_id=profile.plex_library_id,
+            download_enabled=getattr(profile, 'download_enabled', False),
+            download_timeout_minutes=getattr(profile, 'download_timeout_minutes', 60),
         )
 
 
@@ -451,6 +525,8 @@ class LibraryProfileUpdateRequest(BaseModel):
     av1_fallback_codec: CodecEnum | None = None
     preferred_video_encoder: PreferredEncoderEnum | None = None
     plex_library_id: str | None = None
+    download_enabled: bool | None = None
+    download_timeout_minutes: int | None = Field(default=None, ge=1)
 
     @field_validator('av1_fallback_codec')
     @classmethod
@@ -1063,6 +1139,103 @@ def resume_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
     worker_queue.resume_queue(reason='manual')
     broker.publish_notification('queue_resumed')
     return {'status': 'running'}
+
+
+@router.get('/prowlarr/settings', response_model=ProwlarrSettingsResponse)
+def get_prowlarr_settings(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ProwlarrSettingsResponse:
+    settings = prowlarr_service.get_or_create_prowlarr_settings(db)
+    return ProwlarrSettingsResponse(**prowlarr_service.settings_to_payload(settings))
+
+
+@router.put('/prowlarr/settings', response_model=ProwlarrSettingsResponse)
+def update_prowlarr_settings(
+    payload: ProwlarrSettingsUpdateRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> ProwlarrSettingsResponse:
+    settings = prowlarr_service.update_settings(db, payload.model_dump(exclude_none=True))
+    return ProwlarrSettingsResponse(**prowlarr_service.settings_to_payload(settings))
+
+
+@router.post('/prowlarr/test', status_code=200)
+def test_prowlarr_connection(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> dict:
+    settings = prowlarr_service.get_or_create_prowlarr_settings(db)
+    return prowlarr_service.test_connection(settings)
+
+
+@router.get('/download-client/settings', response_model=DownloadClientSettingsResponse)
+def get_download_client_settings(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> DownloadClientSettingsResponse:
+    settings = download_client_service.get_or_create_settings(db)
+    return DownloadClientSettingsResponse(**download_client_service.settings_to_payload(settings))
+
+
+@router.put('/download-client/settings', response_model=DownloadClientSettingsResponse)
+def update_download_client_settings(
+    payload: DownloadClientSettingsUpdateRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> DownloadClientSettingsResponse:
+    settings = download_client_service.update_settings(db, payload.model_dump(exclude_none=True))
+    return DownloadClientSettingsResponse(**download_client_service.settings_to_payload(settings))
+
+
+@router.post('/download-client/test', status_code=200)
+def test_download_client_connection(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> dict:
+    settings = download_client_service.get_or_create_settings(db)
+    return download_client_service.test_connection(settings)
+
+
+@router.get('/download-jobs', response_model=list[DownloadJobResponse])
+def list_download_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> list[DownloadJobResponse]:
+    jobs = db.query(DownloadJob).order_by(DownloadJob.created_at.desc()).all()
+    return [DownloadJobResponse.from_orm(dj) for dj in jobs]
+
+
+@router.get('/download-jobs/{job_id}', response_model=DownloadJobResponse)
+def get_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> DownloadJobResponse:
+    dj = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+    if not dj:
+        raise HTTPException(status_code=404, detail='Download job not found')
+    return DownloadJobResponse.from_orm(dj)
+
+
+@router.post('/download-jobs/{job_id}/cancel', response_model=DownloadJobResponse)
+def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> DownloadJobResponse:
+    from app.services.download_monitor_service import _fallback_to_encode, _mark_failed
+    dj = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+    if not dj:
+        raise HTTPException(status_code=404, detail='Download job not found')
+    terminal = {DownloadJobStatus.complete.value, DownloadJobStatus.fallback_queued.value, DownloadJobStatus.failed.value, DownloadJobStatus.timed_out.value}
+    if dj.status in terminal:
+        raise HTTPException(status_code=409, detail='Download job is already in a terminal state')
+    library = db.query(Library).filter(Library.id == dj.library_id).first()
+    _mark_failed(db, dj, 'Cancelled by user')
+    if library and library.profile:
+        _fallback_to_encode(db, dj, library, library.profile)
+    return DownloadJobResponse.from_orm(dj)
+
+
+@router.post('/download-jobs/{job_id}/retry', response_model=DownloadJobResponse)
+def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> DownloadJobResponse:
+    dj = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+    if not dj:
+        raise HTTPException(status_code=404, detail='Download job not found')
+    retryable = {DownloadJobStatus.failed.value, DownloadJobStatus.timed_out.value, DownloadJobStatus.stalled.value}
+    if dj.status not in retryable:
+        raise HTTPException(status_code=409, detail='Only failed, timed_out, or stalled download jobs can be retried')
+    from datetime import datetime as _dt
+    dj.status = DownloadJobStatus.searching.value
+    dj.error_message = None
+    dj.download_hash = None
+    dj.progress_percent = 0
+    dj.completed_at = None
+    dj.encode_job_id = None
+    dj.created_at = _dt.utcnow()
+    db.commit()
+    db.refresh(dj)
+    from app.services.download_monitor_service import _publish_download_job
+    _publish_download_job(dj)
+    return DownloadJobResponse.from_orm(dj)
 
 
 @router.get('/auth/ws-token')

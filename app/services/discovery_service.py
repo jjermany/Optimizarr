@@ -309,6 +309,17 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         if source_resolution <= profile.target_resolution:
             return None
 
+    # If download mode is enabled and integrations are ready, create a download job instead
+    if getattr(profile, 'download_enabled', False):
+        from app.services.download_monitor_service import (
+            can_attempt_download,
+            create_download_job,
+            download_job_exists_for_source,
+        )
+        if can_attempt_download(db) and not download_job_exists_for_source(db, source_path):
+            create_download_job(db, source_path, library, profile)
+            return None
+
     job = create_job(
         db,
         source_path,

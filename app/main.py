@@ -10,6 +10,7 @@ from app.api.routes import router
 from app.core.database import SessionLocal, init_db
 from app.core.logging_config import configure_logging
 from app.services.discovery_service import start_discovery_worker, stop_discovery_worker
+from app.services.download_monitor_service import start_download_monitor, stop_download_monitor
 from app.services import notification_service
 from app.services.notification_service import start_notification_worker, stop_notification_worker
 from app.services.optimization_service import refresh_encoder_cache
@@ -87,6 +88,7 @@ async def lifespan(_: FastAPI):
     notification_thread = start_notification_worker()
     worker_thread = start_worker()
     discovery_thread = start_discovery_worker()
+    download_monitor_thread = start_download_monitor()
     try:
         yield
     finally:
@@ -94,11 +96,13 @@ async def lifespan(_: FastAPI):
         stop_worker()
         stop_notification_worker()
         stop_discovery_worker()
+        stop_download_monitor()
         cleanup_stop_event.set()
         broker.stop()
         worker_thread.join(timeout=5)
         notification_thread.join(timeout=5)
         discovery_thread.join(timeout=5)
+        download_monitor_thread.join(timeout=5)
         cleanup_thread.join(timeout=5)
         logger.info('Optimizarr shutdown complete')
 

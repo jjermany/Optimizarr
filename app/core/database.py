@@ -211,3 +211,16 @@ def init_db() -> None:
             'plex_library_id',
             'plex_library_id VARCHAR(16)',
         )
+
+        _add_column_if_missing(
+            connection,
+            'library_profiles',
+            'download_enabled',
+            'download_enabled BOOLEAN NOT NULL DEFAULT 0',
+        )
+        _add_column_if_missing(
+            connection,
+            'library_profiles',
+            'download_timeout_minutes',
+            'download_timeout_minutes INTEGER NOT NULL DEFAULT 60',
+        )

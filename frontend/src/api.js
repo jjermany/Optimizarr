@@ -220,3 +220,45 @@ export function updatePlexSettings(payload) {
 export function testPlexConnection() {
   return request('/plex/test', { method: 'POST' });
 }
+
+export function fetchProwlarrSettings() {
+  return request('/prowlarr/settings');
+}
+
+export function updateProwlarrSettings(payload) {
+  return request('/prowlarr/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function testProwlarrConnection() {
+  return request('/prowlarr/test', { method: 'POST' });
+}
+
+export function fetchDownloadClientSettings() {
+  return request('/download-client/settings');
+}
+
+export function updateDownloadClientSettings(payload) {
+  return request('/download-client/settings', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function testDownloadClientConnection() {
+  return request('/download-client/test', { method: 'POST' });
+}
+
+export function fetchDownloadJobs() {
+  return request('/download-jobs');
+}
+
+export function cancelDownloadJob(jobId) {
+  return request(`/download-jobs/${jobId}/cancel`, { method: 'POST' });
+}
+
+export function retryDownloadJob(jobId) {
+  return request(`/download-jobs/${jobId}/retry`, { method: 'POST' });
+}
