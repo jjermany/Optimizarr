@@ -23,8 +23,14 @@ from app.services.realtime_service import broker
 logger = logging.getLogger(__name__)
 
 _stop_event = threading.Event()
+# Signalled whenever a new DownloadJob is created so the loop wakes immediately
+_wake_event = threading.Event()
 _thread: threading.Thread | None = None
-_POLL_INTERVAL_SECONDS = 30
+
+# Adaptive poll intervals
+_POLL_DOWNLOADING_SECONDS = 3   # fast polling while files are transferring
+_POLL_SEARCHING_SECONDS = 10    # moderate polling while waiting for Prowlarr
+_POLL_IDLE_SECONDS = 30         # slow polling when nothing is active
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -37,6 +43,7 @@ def start_download_monitor() -> threading.Thread:
         return _thread
 
     _stop_event.clear()
+    _wake_event.clear()
     _thread = threading.Thread(target=_monitor_loop, name='download-monitor', daemon=True)
     _thread.start()
     logger.info('Download monitor worker started')
@@ -45,20 +52,40 @@ def start_download_monitor() -> threading.Thread:
 
 def stop_download_monitor() -> None:
     _stop_event.set()
+    _wake_event.set()  # unblock any pending wait immediately
 
 
 def _monitor_loop() -> None:
     while not _stop_event.is_set():
         db = SessionLocal()
+        sleep_seconds = _POLL_IDLE_SECONDS
         try:
+            has_downloading = (
+                db.query(DownloadJob)
+                .filter(DownloadJob.status == DownloadJobStatus.downloading.value)
+                .count()
+            ) > 0
+            has_searching = (
+                db.query(DownloadJob)
+                .filter(DownloadJob.status == DownloadJobStatus.searching.value)
+                .count()
+            ) > 0
+
             _process_searching_jobs(db)
             _process_downloading_jobs(db)
+
+            if has_downloading:
+                sleep_seconds = _POLL_DOWNLOADING_SECONDS
+            elif has_searching:
+                sleep_seconds = _POLL_SEARCHING_SECONDS
         except Exception:
             logger.exception('Download monitor iteration failed')
         finally:
             db.close()
 
-        _stop_event.wait(timeout=_POLL_INTERVAL_SECONDS)
+        # Wait for the computed interval OR until woken by a new job / shutdown
+        _wake_event.wait(timeout=sleep_seconds)
+        _wake_event.clear()
 
     logger.info('Download monitor worker stopped')
 
@@ -103,6 +130,8 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
     db.refresh(dj)
     _publish_download_job(dj)
     logger.info('Download job %s created for %r', dj.id, source_path)
+    # Wake the monitor loop immediately so the Prowlarr search fires now
+    _wake_event.set()
     return dj
 
 
