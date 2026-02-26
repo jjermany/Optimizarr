@@ -193,39 +193,27 @@ def _rank_candidates(releases: list[dict]) -> list[dict]:
 
 def _select_best_release(releases: list[dict], profile: LibraryProfile) -> dict | None:
     """
-    Two-pass selection:
-    1. Always prefer an SDR release at the target resolution.
-    2. If no SDR release exists and tone_map_hdr is enabled, accept an HDR
-       release (it will be tone-mapped via an encode job after import).
-    3. Return None if nothing suitable is found → caller falls back to encoding.
+    Select the best SDR release at the target resolution.
+
+    HDR releases are always rejected — downloading an HDR file defeats the
+    purpose of download mode (you would still need to encode/tone-map it).
+    If no SDR release is found the caller falls back to encoding the original.
     """
     res_str = f"{profile.target_resolution}p"
     sdr_candidates: list[dict] = []
-    hdr_candidates: list[dict] = []
 
     for r in releases:
         title_lower = r.get('title', '').lower()
-        # Must mention the target resolution
         if res_str.lower() not in title_lower:
             continue
         if _is_hdr_release(title_lower):
-            hdr_candidates.append(r)
-        else:
-            sdr_candidates.append(r)
+            continue  # never accept HDR downloads
+        sdr_candidates.append(r)
 
-    # Pass 1: SDR — always preferred regardless of tone_map_hdr setting
     if sdr_candidates:
         return _rank_candidates(sdr_candidates)[0]
 
-    # Pass 2: HDR — only acceptable when tone-mapping is enabled
-    if getattr(profile, 'tone_map_hdr', False) and hdr_candidates:
-        logger.info(
-            'No SDR release found; accepting HDR release (will be tone-mapped after import)'
-        )
-        return _rank_candidates(hdr_candidates)[0]
-
-    # Nothing suitable found; caller will fall back to encoding the original
-    return None
+    return None  # no SDR release found; caller falls back to encoding
 
 
 # ─────────────────────────────────────────────────────────────────────────────
