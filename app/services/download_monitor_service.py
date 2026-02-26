@@ -177,26 +177,55 @@ def _build_search_query(source_path: str, profile: LibraryProfile) -> str:
     return ' '.join(filter(None, [title, year, resolution]))
 
 
-_HDR_TERMS = {'hdr', 'hdr10', 'hdr10+', 'dolby vision', ' dv ', 'hlg'}
+def _is_hdr_release(title_lower: str) -> bool:
+    """Return True if the release title indicates HDR content."""
+    # 'hdr' catches hdr, hdr10, hdr10+; 'dolby vision' catches full name
+    if any(tag in title_lower for tag in ('hdr', 'dolby vision')):
+        return True
+    # Word-boundary match for standalone 'dv' or 'hlg' to avoid false positives
+    return bool(re.search(r'\b(dv|hlg)\b', title_lower))
+
+
+def _rank_candidates(releases: list[dict]) -> list[dict]:
+    """Sort releases by seeders descending, then size ascending."""
+    return sorted(releases, key=lambda r: (-r.get('seeders', 0), r.get('size', 0)))
 
 
 def _select_best_release(releases: list[dict], profile: LibraryProfile) -> dict | None:
+    """
+    Two-pass selection:
+    1. Always prefer an SDR release at the target resolution.
+    2. If no SDR release exists and tone_map_hdr is enabled, accept an HDR
+       release (it will be tone-mapped via an encode job after import).
+    3. Return None if nothing suitable is found → caller falls back to encoding.
+    """
     res_str = f"{profile.target_resolution}p"
-    candidates = []
+    sdr_candidates: list[dict] = []
+    hdr_candidates: list[dict] = []
+
     for r in releases:
         title_lower = r.get('title', '').lower()
-        # Must mention target resolution
+        # Must mention the target resolution
         if res_str.lower() not in title_lower:
             continue
-        # If tone_map_hdr is enabled, we want non-HDR content
-        if getattr(profile, 'tone_map_hdr', False):
-            if any(term in title_lower for term in _HDR_TERMS):
-                continue
-        candidates.append(r)
+        if _is_hdr_release(title_lower):
+            hdr_candidates.append(r)
+        else:
+            sdr_candidates.append(r)
 
-    # Sort by seeder count descending, then by size ascending (prefer smaller well-seeded)
-    candidates.sort(key=lambda r: (-r.get('seeders', 0), r.get('size', 0)))
-    return candidates[0] if candidates else None
+    # Pass 1: SDR — always preferred regardless of tone_map_hdr setting
+    if sdr_candidates:
+        return _rank_candidates(sdr_candidates)[0]
+
+    # Pass 2: HDR — only acceptable when tone-mapping is enabled
+    if getattr(profile, 'tone_map_hdr', False) and hdr_candidates:
+        logger.info(
+            'No SDR release found; accepting HDR release (will be tone-mapped after import)'
+        )
+        return _rank_candidates(hdr_candidates)[0]
+
+    # Nothing suitable found; caller will fall back to encoding the original
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
