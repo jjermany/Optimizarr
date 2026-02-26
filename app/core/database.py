@@ -224,3 +224,9 @@ def init_db() -> None:
             'download_timeout_minutes',
             'download_timeout_minutes INTEGER NOT NULL DEFAULT 60',
         )
+        _add_column_if_missing(
+            connection,
+            'library_profiles',
+            'download_quality_profile',
+            "download_quality_profile VARCHAR(16) NOT NULL DEFAULT 'any'",
+        )

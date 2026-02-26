@@ -47,6 +47,15 @@ class OutputConflictPolicyEnum(str, Enum):
     rename = 'rename'
 
 
+class DownloadQualityProfileEnum(str, Enum):
+    any = 'any'
+    remux = 'remux'
+    web_dl = 'web_dl'
+    webrip = 'webrip'
+    bluray = 'bluray'
+    hdtv = 'hdtv'
+
+
 class PreferredEncoderEnum(str, Enum):
     auto = 'auto'
     # QSV (Intel oneVPL — requires VPL GPU runtime in container)
@@ -121,6 +130,11 @@ class LibraryProfile(Base):
     plex_library_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     download_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     download_timeout_minutes: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    download_quality_profile: Mapped[DownloadQualityProfileEnum] = mapped_column(
+        SqlEnum(DownloadQualityProfileEnum),
+        default=DownloadQualityProfileEnum.any,
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

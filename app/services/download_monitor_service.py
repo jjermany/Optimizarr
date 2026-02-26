@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.download_job import DownloadJob, DownloadJobStatus
-from app.models.library import Library, LibraryProfile
+from app.models.library import DownloadQualityProfileEnum, Library, LibraryProfile
 from app.services import download_client_service, prowlarr_service
 from app.services.job_service import create_job
 from app.services.optimization_service import is_hdr_video, probe_video_height
@@ -158,6 +158,30 @@ def _publish_download_job(dj: DownloadJob) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Quality profile helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Keywords to append to the Prowlarr search query for each quality profile
+_QUALITY_SEARCH_TERMS: dict[str, str] = {
+    DownloadQualityProfileEnum.remux.value:  'REMUX',
+    DownloadQualityProfileEnum.web_dl.value: 'WEB-DL',
+    DownloadQualityProfileEnum.webrip.value: 'WEBRip',
+    DownloadQualityProfileEnum.bluray.value: 'BluRay',
+    DownloadQualityProfileEnum.hdtv.value:   'HDTV',
+}
+
+# Substrings to look for in a release title to confirm its quality source.
+# Multiple aliases cover common scene/release group naming conventions.
+_QUALITY_TITLE_KEYWORDS: dict[str, list[str]] = {
+    DownloadQualityProfileEnum.remux.value:  ['remux'],
+    DownloadQualityProfileEnum.web_dl.value: ['web-dl', 'webdl', 'web dl'],
+    DownloadQualityProfileEnum.webrip.value: ['webrip', 'web-rip'],
+    DownloadQualityProfileEnum.bluray.value: ['bluray', 'blu-ray', 'bdrip', 'bluray'],
+    DownloadQualityProfileEnum.hdtv.value:   ['hdtv'],
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Search query construction
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -174,7 +198,9 @@ def _build_search_query(source_path: str, profile: LibraryProfile) -> str:
         year = ''
         title = clean.strip()
     resolution = f"{profile.target_resolution}p"
-    return ' '.join(filter(None, [title, year, resolution]))
+    quality_val = str(getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any) or DownloadQualityProfileEnum.any)
+    quality_term = _QUALITY_SEARCH_TERMS.get(quality_val, '')
+    return ' '.join(filter(None, [title, year, resolution, quality_term]))
 
 
 def _is_hdr_release(title_lower: str) -> bool:
@@ -193,13 +219,19 @@ def _rank_candidates(releases: list[dict]) -> list[dict]:
 
 def _select_best_release(releases: list[dict], profile: LibraryProfile) -> dict | None:
     """
-    Select the best SDR release at the target resolution.
+    Select the best SDR release at the target resolution, respecting the
+    configured quality profile filter.
 
     HDR releases are always rejected — downloading an HDR file defeats the
     purpose of download mode (you would still need to encode/tone-map it).
-    If no SDR release is found the caller falls back to encoding the original.
+    If a specific quality profile is set (e.g. REMUX, WEB-DL) only releases
+    whose title contains a matching keyword are accepted.
+    If no matching SDR release is found the caller falls back to encoding.
     """
     res_str = f"{profile.target_resolution}p"
+    quality_val = str(getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any) or DownloadQualityProfileEnum.any)
+    quality_keywords = _QUALITY_TITLE_KEYWORDS.get(quality_val, [])
+
     sdr_candidates: list[dict] = []
 
     for r in releases:
@@ -208,12 +240,15 @@ def _select_best_release(releases: list[dict], profile: LibraryProfile) -> dict 
             continue
         if _is_hdr_release(title_lower):
             continue  # never accept HDR downloads
+        # If a specific quality is requested, require a matching keyword in the title
+        if quality_keywords and not any(kw in title_lower for kw in quality_keywords):
+            continue
         sdr_candidates.append(r)
 
     if sdr_candidates:
         return _rank_candidates(sdr_candidates)[0]
 
-    return None  # no SDR release found; caller falls back to encoding
+    return None  # no matching SDR release found; caller falls back to encoding
 
 
 # ─────────────────────────────────────────────────────────────────────────────

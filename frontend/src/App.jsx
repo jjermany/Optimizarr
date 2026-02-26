@@ -1707,14 +1707,29 @@ export default function App() {
                       />
                     </div>
                     {profileDraft.download_enabled && (
-                      <FormField label="Download Timeout (minutes)" hint="If no completed download is found after this many minutes, the job falls back to encoding.">
-                        <TextInput
-                          type="number"
-                          min={1}
-                          value={profileDraft.download_timeout_minutes ?? 60}
-                          onChange={(e) => setProfileDraft((prev) => ({ ...prev, download_timeout_minutes: Number(e.target.value) }))}
-                        />
-                      </FormField>
+                      <>
+                        <FormField label="Quality Profile" hint="Only accept releases matching this source type. 'Any' skips the quality filter and accepts whatever Prowlarr returns.">
+                          <SelectInput
+                            value={profileDraft.download_quality_profile ?? 'any'}
+                            onChange={(e) => setProfileDraft((prev) => ({ ...prev, download_quality_profile: e.target.value }))}
+                          >
+                            <option value="any">Any</option>
+                            <option value="remux">REMUX</option>
+                            <option value="web_dl">WEB-DL</option>
+                            <option value="webrip">WEBRip</option>
+                            <option value="bluray">Blu-Ray</option>
+                            <option value="hdtv">HDTV</option>
+                          </SelectInput>
+                        </FormField>
+                        <FormField label="Download Timeout (minutes)" hint="If no completed download is found after this many minutes, the job falls back to encoding.">
+                          <TextInput
+                            type="number"
+                            min={1}
+                            value={profileDraft.download_timeout_minutes ?? 60}
+                            onChange={(e) => setProfileDraft((prev) => ({ ...prev, download_timeout_minutes: Number(e.target.value) }))}
+                          />
+                        </FormField>
+                      </>
                     )}
                   </div>
 
