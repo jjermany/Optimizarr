@@ -172,6 +172,14 @@ function jobSortRank(job) {
   return 3;
 }
 
+function dlJobSortRank(dj) {
+  const s = dj.status;
+  if (s === 'downloading' || s === 'importing') return 0;
+  if (s === 'searching' || s === 'stalled') return 1;
+  if (s === 'pending') return 2;
+  return 3;
+}
+
 function compareActiveJobsDefault(a, b) {
   const rankDiff = jobSortRank(a) - jobSortRank(b);
   if (rankDiff !== 0) return rankDiff;
@@ -666,9 +674,45 @@ export default function App() {
     [sortedHistoryJobs, historySearch, libraryById],
   );
 
+  // Active download jobs filtered by search, tagged as 'download' type for unified queue
+  const filteredDlQueueItems = useMemo(() => {
+    const dlSearch = queueSearch.toLowerCase();
+    return downloadJobs
+      .filter((dj) => {
+        if (!ACTIVE_DL_STATUSES.has(dj.status)) return false;
+        if (!dlSearch) return true;
+        const { title, year } = extractTitleYear(dj.source_file_path);
+        const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '') : '';
+        return (
+          title.toLowerCase().includes(dlSearch)
+          || (year && year.includes(dlSearch))
+          || libName.toLowerCase().includes(dlSearch)
+          || dj.source_file_path?.toLowerCase().includes(dlSearch)
+          || String(dj.id).includes(dlSearch)
+        );
+      })
+      .map((dj) => ({ ...dj, _itemType: 'download' }));
+  }, [downloadJobs, queueSearch, libraryById]);
+
+  // Unified queue: encoding jobs + active download jobs, sorted by activity priority
+  const unifiedQueueItems = useMemo(() => {
+    const encodeItems = filteredActiveJobs.map((j, idx) => ({ ...j, _itemType: 'encode', _sortIdx: idx }));
+    const merged = [...encodeItems, ...filteredDlQueueItems];
+    merged.sort((a, b) => {
+      const ra = a._itemType === 'encode' ? jobSortRank(a) : dlJobSortRank(a);
+      const rb = b._itemType === 'encode' ? jobSortRank(b) : dlJobSortRank(b);
+      if (ra !== rb) return ra - rb;
+      // Encode jobs within same rank keep user-selected order; download jobs: newest first
+      if (a._itemType === 'encode' && b._itemType === 'encode') return a._sortIdx - b._sortIdx;
+      if (a._itemType === 'download' && b._itemType === 'download') return b.id - a.id;
+      return a._itemType === 'encode' ? -1 : 1;
+    });
+    return merged;
+  }, [filteredActiveJobs, filteredDlQueueItems]);
+
   const totalJobPages = useMemo(
-    () => Math.max(1, Math.ceil(filteredActiveJobs.length / JOBS_PAGE_SIZE)),
-    [filteredActiveJobs.length],
+    () => Math.max(1, Math.ceil(unifiedQueueItems.length / JOBS_PAGE_SIZE)),
+    [unifiedQueueItems.length],
   );
 
   const totalHistoryPages = useMemo(
@@ -678,8 +722,8 @@ export default function App() {
 
   const pagedJobs = useMemo(() => {
     const start = (jobsPage - 1) * JOBS_PAGE_SIZE;
-    return filteredActiveJobs.slice(start, start + JOBS_PAGE_SIZE);
-  }, [filteredActiveJobs, jobsPage]);
+    return unifiedQueueItems.slice(start, start + JOBS_PAGE_SIZE);
+  }, [unifiedQueueItems, jobsPage]);
 
   const pagedHistoryJobs = useMemo(() => {
     const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
@@ -2040,7 +2084,66 @@ export default function App() {
                             </td>
                           </tr>
                         )}
-                        {pagedJobs.map((job) => {
+                        {pagedJobs.map((item) => {
+                          // Download job row
+                          if (item._itemType === 'download') {
+                            const dj = item;
+                            const { title, year } = extractTitleYear(dj.source_file_path);
+                            const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
+                            const statusColor =
+                              dj.status === 'downloading' ? 'text-cyan-400' :
+                              dj.status === 'importing' ? 'text-violet-400' :
+                              dj.status === 'searching' ? 'text-sky-400' :
+                              dj.status === 'stalled' ? 'text-amber-400' :
+                              'text-slate-400';
+                            const elapsedMs = dj.created_at ? Date.now() - new Date(dj.created_at).getTime() : 0;
+                            const elapsedLabel = (() => { const s = Math.floor(elapsedMs / 1000); if (s < 60) return `${s}s`; const m = Math.floor(s / 60); if (m < 60) return `${m}m ${s % 60}s`; return `${Math.floor(m / 60)}h ${m % 60}m`; })();
+                            return (
+                              <tr key={`dl-${dj.id}`} className="transition-colors duration-100 hover:bg-slate-800/30">
+                                <td className="px-4 py-3 text-xs text-slate-500">{dj.id}</td>
+                                <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
+                                <td className="px-4 py-3 text-sm text-slate-400">{year ?? '—'}</td>
+                                <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
+                                <td className="px-4 py-3 text-sm">
+                                  <div className="flex items-center gap-1.5">
+                                    {dj.status === 'searching' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />}
+                                    {dj.status === 'importing' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />}
+                                    <span className={`capitalize ${statusColor}`}>{dj.status.replace(/_/g, ' ')}</span>
+                                  </div>
+                                  {dj.status !== 'pending' && <p className="mt-0.5 text-xs text-slate-500">Elapsed: {elapsedLabel}</p>}
+                                  {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
+                                </td>
+                                <td className="max-w-[180px] truncate px-4 py-3 text-xs text-slate-400" title={dj.search_query}>
+                                  {dj.status === 'searching' && !dj.search_query ? <span className="italic text-slate-500">Building query…</span> : (dj.search_query ?? '—')}
+                                </td>
+                                <td className="px-4 py-3 text-xs text-slate-600">—</td>
+                                <td className="px-4 py-3">
+                                  {dj.status === 'downloading' ? (
+                                    <div>
+                                      <div className="h-1.5 w-32 overflow-hidden rounded-full bg-slate-700">
+                                        <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
+                                      </div>
+                                      <div className="mt-1.5 text-xs text-slate-500">{dj.progress_percent}%</div>
+                                    </div>
+                                  ) : <span className="text-xs text-slate-600">—</span>}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {['pending', 'searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
+                                      <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Cancel</Btn>
+                                    )}
+                                    {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
+                                      <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
+                                    )}
+                                    <Btn size="sm" variant="secondary" onClick={() => handleDeleteDownloadJob(dj.id)}>Delete</Btn>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          }
+
+                          // Encoding job row
+                          const job = item;
                           const progress = progressFromJob(job);
                           const isRunning = job.status === 'running';
                           const eta = formatEta(job.eta_seconds);
@@ -2145,77 +2248,6 @@ export default function App() {
                             {pageNum}
                           </button>
                         ))}
-                      </div>
-                    </div>
-                  )}
-                  {/* Active download jobs inline in the queue */}
-                  {downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(dj.status)).length > 0 && (
-                    <div className="border-t border-slate-800">
-                      <div className="px-5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Downloads</div>
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-slate-800">
-                          <thead className="bg-slate-800/50">
-                            <tr>
-                              {['ID', 'Title', 'Library', 'Status', 'Search Query', 'Progress', 'Actions'].map((h) => (
-                                <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">{h}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-800/60">
-                            {downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(dj.status)).map((dj) => {
-                              const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
-                              const fileName = dj.source_file_path ? dj.source_file_path.split('/').pop() : '—';
-                              const statusColor =
-                                dj.status === 'downloading' ? 'text-cyan-400' :
-                                dj.status === 'importing' ? 'text-violet-400' :
-                                dj.status === 'searching' ? 'text-sky-400' :
-                                dj.status === 'stalled' ? 'text-amber-400' :
-                                'text-slate-400';
-                              const elapsedMs = dj.created_at ? Date.now() - new Date(dj.created_at).getTime() : 0;
-                              const elapsedLabel = (() => { const s = Math.floor(elapsedMs / 1000); if (s < 60) return `${s}s`; const m = Math.floor(s / 60); if (m < 60) return `${m}m ${s % 60}s`; return `${Math.floor(m / 60)}h ${m % 60}m`; })();
-                              return (
-                                <tr key={dj.id} className="transition-colors duration-100 hover:bg-slate-800/30">
-                                  <td className="px-4 py-3 text-xs text-slate-500">{dj.id}</td>
-                                  <td className="max-w-[200px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{fileName}</td>
-                                  <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
-                                  <td className="px-4 py-3 text-sm">
-                                    <div className="flex items-center gap-1.5">
-                                      {dj.status === 'searching' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />}
-                                      {dj.status === 'importing' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />}
-                                      <span className={`capitalize ${statusColor}`}>{dj.status.replace(/_/g, ' ')}</span>
-                                    </div>
-                                    {dj.status !== 'pending' && <p className="mt-0.5 text-xs text-slate-500">Elapsed: {elapsedLabel}</p>}
-                                    {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
-                                  </td>
-                                  <td className="max-w-[180px] truncate px-4 py-3 text-xs text-slate-400" title={dj.search_query}>
-                                    {dj.status === 'searching' && !dj.search_query ? <span className="italic text-slate-500">Building query…</span> : (dj.search_query ?? '—')}
-                                  </td>
-                                  <td className="px-4 py-3">
-                                    {dj.status === 'downloading' ? (
-                                      <div className="flex items-center gap-2">
-                                        <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-700">
-                                          <div className="h-full rounded-full bg-violet-500 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
-                                        </div>
-                                        <span className="text-xs text-slate-400">{dj.progress_percent}%</span>
-                                      </div>
-                                    ) : <span className="text-xs text-slate-600">—</span>}
-                                  </td>
-                                  <td className="px-4 py-3">
-                                    <div className="flex flex-wrap gap-1.5">
-                                      {['pending', 'searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
-                                        <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Cancel</Btn>
-                                      )}
-                                      {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
-                                        <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
-                                      )}
-                                      <Btn size="sm" variant="secondary" onClick={() => handleDeleteDownloadJob(dj.id)}>Delete</Btn>
-                                    </div>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
                       </div>
                     </div>
                   )}

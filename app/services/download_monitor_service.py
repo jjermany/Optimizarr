@@ -8,7 +8,7 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -530,7 +530,10 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     # scan all qBit torrents for one added since this job was created.
     # Since only one Optimizarr download runs at a time, any new torrent is ours.
     if not dj.download_hash and client_type == 'qbittorrent' and qbt.enabled:
-        job_ts = dj.created_at.timestamp()
+        # dj.created_at is a naive UTC datetime (from datetime.utcnow()).
+        # .timestamp() would misinterpret it as local time in non-UTC environments,
+        # so we attach the UTC timezone before converting to a Unix timestamp.
+        job_ts = dj.created_at.replace(tzinfo=timezone.utc).timestamp()
         recent = [
             t for t in download_client_service.get_all_qbt_torrents(qbt)
             if t.get('added_on', 0) >= job_ts
@@ -554,9 +557,10 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             return
 
     # If the initial tag attempt failed (e.g. torrent wasn't indexed in qBit
-    # yet when we grabbed it), retry once per loop with a single quick attempt.
+    # yet when we grabbed it), retry with a few quick attempts each monitoring
+    # loop until confirmed.
     if dj.id not in _tagged_job_ids and client_type == 'qbittorrent' and qbt.enabled and dj.download_hash:
-        if download_client_service.tag_qbt_torrent(qbt, dj.download_hash, max_attempts=1):
+        if download_client_service.tag_qbt_torrent(qbt, dj.download_hash, max_attempts=3):
             _tagged_job_ids.add(dj.id)
 
     status = download_client_service.get_download_status(client_type, qbt, sab, dj.download_hash or '')
