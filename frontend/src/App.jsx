@@ -446,7 +446,15 @@ function DirBrowserModal({ open, initialPath, onSelect, onClose }) {
   }
 
   useEffect(() => {
-    if (open) navigate(initialPath || null);
+    if (!open) return;
+    // Try the saved path first; if it's outside MEDIA_ROOT or doesn't exist, fall back to root
+    if (initialPath) {
+      fetchDirs(initialPath)
+        .then((data) => { setCurrent(data); setError(null); })
+        .catch(() => navigate(null));
+    } else {
+      navigate(null);
+    }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
