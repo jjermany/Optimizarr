@@ -105,9 +105,11 @@ def _ensure_qbt_tag(client: httpx.Client) -> None:
     non-existent tag silently does nothing on those versions.
     """
     try:
-        client.post('/api/v2/torrents/createTags', data={'tags': _QBT_TAG})
+        resp = client.post('/api/v2/torrents/createTags', data={'tags': _QBT_TAG})
+        if resp.status_code != 200:
+            logger.warning('createTags returned HTTP %d (non-fatal)', resp.status_code)
     except Exception as exc:
-        logger.debug('createTags call failed (non-fatal): %s', exc)
+        logger.warning('createTags call failed (non-fatal): %s', exc)
 
 
 def tag_qbt_torrent(s: QBittorrentSettings, torrent_hash: str, max_attempts: int = 5) -> bool:
@@ -124,15 +126,33 @@ def tag_qbt_torrent(s: QBittorrentSettings, torrent_hash: str, max_attempts: int
         _ensure_qbt_tag(client)
         hash_lower = torrent_hash.lower()
         for attempt in range(max_attempts):
-            client.post('/api/v2/torrents/addTags', data={'hashes': hash_lower, 'tags': _QBT_TAG})
+            resp = client.post('/api/v2/torrents/addTags', data={'hashes': hash_lower, 'tags': _QBT_TAG})
+            if resp.status_code != 200:
+                logger.warning(
+                    'addTags returned HTTP %d for torrent %s (attempt %d/%d)',
+                    resp.status_code, torrent_hash, attempt + 1, max_attempts,
+                )
             # Verify the tag was actually applied; the torrent may not be
             # indexed in qBit yet if this is called immediately after the grab
             # (e.g. magnet links require metadata resolution before qBit indexes
             # the torrent).  5 retries × 3 s gives ~12 s total, enough for
             # most slow-indexing scenarios.
             info = _qbt_torrent_info(client, hash_lower)
-            if info and _QBT_TAG in (info.get('tags') or ''):
+            if info is None:
+                logger.debug(
+                    'tag_qbt_torrent: torrent %s not found in qBit on attempt %d/%d — '
+                    'torrent may not be indexed yet',
+                    torrent_hash, attempt + 1, max_attempts,
+                )
+            elif _QBT_TAG in (info.get('tags') or ''):
+                logger.info('Confirmed optimizarr tag on torrent %s (attempt %d)', torrent_hash, attempt + 1)
                 return True
+            else:
+                logger.debug(
+                    'tag_qbt_torrent: addTags sent but tag not confirmed on torrent %s '
+                    '(attempt %d/%d); current tags=%r',
+                    torrent_hash, attempt + 1, max_attempts, info.get('tags'),
+                )
             if attempt < max_attempts - 1:
                 time.sleep(3)
         logger.warning('Could not verify optimizarr tag on torrent %s after %d attempts', torrent_hash, max_attempts)
