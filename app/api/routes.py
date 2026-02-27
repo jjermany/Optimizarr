@@ -23,9 +23,10 @@ from app.models.library import (
     OutputConflictPolicyEnum,
     PreferredEncoderEnum,
 )
-from app.models.download_client_settings import DownloadClientSettings, DownloadClientTypeEnum
 from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.prowlarr_settings import ProwlarrSettings
+from app.models.qbittorrent_settings import QBittorrentSettings
+from app.models.sabnzbd_settings import SabnzbdSettings
 from app.models.settings import DiscoveryMethodEnum, QueueSortEnum, Settings
 
 from app.services import download_client_service, notification_service, plex_service, prowlarr_service
@@ -335,23 +336,33 @@ class ProwlarrSettingsUpdateRequest(BaseModel):
     api_key: str | None = None
 
 
-class DownloadClientSettingsResponse(BaseModel):
+class QBittorrentSettingsResponse(BaseModel):
     enabled: bool
-    client_type: DownloadClientTypeEnum
     host: str
     port: int
     username: str
     password: str
-    api_key: str
 
 
-class DownloadClientSettingsUpdateRequest(BaseModel):
+class QBittorrentSettingsUpdateRequest(BaseModel):
     enabled: bool | None = None
-    client_type: DownloadClientTypeEnum | None = None
     host: str | None = None
     port: int | None = Field(default=None, ge=1, le=65535)
     username: str | None = None
     password: str | None = None
+
+
+class SabnzbdSettingsResponse(BaseModel):
+    enabled: bool
+    host: str
+    port: int
+    api_key: str
+
+
+class SabnzbdSettingsUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    host: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
     api_key: str | None = None
 
 
@@ -361,6 +372,7 @@ class DownloadJobResponse(BaseModel):
     source_file_path: str
     search_query: str | None = None
     download_hash: str | None = None
+    client_type: str | None = None
     status: str
     progress_percent: int
     downloaded_file_path: str | None = None
@@ -1167,26 +1179,48 @@ def test_prowlarr_connection(_: None = Depends(require_ui_auth), db: Session = D
     return prowlarr_service.test_connection(settings)
 
 
-@router.get('/download-client/settings', response_model=DownloadClientSettingsResponse)
-def get_download_client_settings(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> DownloadClientSettingsResponse:
-    settings = download_client_service.get_or_create_settings(db)
-    return DownloadClientSettingsResponse(**download_client_service.settings_to_payload(settings))
+@router.get('/download-client/qbittorrent', response_model=QBittorrentSettingsResponse)
+def get_qbt_settings(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> QBittorrentSettingsResponse:
+    s = download_client_service.get_or_create_qbt_settings(db)
+    return QBittorrentSettingsResponse(**download_client_service.qbt_settings_to_payload(s))
 
 
-@router.put('/download-client/settings', response_model=DownloadClientSettingsResponse)
-def update_download_client_settings(
-    payload: DownloadClientSettingsUpdateRequest,
+@router.put('/download-client/qbittorrent', response_model=QBittorrentSettingsResponse)
+def update_qbt_settings(
+    payload: QBittorrentSettingsUpdateRequest,
     _: None = Depends(require_ui_auth),
     db: Session = Depends(get_db),
-) -> DownloadClientSettingsResponse:
-    settings = download_client_service.update_settings(db, payload.model_dump(exclude_none=True))
-    return DownloadClientSettingsResponse(**download_client_service.settings_to_payload(settings))
+) -> QBittorrentSettingsResponse:
+    s = download_client_service.update_qbt_settings(db, payload.model_dump(exclude_none=True))
+    return QBittorrentSettingsResponse(**download_client_service.qbt_settings_to_payload(s))
 
 
-@router.post('/download-client/test', status_code=200)
-def test_download_client_connection(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> dict:
-    settings = download_client_service.get_or_create_settings(db)
-    return download_client_service.test_connection(settings)
+@router.post('/download-client/qbittorrent/test', status_code=200)
+def test_qbt_connection(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> dict:
+    s = download_client_service.get_or_create_qbt_settings(db)
+    return download_client_service.test_qbt_connection(s)
+
+
+@router.get('/download-client/sabnzbd', response_model=SabnzbdSettingsResponse)
+def get_sab_settings(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> SabnzbdSettingsResponse:
+    s = download_client_service.get_or_create_sab_settings(db)
+    return SabnzbdSettingsResponse(**download_client_service.sab_settings_to_payload(s))
+
+
+@router.put('/download-client/sabnzbd', response_model=SabnzbdSettingsResponse)
+def update_sab_settings(
+    payload: SabnzbdSettingsUpdateRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> SabnzbdSettingsResponse:
+    s = download_client_service.update_sab_settings(db, payload.model_dump(exclude_none=True))
+    return SabnzbdSettingsResponse(**download_client_service.sab_settings_to_payload(s))
+
+
+@router.post('/download-client/sabnzbd/test', status_code=200)
+def test_sab_connection(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> dict:
+    s = download_client_service.get_or_create_sab_settings(db)
+    return download_client_service.test_sab_connection(s)
 
 
 @router.get('/download-jobs', response_model=list[DownloadJobResponse])

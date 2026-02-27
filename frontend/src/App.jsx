@@ -8,7 +8,8 @@ import {
   createLibrary,
   deleteJob,
   deleteLibrary,
-  fetchDownloadClientSettings,
+  fetchQBittorrentSettings,
+  fetchSabnzbdSettings,
   fetchDownloadJobs,
   fetchLibraries,
   fetchEncoders,
@@ -37,10 +38,12 @@ import {
   runRecovery,
   scanLibrary,
   sendTestNotification,
-  testDownloadClientConnection,
+  testQBittorrentConnection,
+  testSabnzbdConnection,
   testPlexConnection,
   testProwlarrConnection,
-  updateDownloadClientSettings,
+  updateQBittorrentSettings,
+  updateSabnzbdSettings,
   updateLibrary,
   updateLibraryProfile,
   updateNotificationSettings,
@@ -461,9 +464,12 @@ export default function App() {
   const [prowlarrSettings, setProwlarrSettings] = useState();
   const [savingProwlarrSettings, setSavingProwlarrSettings] = useState(false);
   const [testingProwlarrConnection, setTestingProwlarrConnection] = useState(false);
-  const [downloadClientSettings, setDownloadClientSettings] = useState();
-  const [savingDownloadClientSettings, setSavingDownloadClientSettings] = useState(false);
-  const [testingDownloadClientConnection, setTestingDownloadClientConnection] = useState(false);
+  const [qbtSettings, setQbtSettings] = useState();
+  const [savingQbtSettings, setSavingQbtSettings] = useState(false);
+  const [testingQbtConnection, setTestingQbtConnection] = useState(false);
+  const [sabSettings, setSabSettings] = useState();
+  const [savingSabSettings, setSavingSabSettings] = useState(false);
+  const [testingSabConnection, setTestingSabConnection] = useState(false);
   const [downloadJobs, setDownloadJobs] = useState([]);
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
@@ -625,7 +631,7 @@ export default function App() {
 
   async function refreshAll() {
     try {
-      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus, nextProwlarrSettings, nextDownloadClientSettings, nextDownloadJobs] = await Promise.all([
+      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus, nextProwlarrSettings, nextQbtSettings, nextSabSettings, nextDownloadJobs] = await Promise.all([
         fetchMetrics(),
         fetchJobs(),
         fetchSettings(),
@@ -634,7 +640,8 @@ export default function App() {
         fetchEncoders(),
         fetchQueueStatus(),
         fetchProwlarrSettings().catch(() => null),
-        fetchDownloadClientSettings().catch(() => null),
+        fetchQBittorrentSettings().catch(() => null),
+        fetchSabnzbdSettings().catch(() => null),
         fetchDownloadJobs().catch(() => []),
       ]);
       setMetrics(nextMetrics);
@@ -643,7 +650,8 @@ export default function App() {
       setNotificationSettings(nextNotificationSettings);
       setPlexSettings(nextPlexSettings);
       if (nextProwlarrSettings) setProwlarrSettings(nextProwlarrSettings);
-      if (nextDownloadClientSettings) setDownloadClientSettings(nextDownloadClientSettings);
+      if (nextQbtSettings) setQbtSettings(nextQbtSettings);
+      if (nextSabSettings) setSabSettings(nextSabSettings);
       setDownloadJobs(nextDownloadJobs ?? []);
       const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
       setAvailableEncodersByCodec(encoderMap);
@@ -1155,33 +1163,63 @@ export default function App() {
     }
   }
 
-  async function saveDownloadClientSettings() {
-    if (!downloadClientSettings) return;
-    setSavingDownloadClientSettings(true);
+  async function saveQbtSettings() {
+    if (!qbtSettings) return;
+    setSavingQbtSettings(true);
     try {
-      const updated = await updateDownloadClientSettings(downloadClientSettings);
-      setDownloadClientSettings(updated);
-      pushToast('Download client settings saved.', 'success');
+      const updated = await updateQBittorrentSettings(qbtSettings);
+      setQbtSettings(updated);
+      pushToast('qBittorrent settings saved.', 'success');
     } catch (err) {
-      pushToast(err.message || 'Could not save download client settings.', 'error');
+      pushToast(err.message || 'Could not save qBittorrent settings.', 'error');
     } finally {
-      setSavingDownloadClientSettings(false);
+      setSavingQbtSettings(false);
     }
   }
 
-  async function handleTestDownloadClientConnection() {
-    setTestingDownloadClientConnection(true);
+  async function handleTestQbtConnection() {
+    setTestingQbtConnection(true);
     try {
-      const result = await testDownloadClientConnection();
+      const result = await testQBittorrentConnection();
       if (result?.success) {
-        pushToast(`Download client connected. Version: ${result.version ?? 'unknown'}.`, 'success');
+        pushToast(`qBittorrent connected. Version: ${result.version ?? 'unknown'}.`, 'success');
       } else {
-        pushToast(result?.error || 'Download client connection failed.', 'error');
+        pushToast(result?.error || 'qBittorrent connection failed.', 'error');
       }
     } catch (err) {
-      pushToast(err.message || 'Download client connection test failed.', 'error');
+      pushToast(err.message || 'qBittorrent connection test failed.', 'error');
     } finally {
-      setTestingDownloadClientConnection(false);
+      setTestingQbtConnection(false);
+    }
+  }
+
+  async function saveSabSettings() {
+    if (!sabSettings) return;
+    setSavingSabSettings(true);
+    try {
+      const updated = await updateSabnzbdSettings(sabSettings);
+      setSabSettings(updated);
+      pushToast('SABnzbd settings saved.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Could not save SABnzbd settings.', 'error');
+    } finally {
+      setSavingSabSettings(false);
+    }
+  }
+
+  async function handleTestSabConnection() {
+    setTestingSabConnection(true);
+    try {
+      const result = await testSabnzbdConnection();
+      if (result?.success) {
+        pushToast(`SABnzbd connected. Version: ${result.version ?? 'unknown'}.`, 'success');
+      } else {
+        pushToast(result?.error || 'SABnzbd connection failed.', 'error');
+      }
+    } catch (err) {
+      pushToast(err.message || 'SABnzbd connection test failed.', 'error');
+    } finally {
+      setTestingSabConnection(false);
     }
   }
 
@@ -2299,35 +2337,26 @@ export default function App() {
               </SectionCard>
             )}
 
-            {/* Download Client */}
-            {downloadClientSettings && (
+            {/* qBittorrent */}
+            {qbtSettings && (
               <SectionCard>
-                <SectionTitle>Download Client</SectionTitle>
+                <SectionTitle>qBittorrent</SectionTitle>
                 <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
                   <div>
-                    <p className="text-sm font-medium text-slate-200">Enable Download Client</p>
-                    <p className="text-xs text-slate-500">Required for Download Mode. Optimizarr polls this client for download progress and imports completed files.</p>
+                    <p className="text-sm font-medium text-slate-200">Enable qBittorrent</p>
+                    <p className="text-xs text-slate-500">Used for torrent releases from Prowlarr. Downloads tagged with "optimizarr" and left to follow qBittorrent's own seeding rules after import.</p>
                   </div>
                   <Toggle
-                    checked={downloadClientSettings.enabled}
-                    onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
+                    checked={qbtSettings.enabled}
+                    onChange={(e) => setQbtSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
                   />
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
-                  <FormField label="Client Type">
-                    <SelectInput
-                      value={downloadClientSettings.client_type}
-                      onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, client_type: e.target.value }))}
-                    >
-                      <option value="qbittorrent">qBittorrent</option>
-                      <option value="sabnzbd">SABnzbd</option>
-                    </SelectInput>
-                  </FormField>
                   <FormField label="Host" hint="Protocol and hostname, e.g. http://192.168.1.100">
                     <TextInput
                       type="text"
-                      value={downloadClientSettings.host}
-                      onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, host: e.target.value }))}
+                      value={qbtSettings.host}
+                      onChange={(e) => setQbtSettings((prev) => ({ ...prev, host: e.target.value }))}
                       placeholder="http://localhost"
                     />
                   </FormField>
@@ -2336,47 +2365,85 @@ export default function App() {
                       type="number"
                       min={1}
                       max={65535}
-                      value={downloadClientSettings.port}
-                      onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, port: Number(e.target.value) }))}
+                      value={qbtSettings.port}
+                      onChange={(e) => setQbtSettings((prev) => ({ ...prev, port: Number(e.target.value) }))}
                     />
                   </FormField>
-                  {downloadClientSettings.client_type === 'qbittorrent' && (
-                    <>
-                      <FormField label="Username">
-                        <TextInput
-                          type="text"
-                          value={downloadClientSettings.username}
-                          onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, username: e.target.value }))}
-                          placeholder="admin"
-                        />
-                      </FormField>
-                      <FormField label="Password">
-                        <TextInput
-                          type="password"
-                          value={downloadClientSettings.password}
-                          onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, password: e.target.value }))}
-                          placeholder="••••••••"
-                        />
-                      </FormField>
-                    </>
-                  )}
-                  {downloadClientSettings.client_type === 'sabnzbd' && (
-                    <FormField label="API Key" span2>
-                      <TextInput
-                        type="password"
-                        value={downloadClientSettings.api_key}
-                        onChange={(e) => setDownloadClientSettings((prev) => ({ ...prev, api_key: e.target.value }))}
-                        placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                      />
-                    </FormField>
-                  )}
+                  <FormField label="Username">
+                    <TextInput
+                      type="text"
+                      value={qbtSettings.username}
+                      onChange={(e) => setQbtSettings((prev) => ({ ...prev, username: e.target.value }))}
+                      placeholder="admin"
+                    />
+                  </FormField>
+                  <FormField label="Password">
+                    <TextInput
+                      type="password"
+                      value={qbtSettings.password}
+                      onChange={(e) => setQbtSettings((prev) => ({ ...prev, password: e.target.value }))}
+                      placeholder="••••••••"
+                    />
+                  </FormField>
                 </div>
                 <div className="mt-5 flex flex-wrap gap-3">
-                  <Btn variant="violet" disabled={savingDownloadClientSettings} onClick={saveDownloadClientSettings}>
-                    {savingDownloadClientSettings ? 'Saving…' : 'Save Client Settings'}
+                  <Btn variant="violet" disabled={savingQbtSettings} onClick={saveQbtSettings}>
+                    {savingQbtSettings ? 'Saving…' : 'Save qBittorrent Settings'}
                   </Btn>
-                  <Btn variant="secondary" disabled={testingDownloadClientConnection} onClick={handleTestDownloadClientConnection}>
-                    {testingDownloadClientConnection ? 'Testing…' : 'Test Connection'}
+                  <Btn variant="secondary" disabled={testingQbtConnection} onClick={handleTestQbtConnection}>
+                    {testingQbtConnection ? 'Testing…' : 'Test Connection'}
+                  </Btn>
+                </div>
+              </SectionCard>
+            )}
+
+            {/* SABnzbd */}
+            {sabSettings && (
+              <SectionCard>
+                <SectionTitle>SABnzbd</SectionTitle>
+                <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200">Enable SABnzbd</p>
+                    <p className="text-xs text-slate-500">Used for usenet/NZB releases from Prowlarr. History entry is automatically removed from SABnzbd after a successful import.</p>
+                  </div>
+                  <Toggle
+                    checked={sabSettings.enabled}
+                    onChange={(e) => setSabSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
+                  />
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <FormField label="Host" hint="Protocol and hostname, e.g. http://192.168.1.100">
+                    <TextInput
+                      type="text"
+                      value={sabSettings.host}
+                      onChange={(e) => setSabSettings((prev) => ({ ...prev, host: e.target.value }))}
+                      placeholder="http://localhost"
+                    />
+                  </FormField>
+                  <FormField label="Port">
+                    <TextInput
+                      type="number"
+                      min={1}
+                      max={65535}
+                      value={sabSettings.port}
+                      onChange={(e) => setSabSettings((prev) => ({ ...prev, port: Number(e.target.value) }))}
+                    />
+                  </FormField>
+                  <FormField label="API Key" span2>
+                    <TextInput
+                      type="password"
+                      value={sabSettings.api_key}
+                      onChange={(e) => setSabSettings((prev) => ({ ...prev, api_key: e.target.value }))}
+                      placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    />
+                  </FormField>
+                </div>
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <Btn variant="violet" disabled={savingSabSettings} onClick={saveSabSettings}>
+                    {savingSabSettings ? 'Saving…' : 'Save SABnzbd Settings'}
+                  </Btn>
+                  <Btn variant="secondary" disabled={testingSabConnection} onClick={handleTestSabConnection}>
+                    {testingSabConnection ? 'Testing…' : 'Test Connection'}
                   </Btn>
                 </div>
               </SectionCard>

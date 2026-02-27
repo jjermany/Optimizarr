@@ -236,19 +236,34 @@ export function testProwlarrConnection() {
   return request('/prowlarr/test', { method: 'POST' });
 }
 
-export function fetchDownloadClientSettings() {
-  return request('/download-client/settings');
+export function fetchQBittorrentSettings() {
+  return request('/download-client/qbittorrent');
 }
 
-export function updateDownloadClientSettings(payload) {
-  return request('/download-client/settings', {
+export function updateQBittorrentSettings(payload) {
+  return request('/download-client/qbittorrent', {
     method: 'PUT',
     body: JSON.stringify(payload),
   });
 }
 
-export function testDownloadClientConnection() {
-  return request('/download-client/test', { method: 'POST' });
+export function testQBittorrentConnection() {
+  return request('/download-client/qbittorrent/test', { method: 'POST' });
+}
+
+export function fetchSabnzbdSettings() {
+  return request('/download-client/sabnzbd');
+}
+
+export function updateSabnzbdSettings(payload) {
+  return request('/download-client/sabnzbd', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function testSabnzbdConnection() {
+  return request('/download-client/sabnzbd/test', { method: 'POST' });
 }
 
 export function fetchDownloadJobs() {

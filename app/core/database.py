@@ -230,3 +230,9 @@ def init_db() -> None:
             'download_quality_profile',
             "download_quality_profile VARCHAR(16) NOT NULL DEFAULT 'any'",
         )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
+            'client_type',
+            'client_type VARCHAR(16)',
+        )
