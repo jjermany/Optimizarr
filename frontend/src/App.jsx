@@ -1474,9 +1474,9 @@ export default function App() {
       const updated = await fetchDownloadJobs();
       setDownloadJobs(updated ?? []);
       await refreshAll();
-      pushToast('Download job cancelled; fallback encode queued.', 'success');
+      pushToast('Download job reset to pending.', 'success');
     } catch (err) {
-      pushToast(err.message || 'Could not cancel download job.', 'error');
+      pushToast(err.message || 'Could not reset download job.', 'error');
     }
   }
 
@@ -2236,7 +2236,7 @@ export default function App() {
                                 <td className="px-4 py-3">
                                   <div className="flex flex-wrap gap-1.5">
                                     {['pending', 'searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
-                                      <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Cancel</Btn>
+                                      <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Reset</Btn>
                                     )}
                                     {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
                                       <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
@@ -2329,7 +2329,7 @@ export default function App() {
                                   )}
                                   {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
                                     <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>
-                                      {jobDownloadEnabled ? 'Cancel' : 'Abort'}
+                                      Abort
                                     </Btn>
                                   )}
                                 </div>

@@ -169,10 +169,17 @@ def cancel_job(db: Session, job_id: int) -> Job | None:
     if job.status in TERMINAL_STATUSES:
         return job
 
-    job.cancel_requested = True
-    if job.status == 'queued':
-        job.status = 'cancelled'
-        job.completed_at = datetime.utcnow()
+    if job.status in {'running', 'starting', 'preflight'}:
+        optimization_service.stop_active_ffmpeg(job.id)
+
+    if job.status in {'queued', 'running', 'starting', 'preflight'}:
+        job.status = 'queued'
+        job.error_message = None
+        job.eta_seconds = None
+        job.fps = None
+        job.cancel_requested = False
+        job.completed_at = None
+
     db.commit()
     db.refresh(job)
     return job

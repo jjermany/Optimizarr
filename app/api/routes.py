@@ -1353,17 +1353,32 @@ def get_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sessio
 
 @router.post('/download-jobs/{job_id}/cancel', response_model=DownloadJobResponse)
 def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> DownloadJobResponse:
-    from app.services.download_monitor_service import _fallback_to_encode, _mark_failed
+    from datetime import datetime as _dt
+    from app.services.download_monitor_service import _publish_download_job
+
     dj = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
     if not dj:
         raise HTTPException(status_code=404, detail='Download job not found')
     terminal = {DownloadJobStatus.complete.value, DownloadJobStatus.fallback_queued.value, DownloadJobStatus.failed.value, DownloadJobStatus.timed_out.value}
     if dj.status in terminal:
         raise HTTPException(status_code=409, detail='Download job is already in a terminal state')
-    library = db.query(Library).filter(Library.id == dj.library_id).first()
-    _mark_failed(db, dj, 'Cancelled by user')
-    if library and library.profile:
-        _fallback_to_encode(db, dj, library, library.profile)
+
+    dj.status = DownloadJobStatus.pending.value
+    dj.error_message = None
+    dj.search_query = None
+    dj.release_name = None
+    dj.download_hash = None
+    dj.client_type = None
+    dj.progress_percent = 0
+    dj.downloaded_file_path = None
+    dj.imported_file_path = None
+    dj.encode_job_id = None
+    dj.download_started_at = None
+    dj.completed_at = None
+    dj.created_at = _dt.utcnow()
+    db.commit()
+    db.refresh(dj)
+    _publish_download_job(dj)
     return DownloadJobResponse.from_orm(dj)
 
 

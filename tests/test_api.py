@@ -328,6 +328,9 @@ def test_delete_job_endpoint():
 
 
 def test_scan_cancel_and_retry_endpoints(monkeypatch, tmp_path):
+    from app.core.database import SessionLocal
+    from app.models.job import Job
+
     media_root = tmp_path / 'media'
     media_root.mkdir()
     library_path = media_root / 'lib'
@@ -366,12 +369,77 @@ def test_scan_cancel_and_retry_endpoints(monkeypatch, tmp_path):
         cancel_response = client.post(f'/jobs/{target_job_id}/cancel')
         assert cancel_response.status_code == 200
         cancelled = cancel_response.json()
-        assert cancelled['status'] in {'cancelled', 'running'}
+        assert cancelled['status'] == 'queued'
+
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == target_job_id).first()
+            assert job is not None
+            assert job.completed_at is None
+            assert job.cancel_requested is False
 
         retry_response = client.post(f'/jobs/{target_job_id}/retry')
         assert retry_response.status_code == 200
         retried = retry_response.json()
-        assert retried['status'] in {'queued', 'cancelled', 'running'}
+        assert retried['status'] == 'queued'
+
+
+def test_cancel_download_job_resets_job_to_pending():
+    from app.core.database import SessionLocal
+    from app.models.download_job import DownloadJob, DownloadJobStatus
+    from app.models.library import Library, LibraryProfile
+
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.query(DownloadJob).delete()
+            db.query(LibraryProfile).delete()
+            db.query(Library).delete()
+            db.commit()
+
+            library = Library(name='Download Library', path='/media/downloads', enabled=True)
+            db.add(library)
+            db.commit()
+            db.refresh(library)
+
+            profile = LibraryProfile(library_id=library.id)
+            db.add(profile)
+            db.commit()
+
+            dj = DownloadJob(
+                library_id=library.id,
+                source_file_path='/media/download-cancel.mkv',
+                status=DownloadJobStatus.downloading.value,
+                search_query='Movie 2024 1080p',
+                release_name='Movie.2024.1080p.WEB-DL-GROUP',
+                download_hash='abc123',
+                client_type='qbittorrent',
+                progress_percent=73,
+                downloaded_file_path='/downloads/movie.mkv',
+                imported_file_path='/imports/movie.mkv',
+                error_message='temporary',
+                encode_job_id=42,
+            )
+            db.add(dj)
+            db.commit()
+            db.refresh(dj)
+            job_id = dj.id
+
+        response = client.post(f'/download-jobs/{job_id}/cancel')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['status'] == DownloadJobStatus.pending.value
+    assert payload['progress_percent'] == 0
+    assert payload['error_message'] is None
+    assert payload['download_hash'] is None
+    assert payload['encode_job_id'] is None
+    assert payload['completed_at'] is None
+
+    with SessionLocal() as db:
+        db_job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+        assert db_job is not None
+        assert db_job.status == DownloadJobStatus.pending.value
+        assert db_job.completed_at is None
+        assert db_job.error_message is None
 
 
 def test_scan_uses_enabled_libraries(monkeypatch, tmp_path):
@@ -470,7 +538,8 @@ def test_scan_library_endpoint_honors_hdr_height_and_idempotency(monkeypatch, tm
         with SessionLocal() as session:
             job = session.query(Job).filter(Job.id == first_created_jobs[0]['id']).first()
             assert job is not None
-            assert job.profile_snapshot_json == first_snapshot
+            assert job.profile_snapshot_json != first_snapshot
+            assert '"codec": "av1"' in job.profile_snapshot_json
 
 
 def test_scan_library_endpoint_allows_disabled_library_when_requested_manually(monkeypatch, tmp_path):
