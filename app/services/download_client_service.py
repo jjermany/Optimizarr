@@ -22,7 +22,8 @@ _QBT_COMPLETE_STATES = {
     'forcedUP',
     'queuedUP',
     'checkingUP',
-    'pausedUP',
+    'pausedUP',   # qBittorrent < 5.0
+    'stoppedUP',  # qBittorrent 5.0+ (Web API v2.11.0+): renamed from pausedUP
 }
 
 MEDIA_SUFFIXES = {'.mkv', '.mp4'}
@@ -178,7 +179,7 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
         state = info.get('state', '')
         progress = int(info.get('progress', 0) * 100)
         is_complete = state in _QBT_COMPLETE_STATES
-        is_stalled = state in ('stalledDL', 'missingFiles', 'error')
+        is_stalled = state in ('stalledDL', 'missingFiles', 'error', 'stoppedDL')
         # content_path is the actual file/folder; fall back to save_path (directory)
         save_path = info.get('content_path') or info.get('save_path')
         return {'progress_percent': progress, 'is_complete': is_complete, 'is_stalled': is_stalled, 'save_path': save_path}
