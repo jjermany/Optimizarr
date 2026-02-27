@@ -2028,6 +2028,8 @@ export default function App() {
                           const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
                           const activeDj = downloadJobBySource[job.source_path];
                           const djIsActive = activeDj && ['searching', 'downloading', 'importing'].includes(activeDj.status);
+                          const jobLibProfile = libraryProfiles[job.library_id];
+                          const jobDownloadEnabled = !!jobLibProfile?.download_enabled;
                           return (
                             <tr key={job.id} className="transition-colors duration-100 hover:bg-slate-800/30">
                               <td className="px-4 py-3 text-xs text-slate-500">{job.id}</td>
@@ -2089,13 +2091,17 @@ export default function App() {
                                 <div className="flex flex-wrap gap-1.5">
                                   {job.status === 'running' && <Btn size="sm" variant="warning" onClick={() => handleJobAction('pause', job.id)}>Pause</Btn>}
                                   {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
-                                  {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && <Btn size="sm" variant="success" onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>Start</Btn>}
+                                  {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && !jobDownloadEnabled && <Btn size="sm" variant="success" onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>Start</Btn>}
                                   {job.status === 'interrupted' && <Btn size="sm" variant="primary" onClick={() => handleJobAction('requeue', job.id)}>Requeue</Btn>}
                                   {(ACTIVE_STATUSES.has(job.status) || (job.status === 'paused' && progress > 0)) && (
-                                    <Btn size="sm" variant="secondary" onClick={() => handleJobAction('discard', job.id)}>Cancel</Btn>
+                                    <Btn size="sm" variant="secondary" onClick={() => handleJobAction('discard', job.id)}>
+                                      {jobDownloadEnabled ? 'Search Again' : 'Restart'}
+                                    </Btn>
                                   )}
                                   {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
-                                    <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>Abort</Btn>
+                                    <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>
+                                      {jobDownloadEnabled ? 'Cancel' : 'Abort'}
+                                    </Btn>
                                   )}
                                 </div>
                               </td>
@@ -2148,6 +2154,7 @@ export default function App() {
                         {pagedHistoryJobs.map((job) => {
                           const { title, year } = extractTitleYear(job.source_path);
                           const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
+                          const histJobDownloadEnabled = !!libraryProfiles[job.library_id]?.download_enabled;
                           const completedDate = job.completed_at
                             ? new Date(job.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZoneName: 'short' })
                             : '—';
@@ -2189,7 +2196,9 @@ export default function App() {
                               <td className="px-4 py-3">
                                 <div className="flex flex-wrap gap-1.5">
                                   {['failed', 'cancelled'].includes(job.status) && (
-                                    <Btn size="sm" variant="primary" onClick={() => handleJobAction('retry', job.id)}>Retry</Btn>
+                                    <Btn size="sm" variant="primary" onClick={() => handleJobAction('retry', job.id)}>
+                                      {histJobDownloadEnabled ? 'Search Again' : 'Retry'}
+                                    </Btn>
                                   )}
                                   <Btn size="sm" variant="secondary" onClick={() => handleJobAction('remove', job.id)}>Remove</Btn>
                                 </div>

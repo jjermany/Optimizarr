@@ -994,11 +994,62 @@ def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db))
     return ScanResponse(created_jobs=payload)
 
 
+def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = False) -> bool:
+    """If the job's library has download_enabled and Prowlarr/a client are ready,
+    cancel the encoding job (optionally stopping ffmpeg first) and create a
+    download (search) job for the same source file.
+
+    Returns True if a download job was created, False otherwise.
+    """
+    from app.services.download_monitor_service import (
+        can_attempt_download,
+        create_download_job,
+        download_job_exists_for_source,
+    )
+
+    if not job or not job.library_id or not job.source_path:
+        return False
+
+    library = db.query(Library).filter(Library.id == job.library_id).first()
+    if library is None or library.profile is None:
+        return False
+
+    profile = library.profile
+    if not getattr(profile, 'download_enabled', False):
+        return False
+
+    if not can_attempt_download(db):
+        return False
+
+    if download_job_exists_for_source(db, job.source_path):
+        return False
+
+    if cancel_job_first:
+        from app.services.optimization_service import stop_active_ffmpeg, delete_workspace
+        from app.services.job_service import _get_settings
+        settings = _get_settings(db)
+        stop_active_ffmpeg(job.id)
+        delete_workspace(settings, job.id)
+        from datetime import datetime as _dt
+        job.status = 'cancelled'
+        job.progress_percent = 0
+        job.fps = None
+        job.eta_seconds = None
+        job.output_path = None
+        job.cancel_requested = False
+        job.completed_at = _dt.utcnow()
+        db.commit()
+
+    create_download_job(db, job.source_path, library, profile)
+    return True
+
+
 @router.post('/jobs/{job_id}/cancel', response_model=JobResponse)
 def cancel_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
     job = cancel_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
+    _promote_encode_to_download(db, job)
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
     return response
@@ -1016,6 +1067,17 @@ def requeue_interrupted_job_endpoint(job_id: int, _: None = Depends(require_ui_a
 
 @router.post('/jobs/{job_id}/retry', response_model=JobResponse)
 def retry_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
+    # Look up the job before retry_job mutates it so we can check source path.
+    original = get_job(db, job_id)
+    if not original:
+        raise HTTPException(status_code=404, detail='Job not found')
+    if _promote_encode_to_download(db, original):
+        # A download job was created; return the (still failed/cancelled) encoding
+        # job so the UI updates correctly without re-queuing it for encoding.
+        db.refresh(original)
+        response = JobResponse.from_orm_job(original)
+        broker.publish_job_update(response.model_dump(), throttle_progress=False)
+        return response
     job = retry_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
@@ -1102,7 +1164,21 @@ def abort_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
 
 @router.post('/jobs/{job_id}/discard-progress', response_model=JobResponse)
 def discard_progress_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> JobResponse:
-    """Wipe partial progress for a paused job and return it to the queue from the beginning."""
+    """Wipe partial progress for a paused/running job.
+
+    In download-enabled libraries this cancels the encoding job and creates a
+    download (Prowlarr search) job instead, so the item is searched for rather
+    than re-encoded from scratch.  In encoding-only libraries the original
+    behaviour is preserved: discard progress and return to queue.
+    """
+    job = get_job(db, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail='Job not found')
+    if _promote_encode_to_download(db, job, cancel_job_first=True):
+        db.refresh(job)
+        response = JobResponse.from_orm_job(job)
+        broker.publish_job_update(response.model_dump(), throttle_progress=False)
+        return response
     job = discard_progress_and_requeue(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
