@@ -4,6 +4,8 @@ import {
   abortJob,
   cancelJob,
   cancelDownloadJob,
+  deleteDownloadJob,
+  deleteAllDownloadJobs,
   discardJobProgress,
   createLibrary,
   deleteJob,
@@ -1353,6 +1355,28 @@ export default function App() {
     }
   }
 
+  async function handleDeleteDownloadJob(jobId) {
+    try {
+      await deleteDownloadJob(jobId);
+      const updated = await fetchDownloadJobs();
+      setDownloadJobs(updated ?? []);
+      pushToast('Download job removed.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Could not remove download job.', 'error');
+    }
+  }
+
+  async function handleDeleteAllDownloadJobs() {
+    if (!window.confirm('Remove all download jobs? This cannot be undone.')) return;
+    try {
+      await deleteAllDownloadJobs();
+      setDownloadJobs([]);
+      pushToast('All download jobs removed.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Could not remove download jobs.', 'error');
+    }
+  }
+
   async function handleRecoveryRun() {
     try {
       const result = await runRecovery();
@@ -2231,6 +2255,12 @@ export default function App() {
 
               {/* Downloads tab content */}
               {jobsView === 'downloads' && (
+                <div>
+                  {downloadJobs.length > 0 && (
+                    <div className="flex justify-end px-4 py-2">
+                      <Btn size="sm" variant="danger" onClick={handleDeleteAllDownloadJobs}>Clear All</Btn>
+                    </div>
+                  )}
                 <div className="overflow-x-auto">
                   <table className="min-w-full divide-y divide-slate-800">
                     <thead className="bg-slate-800/50">
@@ -2321,6 +2351,7 @@ export default function App() {
                                 {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
                                   <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
                                 )}
+                                <Btn size="sm" variant="secondary" onClick={() => handleDeleteDownloadJob(dj.id)}>Delete</Btn>
                               </div>
                             </td>
                           </tr>
@@ -2328,6 +2359,7 @@ export default function App() {
                       })}
                     </tbody>
                   </table>
+                </div>
                 </div>
               )}
             </div>

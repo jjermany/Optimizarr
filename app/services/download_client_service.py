@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from pathlib import Path
 
 import httpx
@@ -95,11 +96,40 @@ def _qbt_torrent_info(client: httpx.Client, torrent_hash: str) -> dict | None:
     return items[0] if items else None
 
 
+def _ensure_qbt_tag(client: httpx.Client) -> None:
+    """Create the 'optimizarr' tag in qBittorrent if it does not already exist.
+
+    Older qBittorrent versions (< 4.4) require the tag to be created via
+    /api/v2/torrents/createTags before it can be applied; calling addTags on a
+    non-existent tag silently does nothing on those versions.
+    """
+    try:
+        client.post('/api/v2/torrents/createTags', data={'tags': _QBT_TAG})
+    except Exception as exc:
+        logger.debug('createTags call failed (non-fatal): %s', exc)
+
+
 def tag_qbt_torrent(s: QBittorrentSettings, torrent_hash: str) -> None:
-    """Tag a torrent with 'optimizarr' so it can be identified in the qBittorrent UI."""
+    """Tag a torrent with 'optimizarr' so it can be identified in the qBittorrent UI.
+
+    Calls createTags first to ensure the tag exists on older qBittorrent
+    versions, then retries addTags up to 3 times with a short back-off to
+    handle the race where the torrent hasn't been indexed by qBit yet.
+    """
     try:
         client = _qbt_session(s)
-        client.post('/api/v2/torrents/addTags', data={'hashes': torrent_hash.lower(), 'tags': _QBT_TAG})
+        _ensure_qbt_tag(client)
+        hash_lower = torrent_hash.lower()
+        for attempt in range(3):
+            client.post('/api/v2/torrents/addTags', data={'hashes': hash_lower, 'tags': _QBT_TAG})
+            # Verify the tag was actually applied; the torrent may not be
+            # indexed in qBit yet if this is called immediately after the grab.
+            info = _qbt_torrent_info(client, hash_lower)
+            if info and _QBT_TAG in (info.get('tags') or ''):
+                return  # success
+            if attempt < 2:
+                time.sleep(2)
+        logger.warning('Could not verify optimizarr tag on torrent %s after 3 attempts', torrent_hash)
     except Exception as exc:
         logger.warning('Failed to tag qBittorrent torrent %s: %s', torrent_hash, exc)
 

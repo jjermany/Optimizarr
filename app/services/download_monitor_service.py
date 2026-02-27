@@ -7,6 +7,7 @@ import re
 import shutil
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -61,6 +62,21 @@ def _stop_download_queue(reason: str) -> None:
 _POLL_DOWNLOADING_SECONDS = 3   # fast polling while files are transferring
 _POLL_SEARCHING_SECONDS = 10    # moderate polling while waiting for Prowlarr
 _POLL_IDLE_SECONDS = 30         # slow polling when nothing is active
+
+# Startup grace period: holds off Prowlarr grabs for this many seconds after a
+# restart so the user has time to review / remove queued jobs before they fire.
+_STARTUP_GRACE_SECONDS = 60
+_startup_grace_until: datetime | None = None
+
+# Optional callback invoked when a download job reaches a terminal state
+# (complete or permanently failed / fallback-queued).  Registered at startup by
+# main.py so that the discovery service can immediately scan for the next file.
+_on_job_complete: Callable[[], None] | None = None
+
+
+def register_job_complete_callback(fn: Callable[[], None]) -> None:
+    global _on_job_complete
+    _on_job_complete = fn
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -148,6 +164,22 @@ def download_job_exists_for_source(db: Session, source_path: str) -> bool:
             DownloadJob.source_file_path == source_path,
             DownloadJob.status.in_(active_statuses),
         )
+        .exists()
+    ).scalar()
+
+
+_ACTIVE_DOWNLOAD_STATUSES = (
+    DownloadJobStatus.searching.value,
+    DownloadJobStatus.downloading.value,
+    DownloadJobStatus.importing.value,
+)
+
+
+def any_active_download_job(db: Session) -> bool:
+    """Return True if any download job is currently searching, downloading, or importing."""
+    return db.query(
+        db.query(DownloadJob)
+        .filter(DownloadJob.status.in_(_ACTIVE_DOWNLOAD_STATUSES))
         .exists()
     ).scalar()
 
@@ -316,6 +348,13 @@ def _client_type_for_protocol(protocol: str) -> str:
 def _process_searching_jobs(db: Session) -> None:
     if _download_queue_stopped:
         return
+
+    global _startup_grace_until
+    if _startup_grace_until is not None:
+        if datetime.utcnow() < _startup_grace_until:
+            logger.debug('Download monitor: startup grace period active; deferring searches until %s', _startup_grace_until)
+            return
+        _startup_grace_until = None  # expired — clear and proceed normally
 
     prowlarr = prowlarr_service.get_or_create_prowlarr_settings(db)
     qbt = download_client_service.get_or_create_qbt_settings(db)
@@ -658,6 +697,14 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     # waiting for the full idle poll interval.
     _wake_event.set()
 
+    # Notify the discovery service so it can immediately scan for the next
+    # eligible file rather than waiting for the next scheduled interval.
+    if _on_job_complete:
+        try:
+            _on_job_complete()
+        except Exception:
+            pass
+
 
 def _cleanup_download_client(dj: DownloadJob, qbt, sab) -> None:
     """
@@ -704,6 +751,11 @@ def _fallback_to_encode(db: Session, dj: DownloadJob, library: Library, profile:
             f'Download failed for {Path(dj.source_file_path).name}; falling back to encode'
         )
         logger.info('Download job %s: fallback encode job %s created', dj.id, encode_job.id)
+        if _on_job_complete:
+            try:
+                _on_job_complete()
+            except Exception:
+                pass
     except Exception as exc:
         logger.error('Download job %s: failed to create fallback encode job: %s', dj.id, exc)
 
@@ -721,6 +773,28 @@ def _mark_failed(db: Session, dj: DownloadJob, reason: str) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # Startup recovery
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _arm_startup_grace_if_needed(db: Session) -> None:
+    """Set the startup grace period if any searching jobs exist in the DB.
+
+    Called from run_download_startup_recovery() before the monitor loop starts
+    so that Prowlarr grabs do not fire the instant the app comes up.  Gives the
+    operator 60 s to review / delete jobs they do not want to process.
+    """
+    global _startup_grace_until
+    searching_count = (
+        db.query(DownloadJob)
+        .filter(DownloadJob.status == DownloadJobStatus.searching.value)
+        .count()
+    )
+    if searching_count > 0:
+        _startup_grace_until = datetime.utcnow() + timedelta(seconds=_STARTUP_GRACE_SECONDS)
+        logger.warning(
+            'Download startup recovery: %d searching job(s) found; '
+            'holding off grabs for %ds (until %s UTC) — remove unwanted jobs now',
+            searching_count, _STARTUP_GRACE_SECONDS, _startup_grace_until.strftime('%H:%M:%S'),
+        )
+
 
 def run_download_startup_recovery(db: Session) -> dict:
     """Reconcile in-flight download jobs against the download client on startup.
@@ -743,6 +817,11 @@ def run_download_startup_recovery(db: Session) -> dict:
         .filter(DownloadJob.status == DownloadJobStatus.downloading.value)
         .all()
     )
+
+    # Arm startup grace period if any jobs are already in searching state so
+    # that Prowlarr grabs don't fire the instant the monitor loop starts.
+    _arm_startup_grace_if_needed(db)
+
     if not downloading_jobs:
         logger.info('Download startup recovery: no in-flight download jobs found')
         return {'imported': 0, 'reset_to_searching': 0}
