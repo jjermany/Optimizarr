@@ -72,9 +72,18 @@ def _qbt_base_url(s: QBittorrentSettings) -> str:
 
 def _qbt_session(s: QBittorrentSettings) -> httpx.Client:
     base = _qbt_base_url(s)
-    client = httpx.Client(base_url=base, timeout=_DEFAULT_TIMEOUT)
+    # qBittorrent 4.1+ enforces CSRF protection: requests without a matching
+    # Referer/Origin header are rejected with 403 Forbidden.
+    client = httpx.Client(
+        base_url=base,
+        timeout=_DEFAULT_TIMEOUT,
+        headers={'Referer': base, 'Origin': base},
+    )
     resp = client.post('/api/v2/auth/login', data={'username': s.username, 'password': s.password})
     resp.raise_for_status()
+    # qBittorrent returns HTTP 200 with body "Fails." on bad credentials.
+    if resp.text.strip() != 'Ok.':
+        raise RuntimeError(f'qBittorrent login failed: {resp.text.strip()!r}')
     return client
 
 
