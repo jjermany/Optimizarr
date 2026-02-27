@@ -235,24 +235,6 @@ def _publish_download_job(dj: DownloadJob) -> None:
 # Quality profile helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Keywords to append to the Prowlarr search query for each quality profile
-_QUALITY_SEARCH_TERMS: dict[str, str] = {
-    DownloadQualityProfileEnum.remux.value:  'REMUX',
-    DownloadQualityProfileEnum.web_dl.value: 'WEB-DL',
-    DownloadQualityProfileEnum.webrip.value: 'WEBRip',
-    DownloadQualityProfileEnum.bluray.value: 'BluRay',
-    DownloadQualityProfileEnum.hdtv.value:   'HDTV',
-}
-
-# Substrings to look for in a release title to confirm its quality source.
-# Multiple aliases cover common scene/release group naming conventions.
-_QUALITY_TITLE_KEYWORDS: dict[str, list[str]] = {
-    DownloadQualityProfileEnum.remux.value:  ['remux'],
-    DownloadQualityProfileEnum.web_dl.value: ['web-dl', 'webdl', 'web dl'],
-    DownloadQualityProfileEnum.webrip.value: ['webrip', 'web-rip'],
-    DownloadQualityProfileEnum.bluray.value: ['bluray', 'blu-ray', 'bdrip', 'bluray'],
-    DownloadQualityProfileEnum.hdtv.value:   ['hdtv'],
-}
 
 
 def _normalize_release_title(title: str) -> str:
@@ -308,9 +290,13 @@ def _build_search_query(source_path: str, profile: LibraryProfile) -> str:
         year = ''
         title = clean.strip()
     resolution = f"{profile.target_resolution}p"
-    quality_val = str(getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any) or DownloadQualityProfileEnum.any)
-    quality_term = _QUALITY_SEARCH_TERMS.get(quality_val, '')
-    return ' '.join(filter(None, [title, year, resolution, quality_term]))
+    # Quality term is intentionally excluded from the Prowlarr search so that
+    # broad indexer results are returned.  Client-side filtering in
+    # _select_best_release() then applies the exact quality class match.
+    # Including the quality keyword in the search would silently exclude valid
+    # releases when indexers use non-standard naming (e.g. "WEB.DL" instead of
+    # "WEB-DL"), producing zero results even when good releases exist.
+    return ' '.join(filter(None, [title, year, resolution]))
 
 
 def _is_hdr_release(title_lower: str) -> bool:
@@ -579,24 +565,6 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         return
 
     profile = library.profile
-    timeout_minutes = int(getattr(profile, 'download_timeout_minutes', 60) or 60)
-    # Use download_started_at (when the torrent was sent to the client) as the
-    # timeout reference so that jobs created in a previous run don't immediately
-    # time out when the app restarts.  Fall back to created_at for rows that
-    # pre-date the download_started_at column.
-    timeout_reference = dj.download_started_at or dj.created_at
-    elapsed = datetime.utcnow() - timeout_reference
-    if elapsed > timedelta(minutes=timeout_minutes):
-        logger.warning('Download job %s timed out after %s minutes', dj.id, timeout_minutes)
-        dj.status = DownloadJobStatus.timed_out.value
-        dj.error_message = f'Download timed out after {timeout_minutes} minutes'
-        dj.completed_at = datetime.utcnow()
-        db.commit()
-        db.refresh(dj)
-        _publish_download_job(dj)
-        _fallback_to_encode(db, dj, library, profile)
-        return
-
     client_type = dj.client_type or 'qbittorrent'
 
     # If the hash is unknown (grab succeeded but Prowlarr returned no hash),
@@ -702,6 +670,8 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         db.refresh(dj)
         _publish_download_job(dj)
 
+    # Always check for completion BEFORE applying the timeout.  A download that
+    # finished just as the deadline elapsed should be imported, not discarded.
     if status.get('is_complete'):
         save_path = status.get('save_path')
         if save_path:
@@ -710,9 +680,30 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         else:
             _mark_failed(db, dj, 'Download marked complete but no save path returned')
             _fallback_to_encode(db, dj, library, profile)
-    elif status.get('is_stalled'):
+        return
+
+    if status.get('is_stalled'):
         logger.warning('Download job %s is stalled', dj.id)
         dj.status = DownloadJobStatus.stalled.value
+        db.commit()
+        db.refresh(dj)
+        _publish_download_job(dj)
+        _fallback_to_encode(db, dj, library, profile)
+        return
+
+    # Timeout check: only applied when the download is not yet complete or stalled.
+    # Use download_started_at (when the torrent was sent to the client) as the
+    # timeout reference so that jobs created in a previous run don't immediately
+    # time out when the app restarts.  Fall back to created_at for rows that
+    # pre-date the download_started_at column.
+    timeout_minutes = int(getattr(profile, 'download_timeout_minutes', 60) or 60)
+    timeout_reference = dj.download_started_at or dj.created_at
+    elapsed = datetime.utcnow() - timeout_reference
+    if elapsed > timedelta(minutes=timeout_minutes):
+        logger.warning('Download job %s timed out after %s minutes', dj.id, timeout_minutes)
+        dj.status = DownloadJobStatus.timed_out.value
+        dj.error_message = f'Download timed out after {timeout_minutes} minutes'
+        dj.completed_at = datetime.utcnow()
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj)
@@ -1011,7 +1002,7 @@ def _arm_startup_grace_if_needed(db: Session) -> None:
 def run_download_startup_recovery(db: Session) -> dict:
     """Reconcile in-flight download jobs against the download client on startup.
 
-    Handles two scenarios that occur when Optimizarr restarts:
+    Handles three scenarios that occur when Optimizarr restarts:
 
     1. A torrent finished downloading while the app was offline — qBittorrent
        has the file ready but we never ran the import step.  We detect this by
@@ -1022,6 +1013,13 @@ def run_download_startup_recovery(db: Session) -> dict:
        torrent was removed manually, or the hash was never tracked correctly).
        Those jobs are reset to 'searching' so Prowlarr retries the search.
 
+    3. Jobs that were marked timed_out or stalled but whose torrent actually
+       finished in qBittorrent while Optimizarr was offline.  These are imported
+       and their status updated to 'complete' so the history reflects the truth.
+
+    This function runs at startup before worker threads are started so that
+    imports complete before the queue resumes processing.
+
     Returns a summary dict with 'imported' and 'reset_to_searching' counts.
     """
     downloading_jobs = (
@@ -1030,12 +1028,24 @@ def run_download_startup_recovery(db: Session) -> dict:
         .all()
     )
 
+    # Also check timed_out and stalled jobs — they may have completed in qBit
+    # while Optimizarr was offline or after the timeout deadline fired.
+    stuck_jobs = (
+        db.query(DownloadJob)
+        .filter(DownloadJob.status.in_([
+            DownloadJobStatus.timed_out.value,
+            DownloadJobStatus.stalled.value,
+        ]))
+        .filter(DownloadJob.imported_file_path.is_(None))
+        .all()
+    )
+
     # Arm startup grace period if any jobs are already in searching state so
     # that Prowlarr grabs don't fire the instant the monitor loop starts.
     _arm_startup_grace_if_needed(db)
 
-    if not downloading_jobs:
-        logger.info('Download startup recovery: no in-flight download jobs found')
+    if not downloading_jobs and not stuck_jobs:
+        logger.info('Download startup recovery: no in-flight or recoverable download jobs found')
         return {'imported': 0, 'reset_to_searching': 0}
 
     qbt = download_client_service.get_or_create_qbt_settings(db)
@@ -1045,14 +1055,24 @@ def run_download_startup_recovery(db: Session) -> dict:
     imported = 0
     reset_count = 0
 
-    # Build a hash → torrent_info map from all tagged qBit torrents so we can
-    # find completed downloads even when the stored hash has wrong casing.
+    # Build a hash → torrent_info map covering all qBit torrents (tagged and
+    # untagged) so that timed_out/stalled jobs whose tag was never applied can
+    # still be matched.  Tagged torrents are preferred when there is a hash
+    # conflict, so populate tagged ones first.
     qbt_map: dict[str, dict] = {}
+    all_qbt_torrents: list[dict] = []
     if qbt.enabled:
         for torrent in download_client_service.get_all_qbt_tagged_torrents(qbt):
             h = torrent.get('hash', '')
             if h:
                 qbt_map[h.lower()] = torrent
+        # Supplement with all torrents so timed_out recovery can find
+        # downloads that were never tagged (e.g. tag API failed at grab time).
+        all_qbt_torrents = download_client_service.get_all_qbt_torrents(qbt)
+        for torrent in all_qbt_torrents:
+            h = torrent.get('hash', '').lower()
+            if h and h not in qbt_map:
+                qbt_map[h] = torrent
 
     for dj in downloading_jobs:
         logger.info('Download startup recovery: checking job %s (hash=%s, client=%s)',
@@ -1083,8 +1103,7 @@ def run_download_startup_recovery(db: Session) -> dict:
                     }
 
             if torrent_info is None:
-                all_torrents = download_client_service.get_all_qbt_torrents(qbt) if qbt.enabled else []
-                recovered = _find_qbt_torrent_for_release(dj, all_torrents)
+                recovered = _find_qbt_torrent_for_release(dj, all_qbt_torrents)
                 if recovered:
                     torrent_info = recovered
                 else:
@@ -1174,6 +1193,55 @@ def run_download_startup_recovery(db: Session) -> dict:
             db.refresh(dj)
             _publish_download_job(dj)
             reset_count += 1
+
+    # ── Timed-out / stalled job recovery ─────────────────────────────────────
+    # Jobs that were previously marked timed_out or stalled may have actually
+    # finished downloading in qBittorrent.  Import them now and update their
+    # history status to 'complete'.
+    for dj in stuck_jobs:
+        if not dj.download_hash and not dj.release_name:
+            continue
+
+        library = db.query(Library).filter(Library.id == dj.library_id).first()
+        if library is None or library.profile is None:
+            continue
+
+        profile = library.profile
+
+        if dj.client_type != 'qbittorrent' or not qbt.enabled:
+            continue
+
+        stored_hash = (dj.download_hash or '').lower()
+        torrent_info = qbt_map.get(stored_hash) if stored_hash else None
+
+        if torrent_info is None:
+            torrent_info = _find_qbt_torrent_for_release(dj, all_qbt_torrents)
+
+        if torrent_info is None:
+            continue
+
+        from app.services.download_client_service import _QBT_COMPLETE_STATES
+        state = torrent_info.get('state', '')
+        if state not in _QBT_COMPLETE_STATES:
+            continue
+
+        save_path = torrent_info.get('content_path') or torrent_info.get('save_path')
+        if not save_path:
+            continue
+
+        logger.info(
+            'Download startup recovery: job %s was %s but torrent completed in qBit; importing now',
+            dj.id, dj.status,
+        )
+        # Reset to downloading so _import_file can transition it to complete
+        # and update the history record correctly.
+        dj.status = DownloadJobStatus.downloading.value
+        dj.error_message = None
+        if dj.download_hash != torrent_info.get('hash', stored_hash).lower():
+            dj.download_hash = torrent_info.get('hash', stored_hash).lower()
+        db.commit()
+        _import_file(db, dj, save_path, library, profile, qbt, sab)
+        imported += 1
 
     logger.info('Download startup recovery complete: imported=%s, reset_to_searching=%s',
                 imported, reset_count)

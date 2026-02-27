@@ -1,9 +1,16 @@
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from app.core.database import SessionLocal
 from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.library import DownloadQualityProfileEnum
-from app.services.download_monitor_service import _select_best_release, download_job_exists_for_source
+from app.services.download_monitor_service import (
+    _build_search_query,
+    _check_download_progress,
+    _select_best_release,
+    download_job_exists_for_source,
+    run_download_startup_recovery,
+)
 
 
 
@@ -90,7 +97,6 @@ def test_download_job_exists_for_source_treats_pending_as_active_non_terminal():
 
 from app.models.library import Library, LibraryProfile
 from app.services import download_client_service
-from app.services.download_monitor_service import _check_download_progress, run_download_startup_recovery
 
 
 def _seed_library_with_profile(db):
@@ -205,3 +211,193 @@ def test_check_download_progress_recovers_stale_qbit_hash_and_imports(monkeypatc
         assert dj.download_hash == 'newhash'
         assert dj.progress_percent == 100
         assert imported_paths == ['/downloads/The.Gorge.2025.1080p.WEB-DL']
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Search query construction tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _full_profile(quality: DownloadQualityProfileEnum):
+    """A profile stub with all fields _build_search_query reads."""
+    return SimpleNamespace(target_resolution=1080, download_quality_profile=quality.value)
+
+
+def test_build_search_query_does_not_include_quality_keyword():
+    """Quality term must NOT appear in the Prowlarr search — filtering is done client-side."""
+    profile = _full_profile(DownloadQualityProfileEnum.web_dl)
+    query = _build_search_query('/media/The Gorge (2025).mkv', profile)
+    assert 'WEB-DL' not in query
+    assert 'WEB' not in query
+    assert 'webdl' not in query.lower()
+    assert 'The Gorge' in query
+    assert '2025' in query
+    assert '1080p' in query
+
+
+def test_build_search_query_excludes_quality_for_all_profiles():
+    """Quality term is excluded regardless of the configured profile."""
+    for quality in DownloadQualityProfileEnum:
+        profile = _full_profile(quality)
+        query = _build_search_query('/media/Inception (2010).mkv', profile)
+        assert 'remux' not in query.lower()
+        assert 'web-dl' not in query.lower()
+        assert 'webrip' not in query.lower()
+        assert 'bluray' not in query.lower()
+        assert 'hdtv' not in query.lower()
+        assert 'Inception' in query
+        assert '2010' in query
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Timeout ordering: completion must be checked before timeout fires
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_check_download_progress_imports_complete_download_despite_elapsed_timeout(monkeypatch):
+    """A download that is complete in qBit must be imported even when the timeout has elapsed."""
+    imported_paths = []
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        # Use a very short 1-minute timeout with a start time that is already past it.
+        profile = db.query(LibraryProfile).filter_by(library_id=library.id).first()
+        profile.download_timeout_minutes = 1
+        db.commit()
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Inception (2010).mkv',
+            release_name='Inception.2010.1080p.WEB-DL',
+            download_hash='aabbccdd',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            # download started 5 minutes ago — well past the 1-minute timeout
+            download_started_at=datetime.utcnow() - timedelta(minutes=5),
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        # qBit reports the torrent as complete
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 100,
+            'is_complete': True,
+            'is_stalled': False,
+            'save_path': '/downloads/Inception.2010.1080p.WEB-DL',
+        })
+        monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kw: True)
+
+        def _fake_import(_db, _dj, save_path, *_args):
+            imported_paths.append(save_path)
+            _dj.status = DownloadJobStatus.complete.value
+            _db.commit()
+
+        monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        # The download was complete so it must be imported, not timed out
+        assert dj.status == DownloadJobStatus.complete.value
+        assert imported_paths == ['/downloads/Inception.2010.1080p.WEB-DL']
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Startup recovery: timed_out jobs that completed in qBit while offline
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_startup_recovery_imports_timed_out_job_completed_in_qbit(monkeypatch):
+    """Jobs in timed_out status that have a completed torrent in qBit are imported on startup."""
+    imported_paths = []
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Dune (2021).mkv',
+            release_name='Dune.2021.1080p.WEB-DL',
+            download_hash='deadbeef',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.timed_out.value,
+            error_message='Download timed out after 60 minutes',
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_qbt_default_save_path', lambda _q: '/downloads/complete')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            'name': 'Dune.2021.1080p.WEB-DL',
+            'hash': 'deadbeef',
+            'state': 'uploading',  # completed state
+            'progress': 1.0,
+            'content_path': '/downloads/complete/Dune.2021.1080p.WEB-DL',
+            'save_path': '/downloads/complete/Dune.2021.1080p.WEB-DL',
+            'added_on': 1,
+        }])
+
+        def _fake_import(_db, _dj, save_path, *_args):
+            imported_paths.append(save_path)
+            _dj.status = DownloadJobStatus.complete.value
+            _dj.error_message = None
+            _db.commit()
+
+        monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(dj)
+
+        assert summary['imported'] == 1
+        assert dj.status == DownloadJobStatus.complete.value
+        assert dj.error_message is None
+        assert imported_paths == ['/downloads/complete/Dune.2021.1080p.WEB-DL']
+
+
+def test_startup_recovery_skips_timed_out_job_not_in_qbit(monkeypatch):
+    """timed_out jobs with no matching torrent in qBit are left unchanged."""
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Dune (2021).mkv',
+            release_name='Dune.2021.1080p.WEB-DL',
+            download_hash='badhash',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.timed_out.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_qbt_default_save_path', lambda _q: '/downloads/complete')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [])
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(dj)
+
+        assert summary['imported'] == 0
+        # Status must remain timed_out — no torrent found to recover
+        assert dj.status == DownloadJobStatus.timed_out.value
