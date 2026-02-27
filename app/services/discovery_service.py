@@ -10,6 +10,7 @@ import time
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import DiscoveryMethodEnum, Settings
 from app.services.job_service import create_job, job_exists_for_source
@@ -279,6 +280,25 @@ def _match_library(media_file: Path, enabled_by_path: dict[str, Library]) -> Lib
     return matched_library
 
 
+def _cancel_queued_encode_for_source(db: Session, source_path: str, library_id: int) -> None:
+    """Cancel any queued or paused encoding job for the given source so it
+    doesn't race against an incoming download job."""
+    existing = (
+        db.query(Job)
+        .filter(
+            Job.input_path == source_path,
+            Job.library_id == library_id,
+            Job.status.in_(['queued', 'paused']),
+        )
+        .first()
+    )
+    if existing:
+        from datetime import datetime as _dt
+        existing.status = 'cancelled'
+        existing.completed_at = _dt.utcnow()
+        db.commit()
+
+
 def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, profile: LibraryProfile):
     if media_file.stem.endswith(profile.output_suffix):
         return None
@@ -289,8 +309,21 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         return None
 
     source_path = str(media_file)
-    if job_exists_for_source(db, source_path, library_id=library.id):
-        return None
+    download_enabled = getattr(profile, 'download_enabled', False)
+
+    if download_enabled:
+        from app.services.download_monitor_service import (
+            can_attempt_download,
+            create_download_job,
+            download_job_exists_for_source,
+        )
+        # If a download job is already active for this file, nothing more to do.
+        if download_job_exists_for_source(db, source_path):
+            return None
+    else:
+        # Encoding-only mode: skip the (expensive) ffprobe if a job already exists.
+        if job_exists_for_source(db, source_path, library_id=library.id):
+            return None
 
     source_resolution = probe_video_height(source_path)
     source_is_hdr = is_hdr_video(source_path)
@@ -309,15 +342,15 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         if source_resolution <= profile.target_resolution:
             return None
 
-    # If download mode is enabled and integrations are ready, create a download job instead
-    if getattr(profile, 'download_enabled', False):
-        from app.services.download_monitor_service import (
-            can_attempt_download,
-            create_download_job,
-            download_job_exists_for_source,
-        )
-        if can_attempt_download(db) and not download_job_exists_for_source(db, source_path):
+    if download_enabled:
+        if can_attempt_download(db):
+            # Cancel any leftover queued encoding job so it does not race
+            # against the download job we are about to create.
+            _cancel_queued_encode_for_source(db, source_path, library.id)
             create_download_job(db, source_path, library, profile)
+            return None
+        # Prowlarr / client not ready – fall through to queuing an encoding job.
+        if job_exists_for_source(db, source_path, library_id=library.id):
             return None
 
     job = create_job(
