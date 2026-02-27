@@ -36,7 +36,7 @@ describe('buildUnifiedQueueItems', () => {
     expect(items.map((item) => item.id)).toEqual(expectedIds);
   });
 
-  it('can optionally pin active items first without changing secondary order', () => {
+  it('can optionally pin active items first and prefer active encodes', () => {
     const items = buildUnifiedQueueItems({
       encodeItems,
       downloadItems,
@@ -45,6 +45,27 @@ describe('buildUnifiedQueueItems', () => {
       pinActiveFirst: true,
     });
 
-    expect(items.map((item) => item.id)).toEqual([10, 14, 9, 11, 13, 16]);
+    expect(items.map((item) => item.id)).toEqual([14, 10, 9, 11, 13, 16]);
+  });
+
+  it('pins active encode rows before non-active rows deterministically', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 5, status: 'running', source_path: '/media/Active.Encode.A.2020.mkv' },
+        { id: 2, status: 'queued', source_path: '/media/Queued.Encode.2022.mkv' },
+      ],
+      downloadItems: [
+        { id: 5, status: 'pending', source_file_path: '/downloads/Pending.Download.2021.mkv' },
+      ],
+      sortOption: 'default',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
+      'encode-5',
+      'encode-2',
+      'download-5',
+    ]);
   });
 });

@@ -56,7 +56,7 @@ import {
   updateSettings,
 } from './api';
 import StatCard from './components/StatCard';
-import { buildUnifiedQueueItems } from './queueSorting';
+import { buildUnifiedQueueItems, isPinnedActiveQueueItem } from './queueSorting';
 import { isWithinWindow } from './scheduleWindow';
 
 const WS_PATH = '/ws';
@@ -152,6 +152,37 @@ const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']
 // Download-job status buckets
 const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'downloading', 'stalled', 'importing']);
 const TERMINAL_DL_STATUSES = new Set(['complete', 'failed', 'timed_out', 'fallback_queued']);
+
+function isActiveEncodeStatus(status) {
+  return ACTIVE_STATUSES.has(status?.toLowerCase());
+}
+
+export function mergeJobsWithUpdate(previousJobs, nextJob) {
+  if (isAbortedJob(nextJob)) {
+    return {
+      jobs: previousJobs.filter((job) => job.id !== nextJob.id),
+      resetToFirstPage: false,
+    };
+  }
+
+  const existingIndex = previousJobs.findIndex((job) => job.id === nextJob.id);
+  if (existingIndex === -1) {
+    return {
+      jobs: [nextJob, ...previousJobs],
+      resetToFirstPage: isActiveEncodeStatus(nextJob.status),
+    };
+  }
+
+  const previousJob = previousJobs[existingIndex];
+  const updatedJob = { ...previousJob, ...nextJob };
+  const jobs = [...previousJobs];
+  jobs[existingIndex] = updatedJob;
+
+  return {
+    jobs,
+    resetToFirstPage: !isActiveEncodeStatus(previousJob.status) && isActiveEncodeStatus(updatedJob.status),
+  };
+}
 
 function libraryQueueCount(library, jobs) {
   return jobs.filter((job) => {
@@ -708,9 +739,19 @@ export default function App() {
     [filteredActiveJobs, filteredDlQueueItems, queueSort],
   );
 
+  const activeNowQueueItems = useMemo(
+    () => unifiedQueueItems.filter((item) => isPinnedActiveQueueItem(item)),
+    [unifiedQueueItems],
+  );
+
+  const paginatedQueueItems = useMemo(
+    () => unifiedQueueItems.filter((item) => !isPinnedActiveQueueItem(item)),
+    [unifiedQueueItems],
+  );
+
   const totalJobPages = useMemo(
-    () => Math.max(1, Math.ceil(unifiedQueueItems.length / JOBS_PAGE_SIZE)),
-    [unifiedQueueItems.length],
+    () => Math.max(1, Math.ceil(paginatedQueueItems.length / JOBS_PAGE_SIZE)),
+    [paginatedQueueItems.length],
   );
 
   const totalHistoryPages = useMemo(
@@ -720,8 +761,8 @@ export default function App() {
 
   const pagedJobs = useMemo(() => {
     const start = (jobsPage - 1) * JOBS_PAGE_SIZE;
-    return unifiedQueueItems.slice(start, start + JOBS_PAGE_SIZE);
-  }, [unifiedQueueItems, jobsPage]);
+    return paginatedQueueItems.slice(start, start + JOBS_PAGE_SIZE);
+  }, [paginatedQueueItems, jobsPage]);
 
   const pagedHistoryJobs = useMemo(() => {
     const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
@@ -861,14 +902,13 @@ export default function App() {
   }
 
   function mergeJobUpdate(nextJob) {
+    let resetToFirstPage = false;
     setJobs((prevJobs) => {
-      if (isAbortedJob(nextJob)) return prevJobs.filter((job) => job.id !== nextJob.id);
-      const existingIndex = prevJobs.findIndex((job) => job.id === nextJob.id);
-      if (existingIndex === -1) return [nextJob, ...prevJobs];
-      const updatedJobs = [...prevJobs];
-      updatedJobs[existingIndex] = { ...updatedJobs[existingIndex], ...nextJob };
-      return updatedJobs;
+      const merged = mergeJobsWithUpdate(prevJobs, nextJob);
+      resetToFirstPage = merged.resetToFirstPage;
+      return merged.jobs;
     });
+    if (resetToFirstPage) setJobsPage(1);
   }
 
   function wsUrlWithToken(token) {
@@ -2081,6 +2121,19 @@ export default function App() {
               {/* Queue tab content */}
               {jobsView === 'queue' && (
                 <>
+                  {activeNowQueueItems.length > 0 && (
+                    <div className="border-b border-slate-800 bg-cyan-500/5 px-5 py-2.5">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-cyan-300">Active now</p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        Showing {activeNowQueueItems.length} active task{activeNowQueueItems.length === 1 ? '' : 's'} above paginated queue rows.
+                      </p>
+                      <p className="mt-1 truncate text-xs text-slate-500">
+                        {activeNowQueueItems
+                          .map((item) => (item._itemType === 'download' ? extractTitleYear(item.source_file_path).title : extractTitleYear(item.source_path).title))
+                          .join(' • ')}
+                      </p>
+                    </div>
+                  )}
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-slate-800">
                       <thead className="bg-slate-800/50">
@@ -2091,7 +2144,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60">
-                        {pagedJobs.length === 0 && (
+                        {activeNowQueueItems.length === 0 && pagedJobs.length === 0 && (
                           <tr>
                             <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
                               {queueSearch ? 'No matching jobs.' : 'No jobs in queue.'}

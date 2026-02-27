@@ -10,7 +10,16 @@ function queueItemYear(item, extractTitleYear) {
 }
 
 function compareById(left, right, direction = 'asc') {
-  return direction === 'desc' ? right.id - left.id : left.id - right.id;
+  const idDelta = direction === 'desc' ? right.id - left.id : left.id - right.id;
+  if (idDelta !== 0) return idDelta;
+  if (left._itemType !== right._itemType) return left._itemType.localeCompare(right._itemType);
+  return queueItemPath(left).localeCompare(queueItemPath(right));
+}
+
+function queuePinRank(item) {
+  if (item._itemType === 'encode' && ENCODE_ACTIVE_STATUSES.has(item.status?.toLowerCase())) return 0;
+  if (item._itemType === 'download' && DOWNLOAD_ACTIVE_STATUSES.has(item.status)) return 1;
+  return 2;
 }
 
 export function compareQueueItemsBySortOption(left, right, sortOption, extractTitleYear) {
@@ -35,10 +44,7 @@ export function compareQueueItemsBySortOption(left, right, sortOption, extractTi
 }
 
 export function isPinnedActiveQueueItem(item) {
-  if (item._itemType === 'download') {
-    return DOWNLOAD_ACTIVE_STATUSES.has(item.status);
-  }
-  return ENCODE_ACTIVE_STATUSES.has(item.status?.toLowerCase());
+  return queuePinRank(item) < 2;
 }
 
 export function buildUnifiedQueueItems({
@@ -55,12 +61,10 @@ export function buildUnifiedQueueItems({
 
   return merged.sort((left, right) => {
     if (pinActiveFirst) {
-      const leftPinned = isPinnedActiveQueueItem(left);
-      const rightPinned = isPinnedActiveQueueItem(right);
-      if (leftPinned !== rightPinned) return leftPinned ? -1 : 1;
+      const pinRankDelta = queuePinRank(left) - queuePinRank(right);
+      if (pinRankDelta !== 0) return pinRankDelta;
     }
 
     return compareQueueItemsBySortOption(left, right, sortOption, extractTitleYear);
   });
 }
-
