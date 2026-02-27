@@ -781,7 +781,7 @@ def test_scan_endpoints_pause_queue_before_queueing(monkeypatch, tmp_path):
     assert paused_reasons == ['manual_scan', 'manual_scan']
 
 
-def test_clear_queue_endpoint_resets_encode_and_download_items(monkeypatch):
+def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):
     from app.core.database import SessionLocal
     from app.models.download_job import DownloadJob, DownloadJobStatus
     from app.models.job import Job
@@ -816,23 +816,14 @@ def test_clear_queue_endpoint_resets_encode_and_download_items(monkeypatch):
         response = client.post('/queue/clear')
         assert response.status_code == 200
         payload = response.json()
-        assert payload['reset_job_ids'] == [encode_id]
-        assert payload['reset_download_job_ids'] == [download_id]
+        assert payload['removed_job_ids'] == [encode_id]
+        assert payload['removed_download_job_ids'] == [download_id]
 
     with SessionLocal() as db:
         updated_encode = db.query(Job).filter(Job.id == encode_id).first()
         updated_download = db.query(DownloadJob).filter(DownloadJob.id == download_id).first()
-        assert updated_encode is not None
-        assert updated_download is not None
-        assert updated_encode.status == 'queued'
-        assert updated_encode.progress_percent == 0
-        assert updated_encode.error_message is None
-        assert updated_download.status == DownloadJobStatus.pending.value
-        assert updated_download.search_query is None
-        assert updated_download.release_name is None
-        assert updated_download.download_hash is None
-        assert updated_download.client_type is None
-        assert updated_download.progress_percent == 0
+        assert updated_encode is None
+        assert updated_download is None
 
     assert paused_reasons == ['manual']
 

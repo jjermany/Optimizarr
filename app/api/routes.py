@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, timezone
+from datetime import timezone
 from pathlib import Path
 import secrets
 
@@ -280,8 +280,8 @@ class CancelAllQueuedResponse(BaseModel):
 
 
 class ClearQueueResponse(BaseModel):
-    reset_job_ids: list[int]
-    reset_download_job_ids: list[int]
+    removed_job_ids: list[int]
+    removed_download_job_ids: list[int]
 
 
 class NotificationTriggerSettings(BaseModel):
@@ -1184,32 +1184,23 @@ def cancel_all_queued_jobs_endpoint(_: None = Depends(require_ui_auth), db: Sess
 
 @router.post('/queue/clear', response_model=ClearQueueResponse)
 def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ClearQueueResponse:
-    from app.services.download_monitor_service import _publish_download_job
+    from app.services.job_service import _get_settings
+    from app.services.optimization_service import delete_workspace
     from app.services.optimization_service import stop_active_ffmpeg
     from app.models.job import Job
 
     worker_queue.pause_queue(reason='manual')
-    now = datetime.utcnow()
+    settings = _get_settings(db)
 
     active_encode_statuses = {'queued', 'starting', 'preflight', 'running', 'paused', 'paused_schedule'}
     encode_jobs = db.query(Job).filter(Job.status.in_(active_encode_statuses)).all()
-    reset_job_ids: list[int] = []
+    removed_job_ids: list[int] = []
     for job in encode_jobs:
         if job.status in {'starting', 'preflight', 'running'}:
             stop_active_ffmpeg(job.id)
-
-        job.status = 'queued'
-        job.progress_percent = 0
-        job.resume_position_seconds = None
-        job.retry_count = 0
-        job.fps = None
-        job.eta_seconds = None
-        job.output_path = None
-        job.error_message = None
-        job.cancel_requested = False
-        job.completed_at = None
-        job.created_at = now
-        reset_job_ids.append(job.id)
+        delete_workspace(settings, job.id)
+        removed_job_ids.append(job.id)
+        db.delete(job)
 
     active_download_statuses = {
         DownloadJobStatus.pending.value,
@@ -1219,34 +1210,19 @@ def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
         DownloadJobStatus.importing.value,
     }
     download_jobs = db.query(DownloadJob).filter(DownloadJob.status.in_(active_download_statuses)).all()
-    reset_download_job_ids: list[int] = []
+    removed_download_job_ids: list[int] = []
     for dj in download_jobs:
-        dj.status = DownloadJobStatus.pending.value
-        dj.error_message = None
-        dj.search_query = None
-        dj.release_name = None
-        dj.download_hash = None
-        dj.client_type = None
-        dj.progress_percent = 0
-        dj.downloaded_file_path = None
-        dj.imported_file_path = None
-        dj.encode_job_id = None
-        dj.download_started_at = None
-        dj.completed_at = None
-        dj.created_at = now
-        reset_download_job_ids.append(dj.id)
+        removed_download_job_ids.append(dj.id)
+        db.delete(dj)
 
     db.commit()
 
-    for job in encode_jobs:
-        response = JobResponse.from_orm_job(job)
-        broker.publish_job_update(response.model_dump(), throttle_progress=False)
-    for dj in download_jobs:
-        _publish_download_job(dj)
+    for job_id in removed_job_ids:
+        broker.publish_system_event('job_removed', job_id=job_id)
 
     return ClearQueueResponse(
-        reset_job_ids=reset_job_ids,
-        reset_download_job_ids=reset_download_job_ids,
+        removed_job_ids=removed_job_ids,
+        removed_download_job_ids=removed_download_job_ids,
     )
 
 

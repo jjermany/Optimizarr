@@ -1189,12 +1189,12 @@ export default function App() {
   }
 
   async function handleClearQueue() {
-    if (!window.confirm('Clear and reset all queue items (encoding + download) to restart from scratch?')) return;
+    if (!window.confirm('Clear queue now? This removes all active encoding and download queue items.')) return;
     try {
       const result = await clearQueue();
-      const totalReset = (result?.reset_job_ids?.length ?? 0) + (result?.reset_download_job_ids?.length ?? 0);
+      const totalReset = (result?.removed_job_ids?.length ?? 0) + (result?.removed_download_job_ids?.length ?? 0);
       setQueuePaused(true);
-      pushToast(`Queue reset: ${totalReset} item(s).`, 'success');
+      pushToast(`Queue cleared: ${totalReset} item(s) removed.`, 'success');
       await refreshAll();
     } catch (actionError) {
       pushToast(actionError.message || 'Clear queue failed.', 'error');
