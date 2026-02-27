@@ -780,6 +780,63 @@ def test_scan_endpoints_pause_queue_before_queueing(monkeypatch, tmp_path):
 
     assert paused_reasons == ['manual_scan', 'manual_scan']
 
+
+def test_clear_queue_endpoint_resets_encode_and_download_items(monkeypatch):
+    from app.core.database import SessionLocal
+    from app.models.download_job import DownloadJob, DownloadJobStatus
+    from app.models.job import Job
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.commit()
+
+        encode = Job(input_path='/media/clear-me.mkv', status='running', progress_percent=63, error_message='x')
+        download = DownloadJob(
+            source_file_path='/media/clear-me-download.mkv',
+            status=DownloadJobStatus.searching.value,
+            search_query='clear me',
+            release_name='Release.Name',
+            download_hash='deadbeef',
+            client_type='qbittorrent',
+            progress_percent=30,
+        )
+        db.add_all([encode, download])
+        db.commit()
+        db.refresh(encode)
+        db.refresh(download)
+        encode_id = encode.id
+        download_id = download.id
+
+    paused_reasons = []
+    from app.workers import queue as worker_queue
+    monkeypatch.setattr(worker_queue, 'pause_queue', lambda reason='manual': paused_reasons.append(reason))
+
+    with TestClient(app) as client:
+        response = client.post('/queue/clear')
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload['reset_job_ids'] == [encode_id]
+        assert payload['reset_download_job_ids'] == [download_id]
+
+    with SessionLocal() as db:
+        updated_encode = db.query(Job).filter(Job.id == encode_id).first()
+        updated_download = db.query(DownloadJob).filter(DownloadJob.id == download_id).first()
+        assert updated_encode is not None
+        assert updated_download is not None
+        assert updated_encode.status == 'queued'
+        assert updated_encode.progress_percent == 0
+        assert updated_encode.error_message is None
+        assert updated_download.status == DownloadJobStatus.pending.value
+        assert updated_download.search_query is None
+        assert updated_download.release_name is None
+        assert updated_download.download_hash is None
+        assert updated_download.client_type is None
+        assert updated_download.progress_percent == 0
+
+    assert paused_reasons == ['manual']
+
+
 def test_recovery_endpoint_marks_interrupted_requeues_and_cleans_workspace(tmp_path):
     from app.core.database import SessionLocal
     from app.models.job import Job

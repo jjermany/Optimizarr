@@ -249,11 +249,16 @@ def _classify_release_quality(title: str) -> str | None:
     """Classify a release title into one of our quality profile buckets."""
     normalized = _normalize_release_title(title)
 
-    has_remux = bool(re.search(r'\bremux\b', normalized))
-    has_web_dl = bool(re.search(r'\bweb\s?dl\b', normalized))
-    has_webrip = bool(re.search(r'\bweb\s?rip\b', normalized))
-    has_bluray = bool(re.search(r'\bblu\s?ray\b|\bbd\s?rip\b|\bbrrip\b', normalized))
-    has_hdtv = bool(re.search(r'\bhdtv\b', normalized))
+    has_remux = bool(re.search(r'\b(remux|bdremux)\b', normalized))
+    has_web_dl = bool(
+        re.search(
+            r'\b(web\s?dl|webdl)\b|\b(amzn|nf|dsnp|atvp|hmax|hulu|itunes)\b',
+            normalized,
+        )
+    )
+    has_webrip = bool(re.search(r'\b(web\s?rip|webrip|webcap)\b', normalized))
+    has_bluray = bool(re.search(r'\b(blu\s?ray|bdrip|bd\s?rip|brrip)\b', normalized))
+    has_hdtv = bool(re.search(r'\b(hdtv|pdtv|dsr)\b', normalized))
 
     # Explicit conflict handling for mixed tags.
     if has_remux and (has_web_dl or has_webrip or has_bluray or has_hdtv):
@@ -272,6 +277,63 @@ def _classify_release_quality(title: str) -> str | None:
     if has_hdtv:
         return DownloadQualityProfileEnum.hdtv.value
     return None
+
+
+def _classify_release_quality_from_release(release: dict) -> str | None:
+    """Classify quality using both the title and any structured quality fields."""
+    title_quality = _classify_release_quality(str(release.get('title', '') or ''))
+    if title_quality:
+        return title_quality
+
+    structured_candidates: list[str] = []
+    for key in ('quality', 'qualityName', 'source'):
+        value = release.get(key)
+        if isinstance(value, str):
+            structured_candidates.append(value)
+        elif isinstance(value, dict):
+            for nested_key in ('name', 'quality', 'source'):
+                nested = value.get(nested_key)
+                if isinstance(nested, str):
+                    structured_candidates.append(nested)
+
+    for candidate in structured_candidates:
+        parsed = _classify_release_quality(candidate)
+        if parsed:
+            return parsed
+
+    return None
+
+
+def _release_matches_target_resolution(release: dict, target_resolution: int) -> bool:
+    title_lower = str(release.get('title', '') or '').lower()
+    target = int(target_resolution)
+
+    if f'{target}p' in title_lower:
+        return True
+    if target == 2160 and '4k' in title_lower:
+        return True
+    if re.search(rf'\b\d{{3,4}}x{target}\b', title_lower):
+        return True
+    if re.search(rf'\b{target}i\b', title_lower):
+        return True
+
+    for key in ('resolution', 'quality'):
+        value = release.get(key)
+        if isinstance(value, str):
+            value_lower = value.lower()
+            if f'{target}p' in value_lower or (target == 2160 and '4k' in value_lower):
+                return True
+        elif isinstance(value, dict):
+            nested_resolution = value.get('resolution')
+            if isinstance(nested_resolution, int) and nested_resolution == target:
+                return True
+            nested_name = value.get('name')
+            if isinstance(nested_name, str):
+                nested_name_lower = nested_name.lower()
+                if f'{target}p' in nested_name_lower or (target == 2160 and '4k' in nested_name_lower):
+                    return True
+
+    return False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -331,17 +393,16 @@ def _select_best_release(
     Torrent releases require qBittorrent to be enabled; usenet releases
     require SABnzbd to be enabled.
     """
-    res_str = f"{profile.target_resolution}p"
     quality_val = str(getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any) or DownloadQualityProfileEnum.any)
     sdr_candidates: list[dict] = []
 
     for r in releases:
         title = r.get('title', '')
         title_lower = title.lower()
-        quality_class = _classify_release_quality(title)
+        quality_class = _classify_release_quality_from_release(r)
 
         # Resolution filter
-        if res_str.lower() not in title_lower:
+        if not _release_matches_target_resolution(r, profile.target_resolution):
             continue
 
         # HDR filter — never accept HDR downloads
@@ -403,6 +464,11 @@ def _process_searching_jobs(db: Session) -> None:
     if _download_queue_stopped:
         return
     if _scan_recovery_event.is_set():
+        return
+    # Keep download searching aligned with the main queue state so manual scans
+    # can stage items without immediately starting Prowlarr searches.
+    from app.workers.queue import is_queue_paused
+    if is_queue_paused():
         return
 
     global _startup_grace_until

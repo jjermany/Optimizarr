@@ -152,6 +152,10 @@ export function resumeQueue() {
   return request('/queue/resume', { method: 'POST' });
 }
 
+export function clearQueue() {
+  return request('/queue/clear', { method: 'POST' });
+}
+
 export function fetchQueueStatus() {
   return request('/queue/status');
 }

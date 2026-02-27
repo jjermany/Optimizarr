@@ -4,6 +4,7 @@ import {
   abortJob,
   cancelAllQueued,
   cancelJob,
+  clearQueue,
   cancelDownloadJob,
   deleteDownloadJob,
   deleteAllDownloadJobs,
@@ -1187,6 +1188,19 @@ export default function App() {
     }
   }
 
+  async function handleClearQueue() {
+    if (!window.confirm('Clear and reset all queue items (encoding + download) to restart from scratch?')) return;
+    try {
+      const result = await clearQueue();
+      const totalReset = (result?.reset_job_ids?.length ?? 0) + (result?.reset_download_job_ids?.length ?? 0);
+      setQueuePaused(true);
+      pushToast(`Queue reset: ${totalReset} item(s).`, 'success');
+      await refreshAll();
+    } catch (actionError) {
+      pushToast(actionError.message || 'Clear queue failed.', 'error');
+    }
+  }
+
   async function handleCreateLibrary() {
     const nextErrors = validateLibraryForm(libraryDraft);
     setLibraryFormErrors(nextErrors);
@@ -2118,6 +2132,7 @@ export default function App() {
                       <option value="year_oldest">Release Year (Oldest)</option>
                     </select>
                     <Btn size="sm" variant="secondary" onClick={handleCancelAllQueued}>Cancel Queued</Btn>
+                    <Btn size="sm" variant="secondary" onClick={handleClearQueue}>Clear Queue</Btn>
                     <Btn size="sm" variant="danger" onClick={handleAbortAllJobs}>Abort All</Btn>
                     <Btn size="sm" variant="warning" onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}>
                       {queuePaused ? 'Start Queue' : 'Pause Queue'}

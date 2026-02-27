@@ -7,6 +7,7 @@ from app.models.library import DownloadQualityProfileEnum
 from app.services.download_monitor_service import (
     _build_search_query,
     _check_download_progress,
+    _process_searching_jobs,
     _select_best_release,
     download_job_exists_for_source,
     run_download_startup_recovery,
@@ -79,6 +80,39 @@ def test_select_best_release_any_allows_all_quality_classes():
 
     assert selected is not None
     assert selected['title'] == 'Movie.2024.1080p.WEBRip.x265-HIGHSEED'
+
+
+def test_select_best_release_uses_structured_quality_when_title_is_ambiguous():
+    releases = [
+        {
+            'title': 'Movie 2024 1080p Proper',
+            'quality': {'name': 'WEB-DL 1080p'},
+            'seeders': 25,
+            'size': 1500,
+            'protocol': 'torrent',
+        }
+    ]
+
+    selected = _select_best_release(releases, _profile(DownloadQualityProfileEnum.web_dl), qbt_enabled=True, sab_enabled=True)
+
+    assert selected is not None
+    assert selected['title'] == 'Movie 2024 1080p Proper'
+
+
+def test_select_best_release_accepts_1920x1080_resolution_format():
+    releases = [
+        {
+            'title': 'Movie.2024.1920x1080.WEB-DL.x265-GROUP',
+            'seeders': 40,
+            'size': 1800,
+            'protocol': 'torrent',
+        }
+    ]
+
+    selected = _select_best_release(releases, _profile(DownloadQualityProfileEnum.web_dl), qbt_enabled=True, sab_enabled=True)
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1920x1080.WEB-DL.x265-GROUP'
 
 
 def test_download_job_exists_for_source_treats_pending_as_active_non_terminal():
@@ -496,6 +530,38 @@ def test_check_search_job_stays_searching_on_prowlarr_error(monkeypatch):
 
         # Job must remain in 'searching' so the monitor retries on the next cycle
         assert dj.status == DownloadJobStatus.searching.value
+
+
+def test_process_searching_jobs_skips_work_when_main_queue_is_paused(monkeypatch):
+    """Download search worker must not run while the main queue is paused."""
+    from app.services import download_client_service, prowlarr_service
+    from app.workers import queue as worker_queue
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        dj = DownloadJob(
+            library_id=None,
+            source_file_path='/media/Paused.Queue.Test.mkv',
+            status=DownloadJobStatus.pending.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(worker_queue, 'is_queue_paused', lambda: True)
+        monkeypatch.setattr(prowlarr_service, 'get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        search_calls = []
+        monkeypatch.setattr('app.services.download_monitor_service._do_search', lambda *_args, **_kwargs: search_calls.append(True))
+
+        _process_searching_jobs(db)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.pending.value
+        assert search_calls == []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
