@@ -110,18 +110,20 @@ def _ensure_qbt_tag(client: httpx.Client) -> None:
         logger.debug('createTags call failed (non-fatal): %s', exc)
 
 
-def tag_qbt_torrent(s: QBittorrentSettings, torrent_hash: str) -> None:
+def tag_qbt_torrent(s: QBittorrentSettings, torrent_hash: str, max_attempts: int = 5) -> bool:
     """Tag a torrent with 'optimizarr' so it can be identified in the qBittorrent UI.
 
     Calls createTags first to ensure the tag exists on older qBittorrent
-    versions, then retries addTags up to 3 times with a short back-off to
-    handle the race where the torrent hasn't been indexed by qBit yet.
+    versions, then retries addTags up to max_attempts times with a short
+    back-off to handle the race where the torrent hasn't been indexed by qBit
+    yet.  Returns True if the tag was confirmed applied, False otherwise.
+    Use max_attempts=1 for a quick fire-and-check with no sleeping.
     """
     try:
         client = _qbt_session(s)
         _ensure_qbt_tag(client)
         hash_lower = torrent_hash.lower()
-        for attempt in range(5):
+        for attempt in range(max_attempts):
             client.post('/api/v2/torrents/addTags', data={'hashes': hash_lower, 'tags': _QBT_TAG})
             # Verify the tag was actually applied; the torrent may not be
             # indexed in qBit yet if this is called immediately after the grab
@@ -130,12 +132,14 @@ def tag_qbt_torrent(s: QBittorrentSettings, torrent_hash: str) -> None:
             # most slow-indexing scenarios.
             info = _qbt_torrent_info(client, hash_lower)
             if info and _QBT_TAG in (info.get('tags') or ''):
-                return  # success
-            if attempt < 4:
+                return True
+            if attempt < max_attempts - 1:
                 time.sleep(3)
-        logger.warning('Could not verify optimizarr tag on torrent %s after 5 attempts', torrent_hash)
+        logger.warning('Could not verify optimizarr tag on torrent %s after %d attempts', torrent_hash, max_attempts)
+        return False
     except Exception as exc:
         logger.warning('Failed to tag qBittorrent torrent %s: %s', torrent_hash, exc)
+        return False
 
 
 def get_all_qbt_tagged_torrents(s: QBittorrentSettings) -> list[dict]:

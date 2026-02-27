@@ -316,23 +316,33 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
     if output_path.exists():
         return None
 
+    # Broader sibling check: a downloaded release may have a different stem
+    # (e.g. different release group) so the exact-path check above misses it.
+    # Scan siblings that share the same title prefix (everything before the
+    # first '[') and end with the output suffix — catches cases like
+    # "...-MainFrame-1080p.mkv" sitting beside "...-BEN.mp4".
+    bracket_pos = media_file.stem.find('[')
+    if bracket_pos > 0:
+        title_prefix = media_file.stem[:bracket_pos].rstrip(' ._-')
+        if title_prefix:
+            for sibling in media_file.parent.iterdir():
+                if (sibling != media_file
+                        and sibling.stem.startswith(title_prefix)
+                        and sibling.stem.endswith(profile.output_suffix)
+                        and sibling.suffix.lower() == f'.{container}'):
+                    return None
+
     source_path = str(media_file)
     download_enabled = getattr(profile, 'download_enabled', False)
 
     if download_enabled:
         from app.services.download_monitor_service import (
-            any_active_download_job,
             can_attempt_download,
             create_download_job,
             download_job_exists_for_source,
         )
         # If a download job is already active for this file, nothing more to do.
         if download_job_exists_for_source(db, source_path):
-            return None
-        # Only one download job should be active at a time.  If another file is
-        # already searching / downloading / importing, defer this one until the
-        # next scan so the queue never snowballs into dozens of simultaneous grabs.
-        if any_active_download_job(db):
             return None
         # Mirror the encoding-path guard: skip if a non-retryable encoding job
         # (complete, queued, paused, or running) already exists for this source.

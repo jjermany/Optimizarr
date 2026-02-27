@@ -33,6 +33,10 @@ _thread: threading.Thread | None = None
 _download_queue_stopped: bool = False
 _download_queue_stop_reason: str = ''
 
+# Track which DownloadJob IDs have had their qBittorrent tag confirmed.
+# In-memory only; entries are re-added after restart on the first progress check.
+_tagged_job_ids: set[int] = set()
+
 
 def is_download_queue_stopped() -> bool:
     return _download_queue_stopped
@@ -471,7 +475,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     # Tag the torrent in qBittorrent so it's identifiable in the client UI.
     # Use the already-normalised hash to be consistent with what is stored in the DB.
     if client_type == 'qbittorrent' and qbt.enabled:
-        download_client_service.tag_qbt_torrent(qbt, normalised_hash)
+        if download_client_service.tag_qbt_torrent(qbt, normalised_hash):
+            _tagged_job_ids.add(dj.id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -529,7 +534,8 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             dj.download_hash = recovered_hash
             db.commit()
             db.refresh(dj)
-            download_client_service.tag_qbt_torrent(qbt, recovered_hash)
+            if download_client_service.tag_qbt_torrent(qbt, recovered_hash):
+                _tagged_job_ids.add(dj.id)
         elif not recent:
             logger.debug('Download job %s: no recent qBit torrent found yet; waiting', dj.id)
             return
@@ -539,6 +545,12 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                 dj.id, len(recent),
             )
             return
+
+    # If the initial tag attempt failed (e.g. torrent wasn't indexed in qBit
+    # yet when we grabbed it), retry once per loop with a single quick attempt.
+    if dj.id not in _tagged_job_ids and client_type == 'qbittorrent' and qbt.enabled and dj.download_hash:
+        if download_client_service.tag_qbt_torrent(qbt, dj.download_hash, max_attempts=1):
+            _tagged_job_ids.add(dj.id)
 
     status = download_client_service.get_download_status(client_type, qbt, sab, dj.download_hash or '')
     progress = status.get('progress_percent', 0)
