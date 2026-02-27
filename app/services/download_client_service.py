@@ -75,6 +75,8 @@ def _qbt_session(s: QBittorrentSettings) -> httpx.Client:
     client = httpx.Client(base_url=base, timeout=_DEFAULT_TIMEOUT)
     resp = client.post('/api/v2/auth/login', data={'username': s.username, 'password': s.password})
     resp.raise_for_status()
+    if resp.text.strip() != 'Ok.':
+        raise ValueError(f"qBittorrent authentication failed: {resp.text.strip()}")
     return client
 
 
