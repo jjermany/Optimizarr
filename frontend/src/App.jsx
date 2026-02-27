@@ -31,7 +31,6 @@ import {
   pauseJob,
   pauseQueue,
   purgeHistory,
-  removeAllJobs,
   requeueJob,
   resumeJob,
   resumeQueue,
@@ -1080,6 +1079,10 @@ export default function App() {
           }
           if (payload.type === 'system_event') {
             if (payload.data?.event === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
+            if (payload.data?.event === 'download_job_removed') {
+              setDownloadJobs((prev) => prev.filter((dj) => dj.id !== payload.data?.download_job_id));
+              return;
+            }
             if (payload.data?.event === 'queue_paused') {
               setQueuePaused(true);
               if (payload.data?.reason === 'low_disk') { pushToast('Queue paused due to low disk.', 'warn'); return; }
@@ -1142,16 +1145,6 @@ export default function App() {
       await refreshAll();
     } catch (actionError) {
       pushToast(actionError.message || 'Abort all failed.', 'error');
-    }
-  }
-
-  async function handleRemoveAllJobs() {
-    try {
-      const result = await removeAllJobs();
-      pushToast(`Removed ${result.removed_job_ids.length} job(s).`, 'success');
-      await refreshAll();
-    } catch (actionError) {
-      pushToast(actionError.message || 'Remove all failed.', 'error');
     }
   }
 

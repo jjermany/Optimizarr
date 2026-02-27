@@ -136,10 +136,6 @@ export function cancelAllQueued() {
   return request('/jobs/cancel-all-queued', { method: 'POST' });
 }
 
-export function removeAllJobs() {
-  return request('/jobs/remove-all', { method: 'POST' });
-}
-
 export function purgeHistory() {
   return request('/jobs/remove-all', { method: 'POST' });
 }

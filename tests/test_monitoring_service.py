@@ -57,6 +57,9 @@ def test_get_gpu_metrics_returns_zero_when_intel_gpu_idle(monkeypatch):
         'Popen',
         lambda *args, **kwargs: _FakePopen(mock_stdout),
     )
+    # Keep the test focused on the Intel path; avoid subprocess.run hitting the
+    # fake Popen context-manager mismatch in NVIDIA probing.
+    monkeypatch.setattr(monitoring_service, '_get_nvidia_gpu_metrics', lambda: None)
 
     metrics = monitoring_service.get_gpu_metrics()
 
@@ -69,6 +72,8 @@ def test_get_gpu_metrics_defaults_when_command_fails(monkeypatch):
         raise FileNotFoundError
 
     monkeypatch.setattr(monitoring_service.subprocess, 'Popen', fake_popen)
+    monkeypatch.setattr(monitoring_service, '_get_intel_gpu_metrics_freq', lambda: None)
+    monkeypatch.setattr(monitoring_service, '_get_nvidia_gpu_metrics', lambda: None)
 
     metrics = monitoring_service.get_gpu_metrics()
 
@@ -85,6 +90,8 @@ def test_get_gpu_metrics_defaults_when_process_outputs_nothing(monkeypatch):
         raise FileNotFoundError
 
     monkeypatch.setattr(monitoring_service.subprocess, 'run', _raise_not_found)
+    monkeypatch.setattr(monitoring_service, '_get_intel_gpu_metrics_freq', lambda: None)
+    monkeypatch.setattr(monitoring_service, '_get_nvidia_gpu_metrics', lambda: None)
 
     metrics = monitoring_service.get_gpu_metrics()
 

@@ -51,16 +51,6 @@ _HDR_TONEMAP_FILTERS = [
 # DV and HDR10+ use VAAPI hw-decode + hwdownload + CPU zscale instead —
 # see the 'dolby_vision'/'hdr10plus' branch in _build_command_with_selection.
 _VAAPI_TONEMAP_FILTER = 'tonemap_vaapi=format=nv12:p=bt709:t=bt709:m=bt709'
-# HDR-to-SDR GPU tone mapping via libplacebo (Vulkan backend).
-# Operates on CPU-side p010le frames (after hwdownload) but offloads the heavy
-# tone-mapping maths to the GPU via Vulkan — far faster than the CPU zscale chain
-# for 4K content.  bt.2390 is the ITU-recommended EETF; produces excellent
-# highlight roll-off compared with Hable.  Used for DV/HDR10+ when available.
-_LIBPLACEBO_TONEMAP_FILTER = (
-    'libplacebo=tonemapping=bt.2390'
-    ':colorspace=bt709:color_primaries=bt709:color_trc=bt709'
-    ':format=nv12'
-)
 # HDR-to-SDR GPU tone mapping via Intel QSV VPP (vpp_qsv).
 # Operates entirely within QSV surfaces; no CPU round-trip.  Handles HDR10/HLG
 # dynamic metadata.  Note: color_primaries/color_transfer/color_matrix were
@@ -264,66 +254,6 @@ def _encoder_available(encoder_name: str) -> bool:
     return _ENCODER_CACHE[encoder_name]
 
 
-_LIBPLACEBO_AVAILABLE: bool | None = None
-
-
-def _libplacebo_available() -> bool:
-    """Return True if FFmpeg includes libplacebo AND a working Vulkan driver is present.
-
-    Checking only ``ffmpeg -filters`` is insufficient: the filter may be compiled in
-    but Vulkan can still fail at runtime with VK_ERROR_INCOMPATIBLE_DRIVER when no
-    Vulkan ICD is installed.  A minimal one-frame probe is run once on first call to
-    confirm the full stack (filter + Vulkan device) actually works.
-    """
-    global _LIBPLACEBO_AVAILABLE
-    if _LIBPLACEBO_AVAILABLE is None:
-        # Step 1: Is the filter compiled in?
-        filter_present = False
-        try:
-            result = subprocess.run(
-                ['ffmpeg', '-hide_banner', '-filters'],
-                capture_output=True, text=True, check=False,
-            )
-            filter_present = 'libplacebo' in result.stdout
-        except OSError:
-            pass
-
-        if filter_present:
-            # Step 2: Does Vulkan actually initialise?  Run a 2×2 one-frame probe.
-            # If Vulkan is missing or incompatible the return code will be non-zero
-            # and stderr will contain VK_ERROR_INCOMPATIBLE_DRIVER.
-            try:
-                vk_probe = subprocess.run(
-                    [
-                        'ffmpeg', '-hide_banner',
-                        '-f', 'lavfi', '-i', 'color=size=2x2:duration=0.04',
-                        '-vf', 'libplacebo=w=2:h=2:format=yuv420p',
-                        '-frames:v', '1',
-                        '-f', 'null', '-',
-                    ],
-                    capture_output=True, text=True, check=False, timeout=15,
-                )
-                _LIBPLACEBO_AVAILABLE = vk_probe.returncode == 0
-                if not _LIBPLACEBO_AVAILABLE:
-                    vk_errors = [
-                        l for l in vk_probe.stderr.splitlines()
-                        if 'vulkan' in l.lower() or 'VK_' in l
-                    ]
-                    if vk_errors:
-                        logger.debug('libplacebo Vulkan probe failed: %s', '; '.join(vk_errors[:3]))
-            except (OSError, subprocess.TimeoutExpired):
-                _LIBPLACEBO_AVAILABLE = False
-        else:
-            _LIBPLACEBO_AVAILABLE = False
-
-        logger.info(
-            'libplacebo filter: %s',
-            'available (GPU tonemap enabled for DV/HDR10+)' if _LIBPLACEBO_AVAILABLE
-            else 'unavailable (falling back to CPU zscale for DV/HDR10+)',
-        )
-    return _LIBPLACEBO_AVAILABLE
-
-
 def available_encoders_by_codec() -> dict[str, list[str]]:
     if not _ENCODER_CACHE:
         refresh_encoder_cache()
@@ -332,6 +262,15 @@ def available_encoders_by_codec() -> dict[str, list[str]]:
     for codec, candidates in ENCODER_OPTIONS_BY_CODEC.items():
         available[codec] = [name for name in candidates if _encoder_available(name)]
     return available
+
+
+def _libplacebo_available() -> bool:
+    """Compatibility shim for older tests/config paths.
+
+    The optimizer no longer routes through libplacebo at runtime, but some test
+    suites monkeypatch this symbol directly.
+    """
+    return False
 
 
 def _select_encoder(profile: dict[str, Any]) -> EncoderSelection | None:
@@ -1834,9 +1773,12 @@ def optimize_video(
         )
 
     if progress_callback and metrics.status in {'complete', 'failed'}:
+        failed_progress = 0
+        if metrics.status == 'failed' and duration and duration > 0:
+            failed_progress = max(0, min(99, int((metrics.processed_seconds / duration) * 100)))
         progress_callback(
             {
-                'progress_percent': 100 if metrics.status == 'complete' else min(99, int(metrics.processed_seconds)),
+                'progress_percent': 100 if metrics.status == 'complete' else failed_progress,
                 'fps': current_fps,
                 'eta_seconds': 0 if metrics.status == 'complete' else None,
             }

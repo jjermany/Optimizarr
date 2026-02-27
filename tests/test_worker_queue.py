@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.core.database import SessionLocal
 from app.main import app
+from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
 from app.models.settings import QueueSortEnum, Settings
@@ -428,6 +429,48 @@ def test_claim_next_queued_job_honors_oldest_sort_when_no_resume_priority(tmp_pa
         selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
 
         assert selected_id == oldest.id
+
+
+def test_claim_next_queued_job_skips_download_enabled_source_with_active_download():
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        db.add(profile)
+        db.commit()
+
+        source_path = '/media/movies/title.mkv'
+        job = Job(input_path=source_path, status='queued', library_id=library.id)
+        db.add(job)
+        db.commit()
+
+        active_download = DownloadJob(
+            library_id=library.id,
+            source_file_path=source_path,
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(active_download)
+        db.commit()
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        db.refresh(job)
+
+        assert selected_id is None
+        assert job.status == 'queued'
 
 
 def test_process_job_ignores_late_progress_after_pause(monkeypatch):

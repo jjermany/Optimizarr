@@ -9,6 +9,7 @@ import shutil
 from threading import Event, Lock, Thread
 import time
 
+from sqlalchemy import case
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -535,42 +536,54 @@ def _extract_year_from_path(path: str | None) -> int | None:
 
 
 def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> int | None:
-    queued = (
+    sort_option = getattr(settings, 'queue_sort', QueueSortEnum.default) or QueueSortEnum.default
+    base_query = (
         db.query(Job, Library, LibraryProfile)
         .outerjoin(Library, Job.library_id == Library.id)
         .outerjoin(LibraryProfile, LibraryProfile.library_id == Library.id)
         .filter(Job.status == 'queued')
-        .all()
     )
-    sort_option = getattr(settings, 'queue_sort', QueueSortEnum.default) or QueueSortEnum.default
 
-    def sort_key(row: tuple[Job, Library | None, LibraryProfile | None]) -> tuple:
-        job = row[0]
-        # Jobs with a saved resume position are always prioritised so they can
-        # continue from where they left off.  progress_percent is intentionally
-        # excluded here: it is a display metric and should not override the
-        # user-selected sort order for ordinary queued items.
-        has_resume = 0 if (job.resume_position_seconds or 0) > 0 else 1  # 0 = higher priority
-
-        if sort_option == QueueSortEnum.newest.value:
-            return (has_resume, -(job.created_at.timestamp() if job.created_at else 0), -job.id)
-        if sort_option == QueueSortEnum.oldest.value:
-            return (has_resume, job.created_at.timestamp() if job.created_at else 0, job.id)
-        if sort_option == QueueSortEnum.year_newest.value:
-            year = _extract_year_from_path(job.source_path)
-            return (has_resume, -(year if year is not None else 0), -job.id)
-        if sort_option == QueueSortEnum.year_oldest.value:
-            year = _extract_year_from_path(job.source_path)
-            return (has_resume, (year if year is not None else 9999), job.id)
-
-        return (has_resume, job.created_at.timestamp() if job.created_at else 0, job.id)
-
-    queued.sort(key=sort_key)
     _ACTIVE_DOWNLOAD_STATUSES = (
         DownloadJobStatus.searching.value,
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.importing.value,
     )
+    active_download_sources = {
+        source_path
+        for (source_path,) in db.query(DownloadJob.source_file_path)
+        .filter(DownloadJob.status.in_(_ACTIVE_DOWNLOAD_STATUSES))
+        .all()
+        if source_path
+    }
+
+    if sort_option in {QueueSortEnum.default.value, QueueSortEnum.oldest.value, QueueSortEnum.newest.value}:
+        has_resume_expr = case((Job.resume_position_seconds > 0, 0), else_=1)
+        if sort_option == QueueSortEnum.newest.value:
+            queued = base_query.order_by(has_resume_expr.asc(), Job.created_at.desc(), Job.id.desc()).all()
+        else:
+            queued = base_query.order_by(has_resume_expr.asc(), Job.created_at.asc(), Job.id.asc()).all()
+    else:
+        queued = base_query.all()
+
+        def sort_key(row: tuple[Job, Library | None, LibraryProfile | None]) -> tuple:
+            job = row[0]
+            # Jobs with a saved resume position are always prioritised so they can
+            # continue from where they left off.  progress_percent is intentionally
+            # excluded here: it is a display metric and should not override the
+            # user-selected sort order for ordinary queued items.
+            has_resume = 0 if (job.resume_position_seconds or 0) > 0 else 1  # 0 = higher priority
+
+            if sort_option == QueueSortEnum.year_newest.value:
+                year = _extract_year_from_path(job.source_path)
+                return (has_resume, -(year if year is not None else 0), -job.id)
+            if sort_option == QueueSortEnum.year_oldest.value:
+                year = _extract_year_from_path(job.source_path)
+                return (has_resume, (year if year is not None else 9999), job.id)
+
+            return (has_resume, job.created_at.timestamp() if job.created_at else 0, job.id)
+
+        queued.sort(key=sort_key)
 
     for job, library, profile in queued:
         if not _library_job_can_start(settings, now, library, profile):
@@ -579,15 +592,7 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         # If this library uses download mode and the source file is still
         # being searched for or downloaded, hold off on encoding it.
         if getattr(profile, 'download_enabled', False) and job.source_path:
-            has_active_download = db.query(
-                db.query(DownloadJob)
-                .filter(
-                    DownloadJob.source_file_path == job.source_path,
-                    DownloadJob.status.in_(_ACTIVE_DOWNLOAD_STATUSES),
-                )
-                .exists()
-            ).scalar()
-            if has_active_download:
+            if job.source_path in active_download_sources:
                 continue
 
         job.status = 'starting'
@@ -717,6 +722,8 @@ def _manager_loop() -> None:
     global _last_schedule_check_at
     global _last_workers_allowed
     while not stop_event.is_set():
+        loop_sleep_seconds = 0.2
+        launched_worker = False
         db = SessionLocal()
         try:
             settings = _get_settings(db)
@@ -757,12 +764,20 @@ def _manager_loop() -> None:
 
                     worker = Thread(target=_process_job, args=(next_job_id,), daemon=True, name=f'optimizer-job-{next_job_id}')
                     worker.start()
+                    launched_worker = True
                     with _pool_lock:
                         _active_workers[next_job_id] = worker
+            else:
+                # Paused/disabled queue: back off to reduce idle DB churn.
+                loop_sleep_seconds = 1.0
         finally:
             db.close()
 
-        time.sleep(0.2)
+        if _workers_allowed and not launched_worker:
+            # Nothing started this cycle; poll more slowly while idle.
+            loop_sleep_seconds = 1.0
+
+        time.sleep(loop_sleep_seconds)
 
 
 def start_worker() -> Thread:

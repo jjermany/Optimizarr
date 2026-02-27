@@ -1192,7 +1192,7 @@ def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
     worker_queue.pause_queue(reason='manual')
     settings = _get_settings(db)
 
-    active_encode_statuses = {'queued', 'starting', 'preflight', 'running', 'paused', 'paused_schedule'}
+    active_encode_statuses = {'queued', 'starting', 'preflight', 'running', 'paused', 'paused_schedule', 'interrupted', 'aborting'}
     encode_jobs = db.query(Job).filter(Job.status.in_(active_encode_statuses)).all()
     removed_job_ids: list[int] = []
     for job in encode_jobs:
@@ -1209,16 +1209,18 @@ def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
     }
-    download_jobs = db.query(DownloadJob).filter(DownloadJob.status.in_(active_download_statuses)).all()
-    removed_download_job_ids: list[int] = []
-    for dj in download_jobs:
-        removed_download_job_ids.append(dj.id)
-        db.delete(dj)
+    removed_download_job_ids = [
+        row[0] for row in db.query(DownloadJob.id).filter(DownloadJob.status.in_(active_download_statuses)).all()
+    ]
+    if removed_download_job_ids:
+        db.query(DownloadJob).filter(DownloadJob.id.in_(removed_download_job_ids)).delete(synchronize_session=False)
 
     db.commit()
 
     for job_id in removed_job_ids:
         broker.publish_system_event('job_removed', job_id=job_id)
+    for download_job_id in removed_download_job_ids:
+        broker.publish_system_event('download_job_removed', download_job_id=download_job_id)
 
     return ClearQueueResponse(
         removed_job_ids=removed_job_ids,
@@ -1444,8 +1446,12 @@ def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
 @router.delete('/download-jobs', status_code=204)
 def delete_all_download_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> None:
     """Delete all download jobs regardless of state."""
-    db.query(DownloadJob).delete()
+    removed_ids = [row[0] for row in db.query(DownloadJob.id).all()]
+    if removed_ids:
+        db.query(DownloadJob).filter(DownloadJob.id.in_(removed_ids)).delete(synchronize_session=False)
     db.commit()
+    for download_job_id in removed_ids:
+        broker.publish_system_event('download_job_removed', download_job_id=download_job_id)
 
 
 @router.delete('/download-jobs/{job_id}', status_code=204)
@@ -1455,6 +1461,7 @@ def delete_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
         raise HTTPException(status_code=404, detail='Download job not found')
     db.delete(dj)
     db.commit()
+    broker.publish_system_event('download_job_removed', download_job_id=job_id)
 
 
 @router.post('/download-jobs/{job_id}/retry', response_model=DownloadJobResponse)

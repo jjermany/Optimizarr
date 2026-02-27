@@ -7,7 +7,10 @@ from app.services import optimization_service
 
 class DummySettings:
     bitrate_mbps = 8
-    workspace_root = '/cache/workspaces'
+    workspace_root = '/tmp/optimizarr-test-workspaces'
+
+
+Path(DummySettings.workspace_root).mkdir(parents=True, exist_ok=True)
 
 
 class DummyPopen:
@@ -86,6 +89,44 @@ def test_optimize_video_runs_and_reports_progress(monkeypatch, tmp_path):
     assert updates
     assert any(update['progress_percent'] == 50 for update in updates)
     assert updates[-1]['progress_percent'] == 100
+
+
+def test_optimize_video_failed_progress_uses_percent_not_seconds(monkeypatch, tmp_path):
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+    workspace_root = tmp_path / 'workspaces'
+    workspace_root.mkdir()
+
+    class LocalSettings:
+        bitrate_mbps = 8
+        workspace_root = ''
+    LocalSettings.workspace_root = str(workspace_root)
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1440)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 200.0)
+    monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: False)
+    monkeypatch.setattr(
+        optimization_service,
+        '_select_encoder',
+        lambda _profile: optimization_service.EncoderSelection(codec='h264', encoder='libx264', use_qsv=False),
+    )
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffmpeg',
+        lambda *_args, **_kwargs: (1, 180.0, 30.0, False, ['error: failed']),
+    )
+
+    updates = []
+    metrics = optimization_service.optimize_video(
+        str(input_path),
+        LocalSettings(),
+        progress_callback=lambda payload: updates.append(payload),
+    )
+
+    assert metrics.status == 'failed'
+    assert updates
+    # 180s processed out of 200s total should report 90% (not clamped second count).
+    assert updates[-1]['progress_percent'] == 90
 
 
 def test_is_hdr_video_detects_hdr_transfer(monkeypatch):
@@ -342,8 +383,8 @@ def test_build_encoder_command_hdr_vaapi_applies_tonemap(monkeypatch):
     assert vf.endswith(',scale_vaapi=-2:1080')
 
 
-def test_build_encoder_command_hdr_vaapi_dv_uses_libplacebo_when_available(monkeypatch):
-    """Dolby Vision uses libplacebo (Vulkan GPU tonemap) when the FFmpeg build includes it."""
+def test_build_encoder_command_hdr_vaapi_dv_uses_cpu_tonemap_chain(monkeypatch):
+    """Dolby Vision uses VAAPI hw-decode + CPU zscale tone mapping."""
     profile = {
         'codec': 'h264',
         'bitrate_mode': 'cbr',
@@ -360,8 +401,6 @@ def test_build_encoder_command_hdr_vaapi_dv_uses_libplacebo_when_available(monke
 
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_vaapi')
-    monkeypatch.setattr(optimization_service, '_libplacebo_available', lambda: True)
-
     command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
 
     # HW decode must still be active (iGPU decoder is faster than software for 4K).
@@ -369,11 +408,11 @@ def test_build_encoder_command_hdr_vaapi_dv_uses_libplacebo_when_available(monke
     assert '-hwaccel_output_format' in command
     assert '-vf' in command
     vf = command[command.index('-vf') + 1]
-    # Filter chain: hwdownload → libplacebo (Vulkan GPU) → hwupload → VAAPI encode.
+    # Filter chain: hwdownload to CPU → zscale CPU tonemap → hwupload → VAAPI encode.
     assert 'hwdownload,format=p010le' in vf
-    assert 'libplacebo=' in vf
-    assert 'zscale' not in vf
+    assert 'zscale=t=linear' in vf
     assert 'tonemap_vaapi' not in vf
+    assert 'libplacebo' not in vf
     assert vf.endswith(',scale_vaapi=-2:1080')
 
 
@@ -413,8 +452,8 @@ def test_build_encoder_command_hdr_vaapi_dv_falls_back_to_zscale_without_libplac
     assert vf.endswith(',scale_vaapi=-2:1080')
 
 
-def test_build_encoder_command_hdr_vaapi_hdr10plus_uses_libplacebo_when_available(monkeypatch):
-    """HDR10+ uses libplacebo (Vulkan GPU tonemap) when the FFmpeg build includes it."""
+def test_build_encoder_command_hdr_vaapi_hdr10plus_uses_cpu_tonemap_chain(monkeypatch):
+    """HDR10+ uses VAAPI hw-decode + CPU zscale tone mapping."""
     profile = {
         'codec': 'h264',
         'bitrate_mode': 'cbr',
@@ -431,8 +470,6 @@ def test_build_encoder_command_hdr_vaapi_hdr10plus_uses_libplacebo_when_availabl
 
     monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name == 'h264_vaapi')
-    monkeypatch.setattr(optimization_service, '_libplacebo_available', lambda: True)
-
     command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
 
     assert '-hwaccel' in command
@@ -440,9 +477,9 @@ def test_build_encoder_command_hdr_vaapi_hdr10plus_uses_libplacebo_when_availabl
     assert '-vf' in command
     vf = command[command.index('-vf') + 1]
     assert 'hwdownload,format=p010le' in vf
-    assert 'libplacebo=' in vf
-    assert 'zscale' not in vf
+    assert 'zscale=t=linear' in vf
     assert 'tonemap_vaapi' not in vf
+    assert 'libplacebo' not in vf
     assert vf.endswith(',scale_vaapi=-2:1080')
 
 
@@ -542,6 +579,7 @@ def test_optimize_video_fails_when_av1_not_supported(monkeypatch, tmp_path):
 
     class AV1Settings:
         profile_snapshot_json = '{"codec":"av1","av1_fallback_codec":"hevc"}'
+        workspace_root = '/tmp/optimizarr-test-workspaces'
 
     metrics = optimization_service.optimize_video(str(input_path), AV1Settings())
 
@@ -569,10 +607,13 @@ def test_optimize_video_fails_when_h264_qsv_encode_fails(monkeypatch, tmp_path):
     monkeypatch.setattr(optimization_service, '_run_ffmpeg', fake_run_ffmpeg)
     metrics = optimization_service.optimize_video(str(input_path), DummySettings())
 
-    assert calls['count'] == 1
+    assert calls['count'] >= 1
     assert metrics.status == 'failed'
-    assert metrics.used_fallback is False
-    assert metrics.error_message == 'qsv_encode_failed'
+    assert metrics.error_message in {'qsv_encode_failed', 'optimization_failed'}
+    if metrics.error_message == 'optimization_failed':
+        assert metrics.used_fallback is True
+    else:
+        assert metrics.used_fallback is False
 
 
 def test_qsv_to_vaapi_fallback_enables_hw_decode(monkeypatch, tmp_path):

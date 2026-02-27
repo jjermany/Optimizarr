@@ -792,6 +792,7 @@ def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):
         db.commit()
 
         encode = Job(input_path='/media/clear-me.mkv', status='running', progress_percent=63, error_message='x')
+        interrupted = Job(input_path='/media/clear-me-interrupted.mkv', status='interrupted')
         download = DownloadJob(
             source_file_path='/media/clear-me-download.mkv',
             status=DownloadJobStatus.searching.value,
@@ -801,11 +802,13 @@ def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):
             client_type='qbittorrent',
             progress_percent=30,
         )
-        db.add_all([encode, download])
+        db.add_all([encode, interrupted, download])
         db.commit()
         db.refresh(encode)
+        db.refresh(interrupted)
         db.refresh(download)
         encode_id = encode.id
+        interrupted_id = interrupted.id
         download_id = download.id
 
     paused_reasons = []
@@ -816,13 +819,15 @@ def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):
         response = client.post('/queue/clear')
         assert response.status_code == 200
         payload = response.json()
-        assert payload['removed_job_ids'] == [encode_id]
+        assert set(payload['removed_job_ids']) == {encode_id, interrupted_id}
         assert payload['removed_download_job_ids'] == [download_id]
 
     with SessionLocal() as db:
         updated_encode = db.query(Job).filter(Job.id == encode_id).first()
+        updated_interrupted = db.query(Job).filter(Job.id == interrupted_id).first()
         updated_download = db.query(DownloadJob).filter(DownloadJob.id == download_id).first()
         assert updated_encode is None
+        assert updated_interrupted is None
         assert updated_download is None
 
     assert paused_reasons == ['manual']

@@ -304,6 +304,13 @@ def _classify_release_quality_from_release(release: dict) -> str | None:
     return None
 
 
+def _quality_profile_value(profile: LibraryProfile) -> str:
+    raw = getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any)
+    if isinstance(raw, DownloadQualityProfileEnum):
+        return raw.value
+    return str(raw or DownloadQualityProfileEnum.any.value)
+
+
 def _release_matches_target_resolution(release: dict, target_resolution: int) -> bool:
     title_lower = str(release.get('title', '') or '').lower()
     target = int(target_resolution)
@@ -393,7 +400,7 @@ def _select_best_release(
     Torrent releases require qBittorrent to be enabled; usenet releases
     require SABnzbd to be enabled.
     """
-    quality_val = str(getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any) or DownloadQualityProfileEnum.any)
+    quality_val = _quality_profile_value(profile)
     sdr_candidates: list[dict] = []
 
     for r in releases:
@@ -1016,7 +1023,7 @@ def _release_title_matches_profile(title: str, profile: LibraryProfile) -> bool:
     if _is_hdr_release(title.lower()):
         return False
 
-    quality_val = str(getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any) or DownloadQualityProfileEnum.any)
+    quality_val = _quality_profile_value(profile)
     if quality_val == DownloadQualityProfileEnum.any.value:
         return True
 
