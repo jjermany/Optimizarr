@@ -215,6 +215,21 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
         return {'progress_percent': 0, 'is_complete': False, 'is_stalled': False, 'save_path': None}
 
 
+def get_qbt_default_save_path(s: QBittorrentSettings) -> str | None:
+    """Return qBittorrent's configured default completed-download directory."""
+    try:
+        client = _qbt_session(s)
+        resp = client.get('/api/v2/app/preferences')
+        resp.raise_for_status()
+        payload = resp.json()
+        save_path = payload.get('save_path')
+        if isinstance(save_path, str) and save_path.strip():
+            return save_path.strip()
+    except Exception as exc:
+        logger.warning('Failed to read qBittorrent default save path: %s', exc)
+    return None
+
+
 def test_qbt_connection(s: QBittorrentSettings) -> dict:
     try:
         client = _qbt_session(s)
