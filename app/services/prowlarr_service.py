@@ -57,12 +57,14 @@ def test_connection(settings: ProwlarrSettings) -> dict:
         return {'success': False, 'error': str(exc)}
 
 
-def search(settings: ProwlarrSettings, query: str, categories: list[int] | None = None) -> list[dict]:
+def search(settings: ProwlarrSettings, query: str, categories: list[int] | None = None) -> list[dict] | None:
     """
     Search Prowlarr indexers for a query string.
 
     Categories: 2000 = Movies, 5000 = TV
     Returns a list of release dicts with keys: guid, indexerId, title, size, seeders, downloadUrl, etc.
+    Returns None on a connection/HTTP error so callers can distinguish a
+    transient failure from a successful search that returned zero results.
     """
     if categories is None:
         categories = [2000, 5000]
@@ -84,10 +86,10 @@ def search(settings: ProwlarrSettings, query: str, categories: list[int] | None 
         return resp.json()
     except httpx.HTTPStatusError as exc:
         logger.warning('Prowlarr search failed HTTP %s: %s', exc.response.status_code, exc.response.text[:200])
-        return []
+        return None
     except Exception as exc:
         logger.warning('Prowlarr search error: %s', exc)
-        return []
+        return None
 
 
 def grab(settings: ProwlarrSettings, guid: str, indexer_id: int) -> dict | None:

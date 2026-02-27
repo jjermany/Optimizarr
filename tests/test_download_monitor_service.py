@@ -401,3 +401,97 @@ def test_startup_recovery_skips_timed_out_job_not_in_qbit(monkeypatch):
         assert summary['imported'] == 0
         # Status must remain timed_out — no torrent found to recover
         assert dj.status == DownloadJobStatus.timed_out.value
+
+
+def test_startup_recovery_imports_failed_job_completed_in_qbit(monkeypatch):
+    """Jobs in ANY non-importing status with a completed qBit torrent are imported at startup."""
+    imported_paths = []
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        # Job is in 'failed' status (search returned no results previously)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Oppenheimer (2023).mkv',
+            release_name='Oppenheimer.2023.1080p.WEB-DL',
+            download_hash='cafebabe',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.failed.value,
+            error_message='No matching release found',
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_qbt_default_save_path', lambda _q: '/downloads/complete')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            'name': 'Oppenheimer.2023.1080p.WEB-DL',
+            'hash': 'cafebabe',
+            'state': 'uploading',
+            'progress': 1.0,
+            'content_path': '/downloads/complete/Oppenheimer.2023.1080p.WEB-DL',
+            'save_path': '/downloads/complete/Oppenheimer.2023.1080p.WEB-DL',
+            'added_on': 1,
+        }])
+
+        def _fake_import(_db, _dj, save_path, *_args):
+            imported_paths.append(save_path)
+            _dj.status = DownloadJobStatus.complete.value
+            _dj.error_message = None
+            _db.commit()
+
+        monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(dj)
+
+        assert summary['imported'] == 1
+        assert dj.status == DownloadJobStatus.complete.value
+        assert imported_paths == ['/downloads/complete/Oppenheimer.2023.1080p.WEB-DL']
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Prowlarr search error: job stays in 'searching' state for retry
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_check_search_job_stays_searching_on_prowlarr_error(monkeypatch):
+    """When Prowlarr returns None (connection error) the job stays in 'searching' for retry."""
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Interstellar (2014).mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        # Simulate a connection failure — search returns None
+        monkeypatch.setattr(prowlarr_service, 'search', lambda *_args, **_kw: None)
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+        db.refresh(dj)
+
+        # Job must remain in 'searching' so the monitor retries on the next cycle
+        assert dj.status == DownloadJobStatus.searching.value

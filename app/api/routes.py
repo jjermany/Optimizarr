@@ -1154,6 +1154,16 @@ def remove_all_jobs_endpoint(_: None = Depends(require_ui_auth), db: Session = D
     removed_job_ids = remove_all_terminal_jobs(db)
     for job_id in removed_job_ids:
         broker.publish_system_event('job_removed', job_id=job_id)
+    # Also remove terminal download jobs so "Clear History" clears the full
+    # history list — both encode and download entries.
+    _TERMINAL_DL = {
+        DownloadJobStatus.complete.value,
+        DownloadJobStatus.failed.value,
+        DownloadJobStatus.timed_out.value,
+        DownloadJobStatus.fallback_queued.value,
+    }
+    db.query(DownloadJob).filter(DownloadJob.status.in_(_TERMINAL_DL)).delete(synchronize_session=False)
+    db.commit()
     return RemoveAllJobsResponse(removed_job_ids=removed_job_ids)
 
 

@@ -1167,6 +1167,9 @@ export default function App() {
   async function handlePurgeHistory() {
     try {
       const result = await purgeHistory();
+      // Remove terminal download jobs from local state immediately — the server
+      // endpoint now clears both encode history and terminal download jobs.
+      setDownloadJobs((prev) => prev.filter((dj) => !TERMINAL_DL_STATUSES.has(dj.status)));
       pushToast(`Purged ${result.removed_job_ids.length} history item(s).`, 'success');
       await refreshAll();
     } catch (actionError) {

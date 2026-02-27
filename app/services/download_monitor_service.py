@@ -11,6 +11,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -457,6 +458,13 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
 
     logger.info('Download job %s searching Prowlarr for %r', dj.id, query)
     releases = prowlarr_service.search(prowlarr, query)
+
+    # None means a connection/HTTP error — leave the job in 'searching' so the
+    # monitor retries on the next poll cycle instead of immediately failing.
+    if releases is None:
+        logger.warning('Download job %s: Prowlarr search failed (connection error); will retry', dj.id)
+        return
+
     best = _select_best_release(releases, profile, qbt_enabled=qbt.enabled, sab_enabled=sab.enabled)
 
     if best is None:
@@ -1028,15 +1036,26 @@ def run_download_startup_recovery(db: Session) -> dict:
         .all()
     )
 
-    # Also check timed_out and stalled jobs — they may have completed in qBit
-    # while Optimizarr was offline or after the timeout deadline fired.
-    stuck_jobs = (
+    # All other non-imported download jobs that have a hash or release name —
+    # regardless of status.  When the user clears or aborts history items the
+    # status may change, but if the underlying torrent finished in qBit while
+    # we were offline we still want to import it.
+    _skip_statuses = {
+        DownloadJobStatus.downloading.value,  # already covered by downloading_jobs loop
+        DownloadJobStatus.pending.value,       # not yet started — nothing to recover
+        DownloadJobStatus.searching.value,     # Prowlarr search in progress
+        DownloadJobStatus.importing.value,     # import in progress
+    }
+    qbt_candidate_jobs = (
         db.query(DownloadJob)
-        .filter(DownloadJob.status.in_([
-            DownloadJobStatus.timed_out.value,
-            DownloadJobStatus.stalled.value,
-        ]))
-        .filter(DownloadJob.imported_file_path.is_(None))
+        .filter(
+            DownloadJob.imported_file_path.is_(None),
+            DownloadJob.status.notin_(list(_skip_statuses)),
+            or_(
+                DownloadJob.download_hash.isnot(None),
+                DownloadJob.release_name.isnot(None),
+            ),
+        )
         .all()
     )
 
@@ -1044,8 +1063,8 @@ def run_download_startup_recovery(db: Session) -> dict:
     # that Prowlarr grabs don't fire the instant the monitor loop starts.
     _arm_startup_grace_if_needed(db)
 
-    if not downloading_jobs and not stuck_jobs:
-        logger.info('Download startup recovery: no in-flight or recoverable download jobs found')
+    if not downloading_jobs and not qbt_candidate_jobs:
+        logger.info('Download startup recovery: no in-flight or unimported download jobs found')
         return {'imported': 0, 'reset_to_searching': 0}
 
     qbt = download_client_service.get_or_create_qbt_settings(db)
@@ -1194,11 +1213,12 @@ def run_download_startup_recovery(db: Session) -> dict:
             _publish_download_job(dj)
             reset_count += 1
 
-    # ── Timed-out / stalled job recovery ─────────────────────────────────────
-    # Jobs that were previously marked timed_out or stalled may have actually
-    # finished downloading in qBittorrent.  Import them now and update their
-    # history status to 'complete'.
-    for dj in stuck_jobs:
+    # ── Broad qBit recovery (all non-importing statuses) ─────────────────────
+    # Any download job that has a hash or release name — regardless of its
+    # current status — is checked against qBit at startup.  This covers
+    # timed_out, stalled, failed, fallback_queued, and any other terminal state
+    # so that torrents that finished while Optimizarr was offline are imported.
+    for dj in qbt_candidate_jobs:
         if not dj.download_hash and not dj.release_name:
             continue
 
