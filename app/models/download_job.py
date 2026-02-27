@@ -31,6 +31,7 @@ class DownloadJob(Base):
     client_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'qbittorrent' or 'sabnzbd'
     status: Mapped[str] = mapped_column(String(32), default='pending', nullable=False)
     progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    eta_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     downloaded_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     imported_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

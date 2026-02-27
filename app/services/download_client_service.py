@@ -196,23 +196,37 @@ def get_all_qbt_torrents(s: QBittorrentSettings) -> list[dict]:
 
 
 def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
-    """Returns progress_percent, is_complete, is_stalled, save_path."""
+    """Returns progress_percent, eta_seconds, is_complete, is_stalled, save_path."""
     try:
         client = _qbt_session(s)
         info = _qbt_torrent_info(client, torrent_hash)
         if info is None:
-            return {'progress_percent': 0, 'is_complete': False, 'is_stalled': False, 'save_path': None}
+            return {'progress_percent': 0, 'eta_seconds': None, 'is_complete': False, 'is_stalled': False, 'save_path': None}
 
         state = info.get('state', '')
         progress = int(info.get('progress', 0) * 100)
+        eta_raw = info.get('eta')
+        eta_seconds: int | None
+        try:
+            eta_seconds = int(float(eta_raw))
+        except (TypeError, ValueError):
+            eta_seconds = None
+        if eta_seconds is not None and eta_seconds < 0:
+            eta_seconds = None
         is_complete = state in _QBT_COMPLETE_STATES
         is_stalled = state in ('stalledDL', 'missingFiles', 'error', 'stoppedDL')
         # content_path is the actual file/folder; fall back to save_path (directory)
         save_path = info.get('content_path') or info.get('save_path')
-        return {'progress_percent': progress, 'is_complete': is_complete, 'is_stalled': is_stalled, 'save_path': save_path}
+        return {
+            'progress_percent': progress,
+            'eta_seconds': eta_seconds,
+            'is_complete': is_complete,
+            'is_stalled': is_stalled,
+            'save_path': save_path,
+        }
     except Exception as exc:
         logger.warning('qBittorrent status check failed for %s: %s', torrent_hash, exc)
-        return {'progress_percent': 0, 'is_complete': False, 'is_stalled': False, 'save_path': None}
+        return {'progress_percent': 0, 'eta_seconds': None, 'is_complete': False, 'is_stalled': False, 'save_path': None}
 
 
 def get_qbt_default_save_path(s: QBittorrentSettings) -> str | None:
@@ -289,7 +303,7 @@ def _sab_api(s: SabnzbdSettings, **params) -> dict:
 
 
 def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
-    """Returns progress_percent, is_complete, is_stalled, save_path."""
+    """Returns progress_percent, eta_seconds, is_complete, is_stalled, save_path."""
     try:
         # Check active queue first
         queue_data = _sab_api(s, mode='queue')
@@ -302,7 +316,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     pct = 0
                 status = slot.get('status', '')
                 is_stalled = status in ('Stalled', 'Failed')
-                return {'progress_percent': pct, 'is_complete': False, 'is_stalled': is_stalled, 'save_path': None}
+                return {'progress_percent': pct, 'eta_seconds': None, 'is_complete': False, 'is_stalled': is_stalled, 'save_path': None}
 
         # Check history for completed entry
         history_data = _sab_api(s, mode='history', limit=100)
@@ -313,15 +327,16 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                 save_path = slot.get('storage') if is_complete else None
                 return {
                     'progress_percent': 100 if is_complete else 0,
+                    'eta_seconds': 0 if is_complete else None,
                     'is_complete': is_complete,
                     'is_stalled': status == 'Failed',
                     'save_path': save_path,
                 }
 
-        return {'progress_percent': 0, 'is_complete': False, 'is_stalled': False, 'save_path': None}
+        return {'progress_percent': 0, 'eta_seconds': None, 'is_complete': False, 'is_stalled': False, 'save_path': None}
     except Exception as exc:
         logger.warning('SABnzbd status check failed for %s: %s', nzo_id, exc)
-        return {'progress_percent': 0, 'is_complete': False, 'is_stalled': False, 'save_path': None}
+        return {'progress_percent': 0, 'eta_seconds': None, 'is_complete': False, 'is_stalled': False, 'save_path': None}
 
 
 def delete_sab_history(s: SabnzbdSettings, nzo_id: str) -> None:
@@ -352,7 +367,7 @@ def get_download_status(client_type: str, qbt: QBittorrentSettings | None, sab: 
     if client_type == 'sabnzbd' and sab is not None:
         return get_sab_status(sab, download_hash)
     logger.error('get_download_status: unknown client_type=%r or missing settings', client_type)
-    return {'progress_percent': 0, 'is_complete': False, 'is_stalled': False, 'save_path': None}
+    return {'progress_percent': 0, 'eta_seconds': None, 'is_complete': False, 'is_stalled': False, 'save_path': None}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

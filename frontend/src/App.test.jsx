@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { estimateDownloadEtaSeconds, mergeJobsWithUpdate } from './App';
+import { estimateDownloadEtaSeconds, getDownloadEtaSeconds, mergeJobsWithUpdate } from './App';
 
 describe('mergeJobsWithUpdate', () => {
   it('resets to page one when an existing queued job transitions to running', () => {
@@ -49,5 +49,21 @@ describe('estimateDownloadEtaSeconds', () => {
 
   it('returns null when created_at is missing', () => {
     expect(estimateDownloadEtaSeconds({ progress_percent: 50 }, Date.UTC(2026, 0, 1, 0, 10, 0))).toBeNull();
+  });
+});
+
+describe('getDownloadEtaSeconds', () => {
+  it('prefers backend-reported eta_seconds when present', () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 10, 0);
+    const createdAt = new Date(nowMs - 300_000).toISOString();
+
+    expect(getDownloadEtaSeconds({ eta_seconds: 42, progress_percent: 25, created_at: createdAt }, nowMs)).toBe(42);
+  });
+
+  it('falls back to local estimate when eta_seconds is missing', () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 10, 0);
+    const createdAt = new Date(nowMs - 300_000).toISOString();
+
+    expect(getDownloadEtaSeconds({ progress_percent: 25, created_at: createdAt }, nowMs)).toBe(900);
   });
 });

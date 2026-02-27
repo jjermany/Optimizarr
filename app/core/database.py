@@ -248,3 +248,9 @@ def init_db() -> None:
             'download_started_at',
             'download_started_at DATETIME',
         )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
+            'eta_seconds',
+            'eta_seconds INTEGER',
+        )

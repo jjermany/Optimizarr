@@ -386,6 +386,7 @@ class DownloadJobResponse(BaseModel):
     client_type: str | None = None
     status: str
     progress_percent: int
+    eta_seconds: int | None = None
     downloaded_file_path: str | None = None
     imported_file_path: str | None = None
     error_message: str | None = None
@@ -404,6 +405,7 @@ class DownloadJobResponse(BaseModel):
             download_hash=dj.download_hash,
             status=dj.status,
             progress_percent=dj.progress_percent,
+            eta_seconds=dj.eta_seconds,
             downloaded_file_path=dj.downloaded_file_path,
             imported_file_path=dj.imported_file_path,
             error_message=dj.error_message,
@@ -1431,6 +1433,7 @@ def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     dj.download_hash = None
     dj.client_type = None
     dj.progress_percent = 0
+    dj.eta_seconds = None
     dj.downloaded_file_path = None
     dj.imported_file_path = None
     dj.encode_job_id = None
@@ -1477,6 +1480,7 @@ def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     dj.error_message = None
     dj.download_hash = None
     dj.progress_percent = 0
+    dj.eta_seconds = None
     dj.completed_at = None
     dj.encode_job_id = None
     dj.created_at = _dt.utcnow()

@@ -220,6 +220,7 @@ def download_job_to_dict(dj: DownloadJob) -> dict:
         'client_type': dj.client_type,
         'status': dj.status,
         'progress_percent': dj.progress_percent,
+        'eta_seconds': dj.eta_seconds,
         'downloaded_file_path': dj.downloaded_file_path,
         'imported_file_path': dj.imported_file_path,
         'error_message': dj.error_message,
@@ -598,6 +599,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         dj.status = DownloadJobStatus.downloading.value
         dj.download_started_at = datetime.utcnow()
         dj.progress_percent = 0
+        dj.eta_seconds = None
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj)
@@ -613,6 +615,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     dj.status = DownloadJobStatus.downloading.value
     dj.download_started_at = datetime.utcnow()
     dj.progress_percent = 0
+    dj.eta_seconds = None
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
@@ -743,14 +746,18 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                 db.refresh(dj)
             status = {
                 'progress_percent': int((replacement.get('progress', 0) or 0) * 100),
+                'eta_seconds': replacement.get('eta'),
                 'is_complete': replacement.get('state', '') in download_client_service._QBT_COMPLETE_STATES,
                 'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
                 'save_path': replacement.get('content_path') or replacement.get('save_path'),
             }
     progress = status.get('progress_percent', 0)
+    eta_seconds = status.get('eta_seconds')
+    eta_seconds = int(eta_seconds) if isinstance(eta_seconds, (int, float)) and eta_seconds >= 0 else None
 
-    if progress != dj.progress_percent:
+    if progress != dj.progress_percent or eta_seconds != dj.eta_seconds:
         dj.progress_percent = progress
+        dj.eta_seconds = eta_seconds
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj)
@@ -758,6 +765,11 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     # Always check for completion BEFORE applying the timeout.  A download that
     # finished just as the deadline elapsed should be imported, not discarded.
     if status.get('is_complete'):
+        if dj.eta_seconds != 0:
+            dj.eta_seconds = 0
+            db.commit()
+            db.refresh(dj)
+            _publish_download_job(dj)
         save_path = status.get('save_path')
         if save_path:
             logger.info('Download job %s complete; save_path=%r', dj.id, save_path)
@@ -770,6 +782,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     if status.get('is_stalled'):
         logger.warning('Download job %s is stalled', dj.id)
         dj.status = DownloadJobStatus.stalled.value
+        dj.eta_seconds = None
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj)
@@ -788,6 +801,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         logger.warning('Download job %s timed out after %s minutes', dj.id, timeout_minutes)
         dj.status = DownloadJobStatus.timed_out.value
         dj.error_message = f'Download timed out after {timeout_minutes} minutes'
+        dj.eta_seconds = None
         dj.completed_at = datetime.utcnow()
         db.commit()
         db.refresh(dj)
@@ -809,6 +823,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     it to the library's media folder.
     """
     dj.status = DownloadJobStatus.importing.value
+    dj.eta_seconds = None
     db.commit()
     _publish_download_job(dj)
 
@@ -841,6 +856,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             logger.info('Download job %s: output already exists and policy=skip; marking complete without import', dj.id)
             dj.status = DownloadJobStatus.complete.value
             dj.imported_file_path = str(dest)
+            dj.eta_seconds = None
             dj.completed_at = datetime.utcnow()
             db.commit()
             db.refresh(dj)
@@ -908,6 +924,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             logger.warning('Download job %s: failed to create tone-map encode job: %s', dj.id, exc)
 
     dj.status = DownloadJobStatus.complete.value
+    dj.eta_seconds = None
     dj.completed_at = datetime.utcnow()
     db.commit()
     db.refresh(dj)
@@ -1036,6 +1053,7 @@ def _reset_download_job_to_searching(db: Session, dj: DownloadJob) -> None:
     dj.download_hash = None
     dj.client_type = None
     dj.progress_percent = 0
+    dj.eta_seconds = None
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
@@ -1081,6 +1099,7 @@ def _fallback_to_encode(db: Session, dj: DownloadJob, library: Library, profile:
 def _mark_failed(db: Session, dj: DownloadJob, reason: str) -> None:
     dj.status = DownloadJobStatus.failed.value
     dj.error_message = reason
+    dj.eta_seconds = None
     dj.completed_at = datetime.utcnow()
     db.commit()
     db.refresh(dj)

@@ -288,6 +288,14 @@ export function estimateDownloadEtaSeconds(downloadJob, nowMs = Date.now()) {
   return Math.max(0, Math.round(elapsedSeconds * ((100 - progress) / progress)));
 }
 
+export function getDownloadEtaSeconds(downloadJob, nowMs = Date.now()) {
+  const reportedEta = Number(downloadJob?.eta_seconds);
+  if (Number.isFinite(reportedEta) && reportedEta >= 0) {
+    return Math.round(reportedEta);
+  }
+  return estimateDownloadEtaSeconds(downloadJob, nowMs);
+}
+
 function formatElapsed(seconds) {
   if (seconds == null || seconds < 0) return '—';
   if (seconds === 0) return '0s';
@@ -2189,7 +2197,7 @@ export default function App() {
                             const elapsedSeconds = getElapsedSeconds(dj.created_at);
                             const elapsedLabel = formatElapsed(elapsedSeconds);
                             const showEta = ['searching', 'downloading', 'importing'].includes(dj.status);
-                            const etaLabel = formatEta(estimateDownloadEtaSeconds(dj)) ?? '—';
+                            const etaLabel = formatEta(getDownloadEtaSeconds(dj)) ?? '—';
                             return (
                               <tr key={`dl-${dj.id}`} className="transition-colors duration-100 hover:bg-slate-800/30">
                                 <td className="px-4 py-3 text-xs text-slate-500">{dj.id}</td>
