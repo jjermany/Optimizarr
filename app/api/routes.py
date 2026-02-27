@@ -1376,7 +1376,7 @@ def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     if dj.status not in retryable:
         raise HTTPException(status_code=409, detail='Only failed, timed_out, or stalled download jobs can be retried')
     from datetime import datetime as _dt
-    dj.status = DownloadJobStatus.searching.value
+    dj.status = DownloadJobStatus.pending.value
     dj.error_message = None
     dj.download_hash = None
     dj.progress_percent = 0

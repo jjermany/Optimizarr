@@ -8,6 +8,7 @@ from app.core.database import Base
 
 
 class DownloadJobStatus(str, Enum):
+    pending = 'pending'           # waiting in queue for its turn
     searching = 'searching'
     downloading = 'downloading'
     stalled = 'stalled'
@@ -27,7 +28,7 @@ class DownloadJob(Base):
     search_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     download_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
     client_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'qbittorrent' or 'sabnzbd'
-    status: Mapped[str] = mapped_column(String(32), default='searching', nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default='pending', nullable=False)
     progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     downloaded_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     imported_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
