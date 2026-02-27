@@ -267,6 +267,38 @@ function formatEta(etaSeconds) {
   return `${s}s`;
 }
 
+export function getElapsedSeconds(createdAt, nowMs = Date.now()) {
+  if (!createdAt) return null;
+  const createdAtMs = Date.parse(createdAt);
+  if (!Number.isFinite(createdAtMs)) return null;
+  return Math.max(0, Math.floor((nowMs - createdAtMs) / 1000));
+}
+
+export function estimateDownloadEtaSeconds(downloadJob, nowMs = Date.now()) {
+  const elapsedSeconds = getElapsedSeconds(downloadJob.created_at, nowMs);
+  const reportedProgress = Number(downloadJob.progress_percent);
+
+  if (elapsedSeconds == null || !Number.isFinite(reportedProgress) || reportedProgress <= 0) {
+    return null;
+  }
+
+  const progress = Math.min(100, reportedProgress);
+  if (progress >= 100) return 0;
+
+  return Math.max(0, Math.round(elapsedSeconds * ((100 - progress) / progress)));
+}
+
+function formatElapsed(seconds) {
+  if (seconds == null || seconds < 0) return '—';
+  if (seconds === 0) return '0s';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
 function extractTitleYear(filePath) {
   const fileName = (filePath || '').split('/').pop() || '';
   const stem = fileName.replace(/\.[^.]+$/, '');
@@ -2163,8 +2195,10 @@ export default function App() {
                               dj.status === 'searching' ? 'text-sky-400' :
                               dj.status === 'stalled' ? 'text-amber-400' :
                               'text-slate-400';
-                            const elapsedMs = dj.created_at ? Date.now() - new Date(dj.created_at).getTime() : 0;
-                            const elapsedLabel = (() => { const s = Math.floor(elapsedMs / 1000); if (s < 60) return `${s}s`; const m = Math.floor(s / 60); if (m < 60) return `${m}m ${s % 60}s`; return `${Math.floor(m / 60)}h ${m % 60}m`; })();
+                            const elapsedSeconds = getElapsedSeconds(dj.created_at);
+                            const elapsedLabel = formatElapsed(elapsedSeconds);
+                            const showEta = ['searching', 'downloading', 'importing'].includes(dj.status);
+                            const etaLabel = formatEta(estimateDownloadEtaSeconds(dj)) ?? '—';
                             return (
                               <tr key={`dl-${dj.id}`} className="transition-colors duration-100 hover:bg-slate-800/30">
                                 <td className="px-4 py-3 text-xs text-slate-500">{dj.id}</td>
@@ -2177,7 +2211,12 @@ export default function App() {
                                     {dj.status === 'importing' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />}
                                     <span className={`capitalize ${statusColor}`}>{dj.status.replace(/_/g, ' ')}</span>
                                   </div>
-                                  {dj.status !== 'pending' && <p className="mt-0.5 text-xs text-slate-500">Elapsed: {elapsedLabel}</p>}
+                                  {showEta && <p className="mt-0.5 text-xs text-slate-400">ETA: {etaLabel}</p>}
+                                  {dj.status !== 'pending' && (
+                                    <p className="mt-0.5 text-xs text-slate-500" title={elapsedSeconds == null ? 'Missing created_at timestamp' : `${elapsedSeconds}s elapsed`}>
+                                      Elapsed: {elapsedLabel}
+                                    </p>
+                                  )}
                                   {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
                                 </td>
                                 <td className="max-w-[180px] truncate px-4 py-3 text-xs text-slate-400" title={dj.search_query}>
