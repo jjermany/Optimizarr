@@ -156,6 +156,7 @@ def can_attempt_download(db: Session) -> bool:
 
 def download_job_exists_for_source(db: Session, source_path: str) -> bool:
     active_statuses = {
+        DownloadJobStatus.pending.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.stalled.value,
@@ -173,6 +174,7 @@ def download_job_exists_for_source(db: Session, source_path: str) -> bool:
 
 
 _ACTIVE_DOWNLOAD_STATUSES = (
+    DownloadJobStatus.pending.value,
     DownloadJobStatus.searching.value,
     DownloadJobStatus.downloading.value,
     DownloadJobStatus.importing.value,
@@ -192,7 +194,7 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
     dj = DownloadJob(
         library_id=library.id,
         source_file_path=source_path,
-        status=DownloadJobStatus.searching.value,
+        status=DownloadJobStatus.pending.value,
     )
     db.add(dj)
     db.commit()
@@ -367,12 +369,13 @@ def _process_searching_jobs(db: Session) -> None:
     if not prowlarr.enabled or (not qbt.enabled and not sab.enabled):
         return
 
-    # Serial pipeline: don't start a new search while a download or import is
-    # already in progress.  This ensures items are fully processed one at a time:
-    # search → download → import → complete → next item.
+    # Serial pipeline: one item at a time through the full cycle
+    # pending → searching → downloading → importing → complete.
+    # Block if any job is already searching, downloading, or importing.
     active = (
         db.query(DownloadJob)
         .filter(DownloadJob.status.in_([
+            DownloadJobStatus.searching.value,
             DownloadJobStatus.downloading.value,
             DownloadJobStatus.importing.value,
         ]))
@@ -381,14 +384,18 @@ def _process_searching_jobs(db: Session) -> None:
     if active > 0:
         return
 
-    # Pick the oldest pending search so the queue is processed in order.
+    # Pick the oldest pending job, promote it to searching, then run the search.
     dj = (
         db.query(DownloadJob)
-        .filter(DownloadJob.status == DownloadJobStatus.searching.value)
+        .filter(DownloadJob.status == DownloadJobStatus.pending.value)
         .order_by(DownloadJob.created_at.asc())
         .first()
     )
     if dj:
+        dj.status = DownloadJobStatus.searching.value
+        db.commit()
+        db.refresh(dj)
+        _publish_download_job(dj)
         _do_search(db, dj, prowlarr, qbt, sab)
 
 
