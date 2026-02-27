@@ -95,10 +95,13 @@ def _monitor_loop() -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def can_attempt_download(db: Session) -> bool:
-    """Return True if both Prowlarr and a download client are enabled."""
+    """Return True if Prowlarr is enabled and at least one download client is enabled."""
     prowlarr = prowlarr_service.get_or_create_prowlarr_settings(db)
-    client = download_client_service.get_or_create_settings(db)
-    return bool(prowlarr.enabled and client.enabled)
+    if not prowlarr.enabled:
+        return False
+    qbt = download_client_service.get_or_create_qbt_settings(db)
+    sab = download_client_service.get_or_create_sab_settings(db)
+    return bool(qbt.enabled or sab.enabled)
 
 
 def download_job_exists_for_source(db: Session, source_path: str) -> bool:
@@ -142,6 +145,7 @@ def download_job_to_dict(dj: DownloadJob) -> dict:
         'source_file_path': dj.source_file_path,
         'search_query': dj.search_query,
         'download_hash': dj.download_hash,
+        'client_type': dj.client_type,
         'status': dj.status,
         'progress_percent': dj.progress_percent,
         'downloaded_file_path': dj.downloaded_file_path,
@@ -217,16 +221,20 @@ def _rank_candidates(releases: list[dict]) -> list[dict]:
     return sorted(releases, key=lambda r: (-r.get('seeders', 0), r.get('size', 0)))
 
 
-def _select_best_release(releases: list[dict], profile: LibraryProfile) -> dict | None:
+def _select_best_release(
+    releases: list[dict],
+    profile: LibraryProfile,
+    qbt_enabled: bool,
+    sab_enabled: bool,
+) -> dict | None:
     """
     Select the best SDR release at the target resolution, respecting the
-    configured quality profile filter.
+    configured quality profile filter and which download clients are enabled.
 
-    HDR releases are always rejected — downloading an HDR file defeats the
-    purpose of download mode (you would still need to encode/tone-map it).
-    If a specific quality profile is set (e.g. REMUX, WEB-DL) only releases
-    whose title contains a matching keyword are accepted.
-    If no matching SDR release is found the caller falls back to encoding.
+    HDR releases are always rejected.  If a specific quality profile is set
+    only releases whose title contains a matching keyword are accepted.
+    Torrent releases require qBittorrent to be enabled; usenet releases
+    require SABnzbd to be enabled.
     """
     res_str = f"{profile.target_resolution}p"
     quality_val = str(getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any) or DownloadQualityProfileEnum.any)
@@ -236,19 +244,39 @@ def _select_best_release(releases: list[dict], profile: LibraryProfile) -> dict 
 
     for r in releases:
         title_lower = r.get('title', '').lower()
+
+        # Resolution filter
         if res_str.lower() not in title_lower:
             continue
+
+        # HDR filter — never accept HDR downloads
         if _is_hdr_release(title_lower):
-            continue  # never accept HDR downloads
-        # If a specific quality is requested, require a matching keyword in the title
+            continue
+
+        # Quality source filter
         if quality_keywords and not any(kw in title_lower for kw in quality_keywords):
             continue
+
+        # Protocol / client availability filter
+        protocol = r.get('protocol', '').lower()
+        if protocol == 'torrent' and not qbt_enabled:
+            continue
+        if protocol == 'usenet' and not sab_enabled:
+            continue
+
         sdr_candidates.append(r)
 
     if sdr_candidates:
         return _rank_candidates(sdr_candidates)[0]
 
-    return None  # no matching SDR release found; caller falls back to encoding
+    return None  # no matching release found; caller falls back to encoding
+
+
+def _client_type_for_protocol(protocol: str) -> str:
+    """Map Prowlarr release protocol to our client_type string."""
+    if protocol.lower() == 'torrent':
+        return 'qbittorrent'
+    return 'sabnzbd'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -257,9 +285,10 @@ def _select_best_release(releases: list[dict], profile: LibraryProfile) -> dict 
 
 def _process_searching_jobs(db: Session) -> None:
     prowlarr = prowlarr_service.get_or_create_prowlarr_settings(db)
-    client_settings = download_client_service.get_or_create_settings(db)
+    qbt = download_client_service.get_or_create_qbt_settings(db)
+    sab = download_client_service.get_or_create_sab_settings(db)
 
-    if not prowlarr.enabled or not client_settings.enabled:
+    if not prowlarr.enabled or (not qbt.enabled and not sab.enabled):
         return
 
     jobs = (
@@ -269,10 +298,10 @@ def _process_searching_jobs(db: Session) -> None:
     )
 
     for dj in jobs:
-        _do_search(db, dj, prowlarr, client_settings)
+        _do_search(db, dj, prowlarr, qbt, sab)
 
 
-def _do_search(db: Session, dj: DownloadJob, prowlarr, client_settings) -> None:
+def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     library = db.query(Library).filter(Library.id == dj.library_id).first()
     if library is None or library.profile is None:
         _mark_failed(db, dj, 'Library or profile not found')
@@ -285,7 +314,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, client_settings) -> None:
 
     logger.info('Download job %s searching Prowlarr for %r', dj.id, query)
     releases = prowlarr_service.search(prowlarr, query)
-    best = _select_best_release(releases, profile)
+    best = _select_best_release(releases, profile, qbt_enabled=qbt.enabled, sab_enabled=sab.enabled)
 
     if best is None:
         logger.info('Download job %s: no matching release found, falling back to encode', dj.id)
@@ -301,7 +330,6 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, client_settings) -> None:
         _fallback_to_encode(db, dj, library, profile)
         return
 
-    # Extract hash/id from grab result. Prowlarr may return downloadClientId or similar.
     download_hash = (
         grab_result.get('downloadId')
         or grab_result.get('downloadClientId')
@@ -315,13 +343,21 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, client_settings) -> None:
         _fallback_to_encode(db, dj, library, profile)
         return
 
+    # Determine which client received this download based on the release protocol
+    client_type = _client_type_for_protocol(best.get('protocol', ''))
+
     dj.download_hash = str(download_hash)
+    dj.client_type = client_type
     dj.status = DownloadJobStatus.downloading.value
     dj.progress_percent = 0
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
-    logger.info('Download job %s now downloading; hash=%s', dj.id, dj.download_hash)
+    logger.info('Download job %s now downloading via %s; hash=%s', dj.id, client_type, dj.download_hash)
+
+    # Tag the torrent in qBittorrent so it's identifiable in the client UI
+    if client_type == 'qbittorrent' and qbt.enabled:
+        download_client_service.tag_qbt_torrent(qbt, str(download_hash))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -329,9 +365,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, client_settings) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _process_downloading_jobs(db: Session) -> None:
-    client_settings = download_client_service.get_or_create_settings(db)
-    if not client_settings.enabled:
-        return
+    qbt = download_client_service.get_or_create_qbt_settings(db)
+    sab = download_client_service.get_or_create_sab_settings(db)
 
     jobs = (
         db.query(DownloadJob)
@@ -340,10 +375,10 @@ def _process_downloading_jobs(db: Session) -> None:
     )
 
     for dj in jobs:
-        _check_download_progress(db, dj, client_settings)
+        _check_download_progress(db, dj, qbt, sab)
 
 
-def _check_download_progress(db: Session, dj: DownloadJob, client_settings) -> None:
+def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     library = db.query(Library).filter(Library.id == dj.library_id).first()
     if library is None or library.profile is None:
         _mark_failed(db, dj, 'Library or profile not found')
@@ -363,7 +398,8 @@ def _check_download_progress(db: Session, dj: DownloadJob, client_settings) -> N
         _fallback_to_encode(db, dj, library, profile)
         return
 
-    status = download_client_service.get_download_status(client_settings, dj.download_hash or '')
+    client_type = dj.client_type or 'qbittorrent'
+    status = download_client_service.get_download_status(client_type, qbt, sab, dj.download_hash or '')
     progress = status.get('progress_percent', 0)
 
     if progress != dj.progress_percent:
@@ -376,7 +412,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, client_settings) -> N
         save_path = status.get('save_path')
         if save_path:
             logger.info('Download job %s complete; save_path=%r', dj.id, save_path)
-            _import_file(db, dj, save_path, library, profile)
+            _import_file(db, dj, save_path, library, profile, qbt, sab)
         else:
             _mark_failed(db, dj, 'Download marked complete but no save path returned')
             _fallback_to_encode(db, dj, library, profile)
@@ -386,15 +422,22 @@ def _check_download_progress(db: Session, dj: DownloadJob, client_settings) -> N
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj)
-        # Stalled counts as timed-out for fallback purposes
         _fallback_to_encode(db, dj, library, profile)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Import: move downloaded file to library
+# Import: move downloaded file from complete dir to library
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library, profile: LibraryProfile) -> None:
+def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library, profile: LibraryProfile, qbt, sab) -> None:
+    """
+    Import a completed download into the library.
+
+    The download client moves files from its incomplete directory to its
+    complete directory automatically.  Optimizarr only needs access to the
+    complete directory; it reads the video file from there and moves/copies
+    it to the library's media folder.
+    """
     dj.status = DownloadJobStatus.importing.value
     db.commit()
     _publish_download_job(dj)
@@ -432,9 +475,10 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             db.commit()
             db.refresh(dj)
             _publish_download_job(dj)
+            _cleanup_download_client(dj, qbt, sab)
             return
 
-    # Move file to destination
+    # Move file from complete directory to library
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         if _is_same_filesystem(video_file, dest.parent):
@@ -458,14 +502,13 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
         logger.info('Download job %s: imported file is HDR and tone_map_hdr=True; queuing encode', dj.id)
         try:
             height = probe_video_height(str(dest))
-            hdr = True
             encode_job = create_job(
                 db,
                 str(dest),
                 library_id=library.id,
                 profile=profile,
                 source_resolution=height,
-                source_is_hdr=hdr,
+                source_is_hdr=True,
             )
             dj.encode_job_id = encode_job.id
         except Exception as exc:
@@ -477,12 +520,25 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     db.refresh(dj)
     _publish_download_job(dj)
 
+    # Clean up the download client entry after a successful import
+    _cleanup_download_client(dj, qbt, sab)
+
     # Notify Plex if configured
     try:
         from app.services.plex_service import trigger_scan_after_job
         trigger_scan_after_job(library.id)
     except Exception:
         pass
+
+
+def _cleanup_download_client(dj: DownloadJob, qbt, sab) -> None:
+    """
+    Post-import client cleanup:
+    - SABnzbd: remove the history entry (files are already in the library).
+    - qBittorrent: leave untouched so it can follow its own seeding rules.
+    """
+    if dj.client_type == 'sabnzbd' and sab is not None and dj.download_hash:
+        download_client_service.delete_sab_history(sab, dj.download_hash)
 
 
 def _is_same_filesystem(file_path: Path, target_dir: Path) -> bool:
@@ -532,5 +588,3 @@ def _mark_failed(db: Session, dj: DownloadJob, reason: str) -> None:
     db.refresh(dj)
     _publish_download_job(dj)
     logger.warning('Download job %s failed: %s', dj.id, reason)
-
-

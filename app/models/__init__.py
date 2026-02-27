@@ -5,6 +5,8 @@ from app.models.library import Library, LibraryProfile
 from app.models.notification_settings import NotificationSettings
 from app.models.plex_settings import PlexSettings
 from app.models.prowlarr_settings import ProwlarrSettings
+from app.models.qbittorrent_settings import QBittorrentSettings
+from app.models.sabnzbd_settings import SabnzbdSettings
 from app.models.settings import Settings
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     'NotificationSettings',
     'PlexSettings',
     'ProwlarrSettings',
+    'QBittorrentSettings',
+    'SabnzbdSettings',
 ]

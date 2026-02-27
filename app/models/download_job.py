@@ -26,6 +26,7 @@ class DownloadJob(Base):
     source_file_path: Mapped[str] = mapped_column(Text, nullable=False)
     search_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     download_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    client_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'qbittorrent' or 'sabnzbd'
     status: Mapped[str] = mapped_column(String(32), default='searching', nullable=False)
     progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     downloaded_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
