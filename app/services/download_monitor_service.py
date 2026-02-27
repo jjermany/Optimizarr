@@ -255,6 +255,40 @@ _QUALITY_TITLE_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+def _normalize_release_title(title: str) -> str:
+    """Normalize separators and case for quality token matching."""
+    return re.sub(r'[._-]+', ' ', title or '').lower()
+
+
+def _classify_release_quality(title: str) -> str | None:
+    """Classify a release title into one of our quality profile buckets."""
+    normalized = _normalize_release_title(title)
+
+    has_remux = bool(re.search(r'\bremux\b', normalized))
+    has_web_dl = bool(re.search(r'\bweb\s?dl\b', normalized))
+    has_webrip = bool(re.search(r'\bweb\s?rip\b', normalized))
+    has_bluray = bool(re.search(r'\bblu\s?ray\b|\bbd\s?rip\b|\bbrrip\b', normalized))
+    has_hdtv = bool(re.search(r'\bhdtv\b', normalized))
+
+    # Explicit conflict handling for mixed tags.
+    if has_remux and (has_web_dl or has_webrip or has_bluray or has_hdtv):
+        return DownloadQualityProfileEnum.remux.value
+    if has_web_dl and has_webrip:
+        return DownloadQualityProfileEnum.web_dl.value
+
+    if has_remux:
+        return DownloadQualityProfileEnum.remux.value
+    if has_web_dl:
+        return DownloadQualityProfileEnum.web_dl.value
+    if has_webrip:
+        return DownloadQualityProfileEnum.webrip.value
+    if has_bluray:
+        return DownloadQualityProfileEnum.bluray.value
+    if has_hdtv:
+        return DownloadQualityProfileEnum.hdtv.value
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Search query construction
 # ─────────────────────────────────────────────────────────────────────────────
@@ -310,12 +344,12 @@ def _select_best_release(
     """
     res_str = f"{profile.target_resolution}p"
     quality_val = str(getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any) or DownloadQualityProfileEnum.any)
-    quality_keywords = _QUALITY_TITLE_KEYWORDS.get(quality_val, [])
-
     sdr_candidates: list[dict] = []
 
     for r in releases:
-        title_lower = r.get('title', '').lower()
+        title = r.get('title', '')
+        title_lower = title.lower()
+        quality_class = _classify_release_quality(title)
 
         # Resolution filter
         if res_str.lower() not in title_lower:
@@ -326,7 +360,7 @@ def _select_best_release(
             continue
 
         # Quality source filter
-        if quality_keywords and not any(kw in title_lower for kw in quality_keywords):
+        if quality_val != DownloadQualityProfileEnum.any.value and quality_class != quality_val:
             continue
 
         # Protocol / client availability filter
@@ -336,9 +370,14 @@ def _select_best_release(
         if protocol == 'usenet' and not sab_enabled:
             continue
 
-        sdr_candidates.append(r)
+        sdr_candidates.append({**r, '_quality_class': quality_class})
 
     if sdr_candidates:
+        # Tie-break: prefer exact profile class matches before seed/size ranking.
+        if quality_val != DownloadQualityProfileEnum.any.value:
+            exact_matches = [r for r in sdr_candidates if r.get('_quality_class') == quality_val]
+            if exact_matches:
+                return _rank_candidates(exact_matches)[0]
         return _rank_candidates(sdr_candidates)[0]
 
     return None  # no matching release found; caller falls back to encoding
