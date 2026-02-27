@@ -427,11 +427,11 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         return
 
     download_hash = (
-        grab_result.get('downloadId')
-        or grab_result.get('downloadClientId')
-        or grab_result.get('hash')
-        or grab_result.get('id')
+        grab_result.get('downloadId')  # infohash returned by the download client
+        or grab_result.get('hash')     # secondary hash field used by some Prowlarr versions
         or ''
+        # downloadClientId (integer Prowlarr client config ID) and id (record ID)
+        # are intentionally excluded — neither is a torrent infohash.
     )
     if not download_hash:
         # Prowlarr's HTTP call succeeded (torrent IS in qBit) but no hash was
@@ -468,9 +468,10 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     _publish_download_job(dj)
     logger.info('Download job %s now downloading via %s; hash=%s', dj.id, client_type, dj.download_hash)
 
-    # Tag the torrent in qBittorrent so it's identifiable in the client UI
+    # Tag the torrent in qBittorrent so it's identifiable in the client UI.
+    # Use the already-normalised hash to be consistent with what is stored in the DB.
     if client_type == 'qbittorrent' and qbt.enabled:
-        download_client_service.tag_qbt_torrent(qbt, str(download_hash))
+        download_client_service.tag_qbt_torrent(qbt, normalised_hash)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

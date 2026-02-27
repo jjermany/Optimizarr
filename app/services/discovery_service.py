@@ -334,6 +334,12 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         # next scan so the queue never snowballs into dozens of simultaneous grabs.
         if any_active_download_job(db):
             return None
+        # Mirror the encoding-path guard: skip if a non-retryable encoding job
+        # (complete, queued, paused, or running) already exists for this source.
+        # Prevents redundant downloads when a file was previously encoded or is
+        # currently being encoded.
+        if job_exists_for_source(db, source_path, library_id=library.id):
+            return None
     else:
         # Encoding-only mode: skip the (expensive) ffprobe if a job already exists.
         if job_exists_for_source(db, source_path, library_id=library.id):
