@@ -236,3 +236,9 @@ def init_db() -> None:
             'client_type',
             'client_type VARCHAR(16)',
         )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
+            'release_name',
+            'release_name TEXT',
+        )

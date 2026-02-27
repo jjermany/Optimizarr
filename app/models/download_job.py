@@ -26,6 +26,7 @@ class DownloadJob(Base):
     library_id: Mapped[int | None] = mapped_column(ForeignKey('libraries.id'), nullable=True)
     source_file_path: Mapped[str] = mapped_column(Text, nullable=False)
     search_query: Mapped[str | None] = mapped_column(Text, nullable=True)
+    release_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     download_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
     client_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'qbittorrent' or 'sabnzbd'
     status: Mapped[str] = mapped_column(String(32), default='pending', nullable=False)
