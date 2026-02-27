@@ -5,7 +5,7 @@ from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
 from app.services import optimization_service
-from app.services.job_service import create_job, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
+from app.services.job_service import cancel_job, create_job, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
 
 
 def test_create_job_stores_profile_snapshot():
@@ -87,6 +87,56 @@ def test_pause_job_captures_resume_position_without_resetting_progress(monkeypat
         assert updated.resume_position_seconds == 133.7
         assert updated.eta_seconds is None
         assert stopped_job_ids == [job.id]
+
+
+def test_cancel_job_requeues_queued_job_and_clears_transient_fields():
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        job = Job(
+            input_path='/media/cancel-queued.mkv',
+            status='queued',
+            eta_seconds=90,
+            fps=12.3,
+            error_message='old error',
+            cancel_requested=True,
+            completed_at=datetime.utcnow(),
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        updated = cancel_job(db, job.id)
+
+        assert updated is not None
+        assert updated.status == 'queued'
+        assert updated.error_message is None
+        assert updated.eta_seconds is None
+        assert updated.fps is None
+        assert updated.cancel_requested is False
+        assert updated.completed_at is None
+
+
+def test_cancel_job_stops_running_ffmpeg_and_requeues(monkeypatch):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        job = Job(input_path='/media/cancel-running.mkv', status='running', cancel_requested=True)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        stopped: list[int] = []
+        monkeypatch.setattr(optimization_service, 'stop_active_ffmpeg', lambda job_id: stopped.append(job_id))
+
+        updated = cancel_job(db, job.id)
+
+        assert updated is not None
+        assert updated.status == 'queued'
+        assert updated.cancel_requested is False
+        assert stopped == [job.id]
 
 
 def test_resume_job_requeues_paused_job_without_clearing_resume_state():

@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
+from app.core.database import SessionLocal
+from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.library import DownloadQualityProfileEnum
-from app.services.download_monitor_service import _select_best_release
+from app.services.download_monitor_service import _select_best_release, download_job_exists_for_source
 
 
 
@@ -69,3 +71,18 @@ def test_select_best_release_any_allows_all_quality_classes():
 
     assert selected is not None
     assert selected['title'] == 'Movie.2024.1080p.WEBRip.x265-HIGHSEED'
+
+
+def test_download_job_exists_for_source_treats_pending_as_active_non_terminal():
+    source_path = '/media/download-pending.mkv'
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        pending_job = DownloadJob(source_file_path=source_path, status=DownloadJobStatus.pending.value)
+        failed_job = DownloadJob(source_file_path='/media/download-failed.mkv', status=DownloadJobStatus.failed.value)
+        db.add_all([pending_job, failed_job])
+        db.commit()
+
+        assert download_job_exists_for_source(db, source_path) is True
+        assert download_job_exists_for_source(db, '/media/download-failed.mkv') is False
