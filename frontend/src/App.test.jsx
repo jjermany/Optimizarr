@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { mergeJobsWithUpdate } from './App';
+import { estimateDownloadEtaSeconds, mergeJobsWithUpdate } from './App';
 
 describe('mergeJobsWithUpdate', () => {
   it('resets to page one when an existing queued job transitions to running', () => {
@@ -22,5 +22,32 @@ describe('mergeJobsWithUpdate', () => {
 
     expect(merged.resetToFirstPage).toBe(false);
     expect(merged.jobs[0].fps).toBe(12.5);
+  });
+});
+
+describe('estimateDownloadEtaSeconds', () => {
+  it('estimates remaining time from elapsed and progress', () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 10, 0);
+    const createdAt = new Date(nowMs - 300_000).toISOString();
+
+    expect(estimateDownloadEtaSeconds({ progress_percent: 25, created_at: createdAt }, nowMs)).toBe(900);
+  });
+
+  it('returns null when progress is zero', () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 10, 0);
+    const createdAt = new Date(nowMs - 120_000).toISOString();
+
+    expect(estimateDownloadEtaSeconds({ progress_percent: 0, created_at: createdAt }, nowMs)).toBeNull();
+  });
+
+  it('returns zero when progress is complete', () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 10, 0);
+    const createdAt = new Date(nowMs - 120_000).toISOString();
+
+    expect(estimateDownloadEtaSeconds({ progress_percent: 100, created_at: createdAt }, nowMs)).toBe(0);
+  });
+
+  it('returns null when created_at is missing', () => {
+    expect(estimateDownloadEtaSeconds({ progress_percent: 50 }, Date.UTC(2026, 0, 1, 0, 10, 0))).toBeNull();
   });
 });
