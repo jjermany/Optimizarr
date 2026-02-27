@@ -56,6 +56,7 @@ import {
   updateSettings,
 } from './api';
 import StatCard from './components/StatCard';
+import { buildUnifiedQueueItems } from './queueSorting';
 import { isWithinWindow } from './scheduleWindow';
 
 const WS_PATH = '/ws';
@@ -170,14 +171,6 @@ function jobSortRank(job) {
     // mirror the backend's priority boost and appear just below paused jobs.
     return (job.resume_position_seconds > 0) ? 1.5 : 2;
   }
-  return 3;
-}
-
-function dlJobSortRank(dj) {
-  const s = dj.status;
-  if (s === 'downloading' || s === 'importing') return 0;
-  if (s === 'searching' || s === 'stalled') return 1;
-  if (s === 'pending') return 2;
   return 3;
 }
 
@@ -703,21 +696,17 @@ export default function App() {
       .map((dj) => ({ ...dj, _itemType: 'download' }));
   }, [downloadJobs, queueSearch, libraryById]);
 
-  // Unified queue: encoding jobs + active download jobs, sorted by activity priority
-  const unifiedQueueItems = useMemo(() => {
-    const encodeItems = filteredActiveJobs.map((j, idx) => ({ ...j, _itemType: 'encode', _sortIdx: idx }));
-    const merged = [...encodeItems, ...filteredDlQueueItems];
-    merged.sort((a, b) => {
-      const ra = a._itemType === 'encode' ? jobSortRank(a) : dlJobSortRank(a);
-      const rb = b._itemType === 'encode' ? jobSortRank(b) : dlJobSortRank(b);
-      if (ra !== rb) return ra - rb;
-      // Encode jobs within same rank keep user-selected order; download jobs: newest first
-      if (a._itemType === 'encode' && b._itemType === 'encode') return a._sortIdx - b._sortIdx;
-      if (a._itemType === 'download' && b._itemType === 'download') return b.id - a.id;
-      return a._itemType === 'encode' ? -1 : 1;
-    });
-    return merged;
-  }, [filteredActiveJobs, filteredDlQueueItems]);
+  // Unified queue: encoding jobs + active download jobs using one comparator path
+  const unifiedQueueItems = useMemo(
+    () => buildUnifiedQueueItems({
+      encodeItems: filteredActiveJobs,
+      downloadItems: filteredDlQueueItems,
+      sortOption: queueSort,
+      extractTitleYear,
+      pinActiveFirst: true,
+    }),
+    [filteredActiveJobs, filteredDlQueueItems, queueSort],
+  );
 
   const totalJobPages = useMemo(
     () => Math.max(1, Math.ceil(unifiedQueueItems.length / JOBS_PAGE_SIZE)),
@@ -742,6 +731,10 @@ export default function App() {
   useEffect(() => {
     if (jobsPage > totalJobPages) setJobsPage(totalJobPages);
   }, [jobsPage, totalJobPages]);
+
+  useEffect(() => {
+    setJobsPage(1);
+  }, [queueSort]);
 
   useEffect(() => {
     if (historyPage > totalHistoryPages) setHistoryPage(totalHistoryPages);
@@ -824,6 +817,7 @@ export default function App() {
 
   async function handleQueueSortChange(nextSort) {
     setQueueSort(nextSort);
+    setJobsPage(1);
     try {
       const updated = await updateSettings({ queue_sort: nextSort });
       setSettings(updated);
@@ -895,6 +889,7 @@ export default function App() {
   useEffect(() => {
     if (!settings?.queue_sort) return;
     setQueueSort((prev) => (prev === settings.queue_sort ? prev : settings.queue_sort));
+    setJobsPage(1);
   }, [settings?.queue_sort]);
 
   useEffect(() => {
