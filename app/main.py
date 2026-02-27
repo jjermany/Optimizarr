@@ -10,7 +10,7 @@ from app.api.routes import router
 from app.core.database import SessionLocal, init_db
 from app.core.logging_config import configure_logging
 from app.services.discovery_service import start_discovery_worker, stop_discovery_worker
-from app.services.download_monitor_service import start_download_monitor, stop_download_monitor
+from app.services.download_monitor_service import run_download_startup_recovery, start_download_monitor, stop_download_monitor
 from app.services import notification_service
 from app.services.notification_service import start_notification_worker, stop_notification_worker
 from app.services.optimization_service import refresh_encoder_cache
@@ -54,6 +54,7 @@ async def lifespan(_: FastAPI):
         initial_queue_paused = bool(persisted_settings and persisted_settings.queue_paused)
         summary = run_startup_recovery(db)
         cleanup_summary = run_workspace_cleanup(db)
+        download_recovery_summary = run_download_startup_recovery(db)
     if initial_queue_paused:
         pause_queue(reason='manual')
     refresh_encoder_cache()
@@ -70,6 +71,8 @@ async def lifespan(_: FastAPI):
         recovered_jobs=recovered_jobs,
         requeued_jobs=requeued_jobs,
         cleaned_workspaces=cleaned_workspaces,
+        download_imported=download_recovery_summary.get('imported', 0),
+        download_reset=download_recovery_summary.get('reset_to_searching', 0),
     )
     notification_service.enqueue_recovery_ran(
         trigger='startup',

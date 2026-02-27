@@ -291,13 +291,28 @@ def _process_searching_jobs(db: Session) -> None:
     if not prowlarr.enabled or (not qbt.enabled and not sab.enabled):
         return
 
-    jobs = (
+    # Serial pipeline: don't start a new search while a download or import is
+    # already in progress.  This ensures items are fully processed one at a time:
+    # search → download → import → complete → next item.
+    active = (
+        db.query(DownloadJob)
+        .filter(DownloadJob.status.in_([
+            DownloadJobStatus.downloading.value,
+            DownloadJobStatus.importing.value,
+        ]))
+        .count()
+    )
+    if active > 0:
+        return
+
+    # Pick the oldest pending search so the queue is processed in order.
+    dj = (
         db.query(DownloadJob)
         .filter(DownloadJob.status == DownloadJobStatus.searching.value)
-        .all()
+        .order_by(DownloadJob.created_at.asc())
+        .first()
     )
-
-    for dj in jobs:
+    if dj:
         _do_search(db, dj, prowlarr, qbt, sab)
 
 
@@ -346,7 +361,9 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     # Determine which client received this download based on the release protocol
     client_type = _client_type_for_protocol(best.get('protocol', ''))
 
-    dj.download_hash = str(download_hash)
+    # qBittorrent stores hashes in lowercase; normalise so lookups always match.
+    normalised_hash = str(download_hash).lower() if client_type == 'qbittorrent' else str(download_hash)
+    dj.download_hash = normalised_hash
     dj.client_type = client_type
     dj.status = DownloadJobStatus.downloading.value
     dj.progress_percent = 0
@@ -530,6 +547,10 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     except Exception:
         pass
 
+    # Wake the monitor immediately so the next queued search can begin without
+    # waiting for the full idle poll interval.
+    _wake_event.set()
+
 
 def _cleanup_download_client(dj: DownloadJob, qbt, sab) -> None:
     """
@@ -588,3 +609,153 @@ def _mark_failed(db: Session, dj: DownloadJob, reason: str) -> None:
     db.refresh(dj)
     _publish_download_job(dj)
     logger.warning('Download job %s failed: %s', dj.id, reason)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Startup recovery
+# ─────────────────────────────────────────────────────────────────────────────
+
+def run_download_startup_recovery(db: Session) -> dict:
+    """Reconcile in-flight download jobs against the download client on startup.
+
+    Handles two scenarios that occur when Optimizarr restarts:
+
+    1. A torrent finished downloading while the app was offline — qBittorrent
+       has the file ready but we never ran the import step.  We detect this by
+       scanning all 'optimizarr'-tagged torrents in qBit (case-insensitive hash
+       match) and importing any that are already in a completed state.
+
+    2. A stored hash can no longer be found in the download client (e.g. the
+       torrent was removed manually, or the hash was never tracked correctly).
+       Those jobs are reset to 'searching' so Prowlarr retries the search.
+
+    Returns a summary dict with 'imported' and 'reset_to_searching' counts.
+    """
+    downloading_jobs = (
+        db.query(DownloadJob)
+        .filter(DownloadJob.status == DownloadJobStatus.downloading.value)
+        .all()
+    )
+    if not downloading_jobs:
+        logger.info('Download startup recovery: no in-flight download jobs found')
+        return {'imported': 0, 'reset_to_searching': 0}
+
+    qbt = download_client_service.get_or_create_qbt_settings(db)
+    sab = download_client_service.get_or_create_sab_settings(db)
+
+    imported = 0
+    reset_count = 0
+
+    # Build a hash → torrent_info map from all tagged qBit torrents so we can
+    # find completed downloads even when the stored hash has wrong casing.
+    qbt_map: dict[str, dict] = {}
+    if qbt.enabled:
+        for torrent in download_client_service.get_all_qbt_tagged_torrents(qbt):
+            h = torrent.get('hash', '')
+            if h:
+                qbt_map[h.lower()] = torrent
+
+    for dj in downloading_jobs:
+        logger.info('Download startup recovery: checking job %s (hash=%s, client=%s)',
+                    dj.id, dj.download_hash, dj.client_type)
+
+        library = db.query(Library).filter(Library.id == dj.library_id).first()
+        if library is None or library.profile is None:
+            _mark_failed(db, dj, 'Library or profile not found during startup recovery')
+            continue
+
+        profile = library.profile
+
+        # ── qBittorrent ──────────────────────────────────────────────────────
+        if dj.client_type == 'qbittorrent':
+            stored_hash = (dj.download_hash or '').lower()
+
+            torrent_info = qbt_map.get(stored_hash)
+            if torrent_info is None and stored_hash:
+                # Hash might exist in qBit but wasn't tagged yet; try direct lookup
+                direct = download_client_service.get_qbt_status(qbt, stored_hash)
+                if direct.get('progress_percent', 0) > 0 or direct.get('is_complete'):
+                    # Found it — fabricate a minimal torrent_info for the check below
+                    torrent_info = {
+                        'hash': stored_hash,
+                        'state': 'uploading' if direct['is_complete'] else 'downloading',
+                        'content_path': direct.get('save_path'),
+                        'save_path': direct.get('save_path'),
+                    }
+
+            if torrent_info is None:
+                logger.warning('Download job %s: hash %r not found in qBittorrent; resetting to searching',
+                               dj.id, dj.download_hash)
+                dj.status = DownloadJobStatus.searching.value
+                dj.download_hash = None
+                dj.client_type = None
+                dj.progress_percent = 0
+                db.commit()
+                db.refresh(dj)
+                _publish_download_job(dj)
+                reset_count += 1
+                continue
+
+            # Normalise stored hash to lowercase now that we confirmed the torrent exists
+            if dj.download_hash != torrent_info.get('hash', stored_hash).lower():
+                dj.download_hash = torrent_info.get('hash', stored_hash).lower()
+                db.commit()
+
+            state = torrent_info.get('state', '')
+            from app.services.download_client_service import _QBT_COMPLETE_STATES
+            if state in _QBT_COMPLETE_STATES:
+                save_path = torrent_info.get('content_path') or torrent_info.get('save_path')
+                if save_path:
+                    logger.info('Download job %s: completed while offline, importing now', dj.id)
+                    _import_file(db, dj, save_path, library, profile, qbt, sab)
+                    imported += 1
+                else:
+                    _mark_failed(db, dj, 'Torrent complete but no save path available')
+            else:
+                # Still downloading — leave as-is; the normal loop will catch up
+                logger.info('Download job %s: still in progress (state=%s), resuming monitoring', dj.id, state)
+
+        # ── SABnzbd ──────────────────────────────────────────────────────────
+        elif dj.client_type == 'sabnzbd':
+            if not dj.download_hash:
+                dj.status = DownloadJobStatus.searching.value
+                dj.progress_percent = 0
+                db.commit()
+                db.refresh(dj)
+                _publish_download_job(dj)
+                reset_count += 1
+                continue
+
+            status = download_client_service.get_sab_status(sab, dj.download_hash)
+            if status.get('is_complete') and status.get('save_path'):
+                logger.info('Download job %s: SABnzbd completed while offline, importing now', dj.id)
+                _import_file(db, dj, status['save_path'], library, profile, qbt, sab)
+                imported += 1
+            elif status.get('progress_percent', 0) == 0 and not status.get('is_complete'):
+                # Not found in SABnzbd at all
+                logger.warning('Download job %s: NZO %r not found in SABnzbd; resetting to searching',
+                               dj.id, dj.download_hash)
+                dj.status = DownloadJobStatus.searching.value
+                dj.download_hash = None
+                dj.client_type = None
+                dj.progress_percent = 0
+                db.commit()
+                db.refresh(dj)
+                _publish_download_job(dj)
+                reset_count += 1
+
+        else:
+            logger.warning('Download job %s: unknown client_type %r; resetting to searching',
+                           dj.id, dj.client_type)
+            dj.status = DownloadJobStatus.searching.value
+            dj.download_hash = None
+            dj.client_type = None
+            dj.progress_percent = 0
+            db.commit()
+            db.refresh(dj)
+            _publish_download_job(dj)
+            reset_count += 1
+
+    logger.info('Download startup recovery complete: imported=%s, reset_to_searching=%s',
+                imported, reset_count)
+    return {'imported': imported, 'reset_to_searching': reset_count}
