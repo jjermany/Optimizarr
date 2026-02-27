@@ -28,6 +28,8 @@ _stop_event = threading.Event()
 # Signalled whenever a new DownloadJob is created so the loop wakes immediately
 _wake_event = threading.Event()
 _thread: threading.Thread | None = None
+# Set while a post-scan recovery run is in progress; blocks new Prowlarr searches
+_scan_recovery_event = threading.Event()
 
 # When set, the search pipeline is halted after an import error so the user
 # can investigate before more downloads are started.
@@ -399,6 +401,8 @@ def _extract_hash_from_guid(guid: str) -> str:
 
 def _process_searching_jobs(db: Session) -> None:
     if _download_queue_stopped:
+        return
+    if _scan_recovery_event.is_set():
         return
 
     global _startup_grace_until
@@ -1214,11 +1218,34 @@ def run_download_startup_recovery(db: Session) -> dict:
             reset_count += 1
 
     # ── Broad qBit recovery (all non-importing statuses) ─────────────────────
-    # Any download job that has a hash or release name — regardless of its
-    # current status — is checked against qBit at startup.  This covers
-    # timed_out, stalled, failed, fallback_queued, and any other terminal state
-    # so that torrents that finished while Optimizarr was offline are imported.
-    for dj in qbt_candidate_jobs:
+    imported += _import_completed_qbt_candidates(
+        db, qbt, sab, qbt_map, all_qbt_torrents, qbt_candidate_jobs, context='startup'
+    )
+
+    logger.info('Download startup recovery complete: imported=%s, reset_to_searching=%s',
+                imported, reset_count)
+    return {'imported': imported, 'reset_to_searching': reset_count}
+
+
+def _import_completed_qbt_candidates(
+    db: Session,
+    qbt,
+    sab,
+    qbt_map: dict,
+    all_qbt_torrents: list,
+    candidate_jobs: list,
+    context: str = 'recovery',
+) -> int:
+    """Check each candidate DownloadJob against the qBit torrent map and import
+    any whose torrent has reached a completed state.
+
+    Used by both startup recovery and post-scan recovery so the logic lives in
+    one place.  Returns the number of jobs successfully imported.
+    """
+    from app.services.download_client_service import _QBT_COMPLETE_STATES
+
+    imported = 0
+    for dj in candidate_jobs:
         if not dj.download_hash and not dj.release_name:
             continue
 
@@ -1240,7 +1267,6 @@ def run_download_startup_recovery(db: Session) -> dict:
         if torrent_info is None:
             continue
 
-        from app.services.download_client_service import _QBT_COMPLETE_STATES
         state = torrent_info.get('state', '')
         if state not in _QBT_COMPLETE_STATES:
             continue
@@ -1250,11 +1276,10 @@ def run_download_startup_recovery(db: Session) -> dict:
             continue
 
         logger.info(
-            'Download startup recovery: job %s was %s but torrent completed in qBit; importing now',
-            dj.id, dj.status,
+            'Download %s: job %s was %s but torrent completed in qBit; importing now',
+            context, dj.id, dj.status,
         )
-        # Reset to downloading so _import_file can transition it to complete
-        # and update the history record correctly.
+        # Reset to downloading so _import_file can transition it to complete.
         dj.status = DownloadJobStatus.downloading.value
         dj.error_message = None
         if dj.download_hash != torrent_info.get('hash', stored_hash).lower():
@@ -1263,6 +1288,71 @@ def run_download_startup_recovery(db: Session) -> dict:
         _import_file(db, dj, save_path, library, profile, qbt, sab)
         imported += 1
 
-    logger.info('Download startup recovery complete: imported=%s, reset_to_searching=%s',
-                imported, reset_count)
-    return {'imported': imported, 'reset_to_searching': reset_count}
+    return imported
+
+
+def run_scan_recovery(db: Session) -> dict:
+    """Check all non-active download jobs against qBittorrent after a library scan.
+
+    Mirrors the broad-qBit check performed at startup but runs mid-runtime so
+    that torrents which finished while Optimizarr was processing are imported
+    before the normal queue picks up fresh work.
+
+    New Prowlarr searches are blocked via ``_scan_recovery_event`` for the
+    duration so that the download pipeline cannot advance concurrently with the
+    import step.
+
+    Returns a summary dict with an 'imported' count.
+    """
+    _scan_recovery_event.set()
+    try:
+        _skip_statuses = {
+            DownloadJobStatus.pending.value,
+            DownloadJobStatus.searching.value,
+            DownloadJobStatus.downloading.value,
+            DownloadJobStatus.importing.value,
+        }
+        candidate_jobs = (
+            db.query(DownloadJob)
+            .filter(
+                DownloadJob.imported_file_path.is_(None),
+                DownloadJob.status.notin_(list(_skip_statuses)),
+                or_(
+                    DownloadJob.download_hash.isnot(None),
+                    DownloadJob.release_name.isnot(None),
+                ),
+            )
+            .all()
+        )
+
+        if not candidate_jobs:
+            logger.debug('Scan recovery: no candidate download jobs to check')
+            return {'imported': 0}
+
+        qbt = download_client_service.get_or_create_qbt_settings(db)
+        sab = download_client_service.get_or_create_sab_settings(db)
+
+        qbt_map: dict[str, dict] = {}
+        all_qbt_torrents: list[dict] = []
+        if qbt.enabled:
+            for torrent in download_client_service.get_all_qbt_tagged_torrents(qbt):
+                h = torrent.get('hash', '')
+                if h:
+                    qbt_map[h.lower()] = torrent
+            all_qbt_torrents = download_client_service.get_all_qbt_torrents(qbt)
+            for torrent in all_qbt_torrents:
+                h = torrent.get('hash', '').lower()
+                if h and h not in qbt_map:
+                    qbt_map[h] = torrent
+
+        imported = _import_completed_qbt_candidates(
+            db, qbt, sab, qbt_map, all_qbt_torrents, candidate_jobs, context='scan'
+        )
+        logger.info('Scan recovery complete: imported=%s', imported)
+        return {'imported': imported}
+    except Exception:
+        logger.exception('Scan recovery failed')
+        return {'imported': 0}
+    finally:
+        _scan_recovery_event.clear()
+        _wake_event.set()

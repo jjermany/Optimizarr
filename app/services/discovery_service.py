@@ -135,6 +135,15 @@ class DiscoveryManager:
         logger.info('Auto-discovery scan complete; queued %s job(s)', len(queued_jobs))
         self._next_interval_scan_at = now + timedelta(minutes=max(interval_minutes, 1))
 
+        # After each scan, reconcile any download jobs whose torrent completed
+        # in qBittorrent while the app was idle.  This runs before the normal
+        # queue picks up fresh work so already-finished downloads are imported
+        # immediately rather than going back through the search pipeline.
+        from app.services.download_monitor_service import run_scan_recovery
+        recovery = run_scan_recovery(db)
+        if recovery.get('imported', 0):
+            logger.info('Post-scan recovery imported %s completed download(s)', recovery['imported'])
+
     def _ensure_watcher(self, libraries: list[Library]) -> None:
         target_paths = {library.path for library in libraries if Path(library.path).exists()}
 
