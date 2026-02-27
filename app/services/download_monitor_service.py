@@ -663,6 +663,37 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             _tagged_job_ids.add(dj.id)
 
     status = download_client_service.get_download_status(client_type, qbt, sab, dj.download_hash or '')
+
+    # qBittorrent can occasionally return a stale hash from the grab response.
+    # If the lookup appears missing (0% and not complete), try re-matching by
+    # release name and continue tracking the real torrent instead of appearing
+    # stuck at 0% indefinitely.
+    if (
+        client_type == 'qbittorrent'
+        and qbt.enabled
+        and dj.release_name
+        and dj.download_hash
+        and not status.get('is_complete')
+        and int(status.get('progress_percent', 0) or 0) == 0
+    ):
+        all_torrents = download_client_service.get_all_qbt_torrents(qbt)
+        replacement = _find_qbt_torrent_for_release(dj, all_torrents)
+        if replacement and replacement.get('hash'):
+            replacement_hash = replacement['hash'].lower()
+            if replacement_hash != dj.download_hash:
+                logger.warning(
+                    'Download job %s: replacing stale qBit hash %s with %s via release-name match',
+                    dj.id, dj.download_hash, replacement_hash,
+                )
+                dj.download_hash = replacement_hash
+                db.commit()
+                db.refresh(dj)
+            status = {
+                'progress_percent': int((replacement.get('progress', 0) or 0) * 100),
+                'is_complete': replacement.get('state', '') in download_client_service._QBT_COMPLETE_STATES,
+                'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
+                'save_path': replacement.get('content_path') or replacement.get('save_path'),
+            }
     progress = status.get('progress_percent', 0)
 
     if progress != dj.progress_percent:
@@ -846,6 +877,64 @@ def _is_same_filesystem(file_path: Path, target_dir: Path) -> bool:
         return False
 
 
+def _normalize_release_key(value: str | None) -> str:
+    if not value:
+        return ''
+    return re.sub(r'[^a-z0-9]+', '', value.lower())
+
+
+def _find_qbt_torrent_for_release(dj: DownloadJob, torrents: list[dict]) -> dict | None:
+    if not torrents:
+        return None
+
+    if dj.release_name:
+        exact = [t for t in torrents if t.get('name') == dj.release_name]
+        if exact:
+            return max(exact, key=lambda t: t.get('added_on', 0))
+
+    release_key = _normalize_release_key(dj.release_name)
+    source_key = _normalize_release_key(Path(dj.source_file_path).stem)
+    key = release_key or source_key
+    if not key:
+        return None
+
+    partial_matches = [
+        t for t in torrents
+        if key in _normalize_release_key(t.get('name', ''))
+    ]
+    if partial_matches:
+        return max(partial_matches, key=lambda t: t.get('added_on', 0))
+    return None
+
+
+def _find_completed_download_match(dj: DownloadJob, completed_root: str | None) -> str | None:
+    if not completed_root:
+        return None
+
+    root = Path(completed_root)
+    if not root.exists() or not root.is_dir():
+        return None
+
+    keys = [
+        _normalize_release_key(dj.release_name),
+        _normalize_release_key(Path(dj.source_file_path).stem),
+    ]
+    keys = [k for k in keys if k]
+    if not keys:
+        return None
+
+    try:
+        for candidate in root.iterdir():
+            name_key = _normalize_release_key(candidate.name)
+            if any(k and k in name_key for k in keys):
+                found = download_client_service.find_video_in_path(str(candidate))
+                if found:
+                    return str(candidate)
+    except OSError:
+        return None
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Fallback + failure helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -951,6 +1040,7 @@ def run_download_startup_recovery(db: Session) -> dict:
 
     qbt = download_client_service.get_or_create_qbt_settings(db)
     sab = download_client_service.get_or_create_sab_settings(db)
+    qbt_completed_root = download_client_service.get_qbt_default_save_path(qbt) if qbt.enabled else None
 
     imported = 0
     reset_count = 0
@@ -993,17 +1083,32 @@ def run_download_startup_recovery(db: Session) -> dict:
                     }
 
             if torrent_info is None:
-                logger.warning('Download job %s: hash %r not found in qBittorrent; resetting to searching',
-                               dj.id, dj.download_hash)
-                dj.status = DownloadJobStatus.searching.value
-                dj.download_hash = None
-                dj.client_type = None
-                dj.progress_percent = 0
-                db.commit()
-                db.refresh(dj)
-                _publish_download_job(dj)
-                reset_count += 1
-                continue
+                all_torrents = download_client_service.get_all_qbt_torrents(qbt) if qbt.enabled else []
+                recovered = _find_qbt_torrent_for_release(dj, all_torrents)
+                if recovered:
+                    torrent_info = recovered
+                else:
+                    completed_match = _find_completed_download_match(dj, qbt_completed_root)
+                    if completed_match:
+                        logger.info(
+                            'Download job %s: found completed file in qBit download root while offline; importing',
+                            dj.id,
+                        )
+                        _import_file(db, dj, completed_match, library, profile, qbt, sab)
+                        imported += 1
+                        continue
+
+                    logger.warning('Download job %s: hash %r not found in qBittorrent; resetting to searching',
+                                   dj.id, dj.download_hash)
+                    dj.status = DownloadJobStatus.searching.value
+                    dj.download_hash = None
+                    dj.client_type = None
+                    dj.progress_percent = 0
+                    db.commit()
+                    db.refresh(dj)
+                    _publish_download_job(dj)
+                    reset_count += 1
+                    continue
 
             # Normalise stored hash to lowercase now that we confirmed the torrent exists
             if dj.download_hash != torrent_info.get('hash', stored_hash).lower():
