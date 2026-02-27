@@ -212,6 +212,7 @@ def download_job_to_dict(dj: DownloadJob) -> dict:
         'library_id': dj.library_id,
         'source_file_path': dj.source_file_path,
         'search_query': dj.search_query,
+        'release_name': dj.release_name,
         'download_hash': dj.download_hash,
         'client_type': dj.client_type,
         'status': dj.status,
@@ -446,6 +447,12 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         # downloadClientId (integer Prowlarr client config ID) and id (record ID)
         # are intentionally excluded — neither is a torrent infohash.
     )
+    # Store the release name (torrent name as reported by Prowlarr) so that
+    # hash recovery can find the torrent in qBit by exact name instead of
+    # relying on imprecise timestamp filtering.
+    release_title = best.get('title', '') or ''
+    dj.release_name = release_title
+
     if not download_hash:
         # Prowlarr's HTTP call succeeded (torrent IS in qBit) but no hash was
         # returned.  Do NOT fall back to encode — that would unblock the serial
@@ -454,8 +461,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         # _check_download_progress() will scan qBit to recover the hash.
         logger.warning(
             'Download job %s: grab succeeded but no hash returned; '
-            'will attempt qBit recovery scan. result=%s',
-            dj.id, json.dumps(grab_result)[:200],
+            'will attempt qBit name recovery using release %r. result=%s',
+            dj.id, release_title, json.dumps(grab_result)[:200],
         )
         client_type = _client_type_for_protocol(best.get('protocol', ''))
         dj.download_hash = None
@@ -529,56 +536,55 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     client_type = dj.client_type or 'qbittorrent'
 
     # If the hash is unknown (grab succeeded but Prowlarr returned no hash),
-    # scan all qBit torrents for one added since this job was created.
-    # Since only one Optimizarr download runs at a time, any new torrent is ours.
+    # look up the torrent in qBit using the release name stored at grab time.
     if not dj.download_hash and client_type == 'qbittorrent' and qbt.enabled:
-        # dj.created_at is a naive UTC datetime (from datetime.utcnow()).
-        # .timestamp() would misinterpret it as local time in non-UTC environments,
-        # so we attach the UTC timezone before converting to a Unix timestamp.
-        job_ts = dj.created_at.replace(tzinfo=timezone.utc).timestamp()
-        recent = [
-            t for t in download_client_service.get_all_qbt_torrents(qbt)
-            if t.get('added_on', 0) >= job_ts
-        ]
-        if not recent:
-            logger.debug('Download job %s: no recent qBit torrent found yet; waiting', dj.id)
-            return
+        all_torrents = download_client_service.get_all_qbt_torrents(qbt)
 
-        if len(recent) == 1:
-            best = recent[0]
-        else:
-            # Multiple recent torrents: use word-overlap scoring against the
-            # stored search query (or source file stem) to pick the best match.
-            # This happens when qBit already had torrents from previous grab
-            # attempts for the same job.
-            ref_text = dj.search_query or Path(dj.source_file_path or '').stem
-            ref_words = set(re.sub(r'[^a-z0-9]', ' ', ref_text.lower()).split())
+        recovered: dict | None = None
 
-            def _name_score(torrent: dict) -> int:
-                name_words = set(re.sub(r'[^a-z0-9]', ' ', torrent.get('name', '').lower()).split())
-                return len(ref_words & name_words)
-
-            scored = sorted(recent, key=_name_score, reverse=True)
-            top_score = _name_score(scored[0])
-            second_score = _name_score(scored[1]) if len(scored) > 1 else 0
-
-            if top_score > 0 and top_score > second_score:
-                best = scored[0]
+        if dj.release_name:
+            # Primary strategy: exact name match against the release title
+            # Prowlarr sent to qBit.  This is unambiguous regardless of how many
+            # other torrents exist in the client.
+            name_matches = [t for t in all_torrents if t.get('name') == dj.release_name]
+            if len(name_matches) == 1:
+                recovered = name_matches[0]
                 logger.info(
-                    'Download job %s: %d recent qBit torrents; picked %r via name matching '
-                    '(score %d vs %d)',
-                    dj.id, len(recent), best.get('name'), top_score, second_score,
+                    'Download job %s: recovered hash via release name %r',
+                    dj.id, dj.release_name,
+                )
+            elif len(name_matches) > 1:
+                # Duplicate torrents with the same name — pick the newest one.
+                recovered = max(name_matches, key=lambda t: t.get('added_on', 0))
+                logger.info(
+                    'Download job %s: %d torrents named %r; picked newest',
+                    dj.id, len(name_matches), dj.release_name,
                 )
             else:
+                logger.debug(
+                    'Download job %s: release %r not found in qBit yet; waiting',
+                    dj.id, dj.release_name,
+                )
+                return
+        else:
+            # Fallback for jobs grabbed before release_name was stored: use
+            # timestamp filtering as before.
+            job_ts = dj.created_at.replace(tzinfo=timezone.utc).timestamp()
+            recent = [t for t in all_torrents if t.get('added_on', 0) >= job_ts]
+            if not recent:
+                logger.debug('Download job %s: no recent qBit torrent found yet; waiting', dj.id)
+                return
+            if len(recent) == 1:
+                recovered = recent[0]
+            else:
                 logger.warning(
-                    'Download job %s: %d recent qBit torrents; name matching inconclusive '
-                    '(top=%d second=%d) — waiting',
-                    dj.id, len(recent), top_score, second_score,
+                    'Download job %s: %d recent qBit torrents and no release_name to disambiguate — waiting',
+                    dj.id, len(recent),
                 )
                 return
 
-        recovered_hash = best['hash'].lower()
-        logger.info('Download job %s: recovered hash %s via qBit scan', dj.id, recovered_hash)
+        recovered_hash = recovered['hash'].lower()
+        logger.info('Download job %s: recovered hash %s', dj.id, recovered_hash)
         dj.download_hash = recovered_hash
         db.commit()
         db.refresh(dj)
