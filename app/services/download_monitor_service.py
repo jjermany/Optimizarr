@@ -1004,6 +1004,36 @@ def _find_completed_download_match(dj: DownloadJob, completed_root: str | None) 
     return None
 
 
+def _release_title_matches_profile(title: str, profile: LibraryProfile) -> bool:
+    title = (title or '').strip()
+    if not title:
+        return False
+
+    release = {'title': title}
+    if not _release_matches_target_resolution(release, profile.target_resolution):
+        return False
+
+    if _is_hdr_release(title.lower()):
+        return False
+
+    quality_val = str(getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any) or DownloadQualityProfileEnum.any)
+    if quality_val == DownloadQualityProfileEnum.any.value:
+        return True
+
+    quality_class = _classify_release_quality_from_release(release)
+    return quality_class == quality_val
+
+
+def _reset_download_job_to_searching(db: Session, dj: DownloadJob) -> None:
+    dj.status = DownloadJobStatus.searching.value
+    dj.download_hash = None
+    dj.client_type = None
+    dj.progress_percent = 0
+    db.commit()
+    db.refresh(dj)
+    _publish_download_job(dj)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Fallback + failure helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1198,6 +1228,15 @@ def run_download_startup_recovery(db: Session) -> dict:
                 else:
                     completed_match = _find_completed_download_match(dj, qbt_completed_root)
                     if completed_match:
+                        completed_name = Path(completed_match).name
+                        if not _release_title_matches_profile(completed_name, profile):
+                            logger.warning(
+                                'Download job %s: completed offline artifact %r does not match profile; resetting to searching',
+                                dj.id, completed_name,
+                            )
+                            _reset_download_job_to_searching(db, dj)
+                            reset_count += 1
+                            continue
                         logger.info(
                             'Download job %s: found completed file in qBit download root while offline; importing',
                             dj.id,
@@ -1208,13 +1247,7 @@ def run_download_startup_recovery(db: Session) -> dict:
 
                     logger.warning('Download job %s: hash %r not found in qBittorrent; resetting to searching',
                                    dj.id, dj.download_hash)
-                    dj.status = DownloadJobStatus.searching.value
-                    dj.download_hash = None
-                    dj.client_type = None
-                    dj.progress_percent = 0
-                    db.commit()
-                    db.refresh(dj)
-                    _publish_download_job(dj)
+                    _reset_download_job_to_searching(db, dj)
                     reset_count += 1
                     continue
 
@@ -1226,6 +1259,15 @@ def run_download_startup_recovery(db: Session) -> dict:
             state = torrent_info.get('state', '')
             from app.services.download_client_service import _QBT_COMPLETE_STATES
             if state in _QBT_COMPLETE_STATES:
+                release_title = str(torrent_info.get('name') or dj.release_name or '')
+                if not _release_title_matches_profile(release_title, profile):
+                    logger.warning(
+                        'Download job %s: completed torrent %r does not match profile; resetting to searching',
+                        dj.id, release_title,
+                    )
+                    _reset_download_job_to_searching(db, dj)
+                    reset_count += 1
+                    continue
                 save_path = torrent_info.get('content_path') or torrent_info.get('save_path')
                 if save_path:
                     logger.info('Download job %s: completed while offline, importing now', dj.id)
@@ -1245,16 +1287,21 @@ def run_download_startup_recovery(db: Session) -> dict:
         # ── SABnzbd ──────────────────────────────────────────────────────────
         elif dj.client_type == 'sabnzbd':
             if not dj.download_hash:
-                dj.status = DownloadJobStatus.searching.value
-                dj.progress_percent = 0
-                db.commit()
-                db.refresh(dj)
-                _publish_download_job(dj)
+                _reset_download_job_to_searching(db, dj)
                 reset_count += 1
                 continue
 
             status = download_client_service.get_sab_status(sab, dj.download_hash)
             if status.get('is_complete') and status.get('save_path'):
+                sab_release = str(dj.release_name or Path(status['save_path']).name)
+                if not _release_title_matches_profile(sab_release, profile):
+                    logger.warning(
+                        'Download job %s: SAB completion %r does not match profile; resetting to searching',
+                        dj.id, sab_release,
+                    )
+                    _reset_download_job_to_searching(db, dj)
+                    reset_count += 1
+                    continue
                 logger.info('Download job %s: SABnzbd completed while offline, importing now', dj.id)
                 _import_file(db, dj, status['save_path'], library, profile, qbt, sab)
                 imported += 1
@@ -1262,25 +1309,13 @@ def run_download_startup_recovery(db: Session) -> dict:
                 # Not found in SABnzbd at all
                 logger.warning('Download job %s: NZO %r not found in SABnzbd; resetting to searching',
                                dj.id, dj.download_hash)
-                dj.status = DownloadJobStatus.searching.value
-                dj.download_hash = None
-                dj.client_type = None
-                dj.progress_percent = 0
-                db.commit()
-                db.refresh(dj)
-                _publish_download_job(dj)
+                _reset_download_job_to_searching(db, dj)
                 reset_count += 1
 
         else:
             logger.warning('Download job %s: unknown client_type %r; resetting to searching',
                            dj.id, dj.client_type)
-            dj.status = DownloadJobStatus.searching.value
-            dj.download_hash = None
-            dj.client_type = None
-            dj.progress_percent = 0
-            db.commit()
-            db.refresh(dj)
-            _publish_download_job(dj)
+            _reset_download_job_to_searching(db, dj)
             reset_count += 1
 
     # ── Broad qBit recovery (all non-importing statuses) ─────────────────────
@@ -1335,6 +1370,14 @@ def _import_completed_qbt_candidates(
 
         state = torrent_info.get('state', '')
         if state not in _QBT_COMPLETE_STATES:
+            continue
+
+        release_title = str(torrent_info.get('name') or dj.release_name or '')
+        if not _release_title_matches_profile(release_title, profile):
+            logger.warning(
+                'Download %s: job %s completed release %r does not match profile; skipping import',
+                context, dj.id, release_title,
+            )
             continue
 
         save_path = torrent_info.get('content_path') or torrent_info.get('save_path')

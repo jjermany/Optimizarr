@@ -403,6 +403,57 @@ def test_startup_recovery_imports_timed_out_job_completed_in_qbit(monkeypatch):
         assert imported_paths == ['/downloads/complete/Dune.2021.1080p.WEB-DL']
 
 
+def test_startup_recovery_skips_import_when_completed_release_does_not_match_profile(monkeypatch):
+    """Completed torrents that do not match profile filters must not be imported."""
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Example (2024).mkv',
+            release_name='Example.2024.720p.WEB-DL',
+            download_hash='badmatch',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_qbt_default_save_path', lambda _q: '/downloads/complete')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            'name': 'Example.2024.720p.WEB-DL',
+            'hash': 'badmatch',
+            'state': 'uploading',
+            'progress': 1.0,
+            'content_path': '/downloads/complete/Example.2024.720p.WEB-DL',
+            'save_path': '/downloads/complete/Example.2024.720p.WEB-DL',
+            'added_on': 1,
+        }])
+
+        import_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._import_file',
+            lambda *_args, **_kwargs: import_calls.append(True),
+        )
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(dj)
+
+        assert summary['imported'] == 0
+        assert summary['reset_to_searching'] == 1
+        assert dj.status == DownloadJobStatus.searching.value
+        assert dj.download_hash is None
+        assert import_calls == []
+
+
 def test_startup_recovery_skips_timed_out_job_not_in_qbit(monkeypatch):
     """timed_out jobs with no matching torrent in qBit are left unchanged."""
     with SessionLocal() as db:
