@@ -65,6 +65,11 @@ class DiscoveryManager:
         self._pending_events: dict[str, PendingFileState] = {}
         self._pending_lock = threading.Lock()
         self._next_interval_scan_at = datetime.utcnow()
+        self._scan_requested = threading.Event()
+
+    def request_scan(self) -> None:
+        """Signal the worker to run a discovery scan on the next iteration."""
+        self._scan_requested.set()
 
     def start(self) -> threading.Thread:
         if self._thread and self._thread.is_alive():
@@ -119,12 +124,15 @@ class DiscoveryManager:
 
     def _run_interval_scan_if_due(self, db: Session, libraries: list[Library], interval_minutes: int) -> None:
         now = datetime.utcnow()
-        if now < self._next_interval_scan_at:
+        immediate = self._scan_requested.is_set()
+        self._scan_requested.clear()
+        if not immediate and now < self._next_interval_scan_at:
             return
 
-        logger.info('Running auto-discovery scan across %s enabled libraries', len(libraries))
+        reason = 'immediate (job complete)' if immediate else 'interval'
+        logger.info('Running auto-discovery scan across %s enabled libraries (%s)', len(libraries), reason)
         queued_jobs = scan_enabled_libraries(db, libraries)
-        logger.info('Auto-discovery interval scan complete; queued %s job(s)', len(queued_jobs))
+        logger.info('Auto-discovery scan complete; queued %s job(s)', len(queued_jobs))
         self._next_interval_scan_at = now + timedelta(minutes=max(interval_minutes, 1))
 
     def _ensure_watcher(self, libraries: list[Library]) -> None:
@@ -313,12 +321,18 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
 
     if download_enabled:
         from app.services.download_monitor_service import (
+            any_active_download_job,
             can_attempt_download,
             create_download_job,
             download_job_exists_for_source,
         )
         # If a download job is already active for this file, nothing more to do.
         if download_job_exists_for_source(db, source_path):
+            return None
+        # Only one download job should be active at a time.  If another file is
+        # already searching / downloading / importing, defer this one until the
+        # next scan so the queue never snowballs into dozens of simultaneous grabs.
+        if any_active_download_job(db):
             return None
     else:
         # Encoding-only mode: skip the (expensive) ffprobe if a job already exists.
@@ -399,3 +413,13 @@ def start_discovery_worker() -> threading.Thread:
 
 def stop_discovery_worker() -> None:
     _manager.stop()
+
+
+def trigger_immediate_scan() -> None:
+    """Request an out-of-schedule discovery scan.
+
+    Called by the download monitor after a job completes so that the next
+    eligible file is picked up promptly instead of waiting for the next
+    configured interval.
+    """
+    _manager.request_scan()

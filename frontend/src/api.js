@@ -279,6 +279,14 @@ export function cancelDownloadJob(jobId) {
   return request(`/download-jobs/${jobId}/cancel`, { method: 'POST' });
 }
 
+export function deleteDownloadJob(jobId) {
+  return request(`/download-jobs/${jobId}`, { method: 'DELETE' });
+}
+
+export function deleteAllDownloadJobs() {
+  return request('/download-jobs', { method: 'DELETE' });
+}
+
 export function retryDownloadJob(jobId) {
   return request(`/download-jobs/${jobId}/retry`, { method: 'POST' });
 }

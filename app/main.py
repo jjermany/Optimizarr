@@ -9,8 +9,8 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import router
 from app.core.database import SessionLocal, init_db
 from app.core.logging_config import configure_logging
-from app.services.discovery_service import start_discovery_worker, stop_discovery_worker
-from app.services.download_monitor_service import run_download_startup_recovery, start_download_monitor, stop_download_monitor
+from app.services.discovery_service import start_discovery_worker, stop_discovery_worker, trigger_immediate_scan
+from app.services.download_monitor_service import register_job_complete_callback, run_download_startup_recovery, start_download_monitor, stop_download_monitor
 from app.services import notification_service
 from app.services.notification_service import start_notification_worker, stop_notification_worker
 from app.services.optimization_service import refresh_encoder_cache
@@ -85,6 +85,10 @@ async def lifespan(_: FastAPI):
         trigger='startup',
         cleaned_workspaces=cleanup_summary.get('cleaned_workspaces', 0),
     )
+    # After a download job completes/fails, immediately trigger a discovery scan
+    # so the next eligible file is picked up without waiting for the interval.
+    register_job_complete_callback(trigger_immediate_scan)
+
     cleanup_stop_event = Event()
     cleanup_thread = Thread(target=_cleanup_loop, args=(cleanup_stop_event,), name='cleanup-worker', daemon=True)
     cleanup_thread.start()

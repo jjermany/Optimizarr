@@ -1351,6 +1351,22 @@ def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     return DownloadJobResponse.from_orm(dj)
 
 
+@router.delete('/download-jobs', status_code=204)
+def delete_all_download_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> None:
+    """Delete all download jobs regardless of state."""
+    db.query(DownloadJob).delete()
+    db.commit()
+
+
+@router.delete('/download-jobs/{job_id}', status_code=204)
+def delete_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> None:
+    dj = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+    if dj is None:
+        raise HTTPException(status_code=404, detail='Download job not found')
+    db.delete(dj)
+    db.commit()
+
+
 @router.post('/download-jobs/{job_id}/retry', response_model=DownloadJobResponse)
 def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> DownloadJobResponse:
     dj = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
