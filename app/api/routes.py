@@ -413,12 +413,6 @@ class LibraryBaseRequest(BaseModel):
         candidate = Path(value)
         if not candidate.is_absolute():
             raise ValueError('path must be an absolute path')
-
-        media_root = MEDIA_ROOT.resolve()
-        resolved_candidate = candidate.resolve(strict=False)
-
-        if not resolved_candidate.is_relative_to(media_root):
-            raise ValueError(f'path must be under {media_root}')
         if not candidate.exists():
             raise ValueError('path must exist')
 
@@ -624,19 +618,20 @@ def list_dirs(
     path: str | None = Query(default=None),
     _: None = Depends(require_ui_auth),
 ) -> DirListResponse:
-    media_root = MEDIA_ROOT.resolve()
-    target = media_root if path is None else Path(path).resolve()
+    fs_root = Path('/')
+    target = Path(path).resolve() if path else MEDIA_ROOT.resolve()
 
-    if not target.is_relative_to(media_root):
-        raise HTTPException(status_code=400, detail=f'path must be under {media_root}')
     if not target.is_dir():
-        raise HTTPException(status_code=404, detail='path not found or not a directory')
+        # Requested path doesn't exist — fall back to MEDIA_ROOT, then /
+        target = MEDIA_ROOT.resolve()
+        if not target.is_dir():
+            target = fs_root
 
     dirs = sorted(
         p.name for p in target.iterdir()
         if p.is_dir() and not p.name.startswith('.')
     )
-    parent = str(target.parent) if target != media_root else None
+    parent = str(target.parent) if target != fs_root else None
     return DirListResponse(path=str(target), parent=parent, dirs=dirs)
 
 
