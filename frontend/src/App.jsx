@@ -20,6 +20,7 @@ import {
   fetchPlexLibraries,
   fetchPlexSettings,
   fetchProwlarrSettings,
+  fetchDirs,
   fetchQueueStatus,
   fetchSettings,
   fetchWsToken,
@@ -426,6 +427,82 @@ function StatusDot({ status }) {
   );
 }
 
+function DirBrowserModal({ open, initialPath, onSelect, onClose }) {
+  const [current, setCurrent] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  async function navigate(path) {
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await fetchDirs(path ?? undefined);
+      setCurrent(data);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (open) navigate(initialPath || null);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+          <h3 className="text-sm font-semibold text-slate-200">Browse Directories</h3>
+          <button type="button" className="text-slate-400 hover:text-slate-200 text-lg leading-none" onClick={onClose}>✕</button>
+        </div>
+
+        {/* Current path */}
+        <div className="flex items-center gap-2 border-b border-slate-800/60 px-4 py-2">
+          {current?.parent && (
+            <button type="button" onClick={() => navigate(current.parent)} className="shrink-0 rounded px-2 py-1 text-xs text-slate-400 hover:bg-slate-800 hover:text-slate-200">
+              ← Up
+            </button>
+          )}
+          <span className="min-w-0 truncate font-mono text-xs text-slate-400" title={current?.path}>{current?.path ?? '…'}</span>
+        </div>
+
+        {/* Directory listing */}
+        <div className="max-h-72 overflow-y-auto px-2 py-2">
+          {loading && <p className="px-2 py-3 text-sm text-slate-400">Loading…</p>}
+          {error && <p className="px-2 py-3 text-sm text-red-400">{error}</p>}
+          {!loading && !error && current && current.dirs.length === 0 && (
+            <p className="px-2 py-3 text-xs text-slate-500">No subdirectories here.</p>
+          )}
+          {!loading && !error && current && current.dirs.map((dir) => (
+            <button
+              key={dir}
+              type="button"
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-slate-100 hover:bg-slate-800 active:bg-slate-700"
+              onClick={() => navigate(`${current.path}/${dir}`)}
+            >
+              <svg className="h-4 w-4 shrink-0 text-cyan-400" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/></svg>
+              {dir}
+            </button>
+          ))}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-2 border-t border-slate-800 px-4 py-3">
+          <Btn variant="secondary" size="sm" onClick={onClose}>Cancel</Btn>
+          <Btn variant="primary" size="sm" disabled={!current} onClick={() => { onSelect(current.path); onClose(); }}>
+            Select This Folder
+          </Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Main App ─────────────────────────────────────────────────────────────────
 
 const VALID_PAGES = new Set(Object.keys(PAGE_KEYS));
@@ -471,6 +548,7 @@ export default function App() {
   const [savingSabSettings, setSavingSabSettings] = useState(false);
   const [testingSabConnection, setTestingSabConnection] = useState(false);
   const [downloadJobs, setDownloadJobs] = useState([]);
+  const [dirBrowser, setDirBrowser] = useState({ open: false, target: null, initialPath: null });
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
   const [profileErrors, setProfileErrors] = useState({});
@@ -1012,6 +1090,18 @@ export default function App() {
     }
   }
 
+  function openDirBrowser(target, initialPath) {
+    setDirBrowser({ open: true, target, initialPath: initialPath || null });
+  }
+
+  function handleDirSelect(path) {
+    if (dirBrowser.target === 'new') {
+      setLibraryDraft((prev) => ({ ...prev, path }));
+    } else {
+      setLibraries((prev) => prev.map((lib) => lib.id === dirBrowser.target ? { ...lib, path } : lib));
+    }
+  }
+
   async function handleLibraryToggle(libraryId, enabled) {
     const previous = libraries;
     setLibraries((prev) => prev.map((library) => (library.id === libraryId ? { ...library, enabled } : library)));
@@ -1307,6 +1397,14 @@ export default function App() {
           </nav>
         </header>
 
+        {/* Directory browser modal */}
+        <DirBrowserModal
+          open={dirBrowser.open}
+          initialPath={dirBrowser.initialPath}
+          onSelect={handleDirSelect}
+          onClose={() => setDirBrowser((prev) => ({ ...prev, open: false }))}
+        />
+
         {/* Toast stack */}
         <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col gap-2">
           {toasts.map((toast) => (
@@ -1380,12 +1478,22 @@ export default function App() {
                     />
                   </FormField>
                   <FormField label="Path" error={libraryFormErrors.path} span2>
-                    <TextInput
-                      type="text"
-                      value={libraryDraft.path}
-                      onChange={(e) => setLibraryDraft((prev) => ({ ...prev, path: e.target.value }))}
-                      placeholder="/media/movies"
-                    />
+                    <div className="flex gap-2">
+                      <TextInput
+                        type="text"
+                        value={libraryDraft.path}
+                        onChange={(e) => setLibraryDraft((prev) => ({ ...prev, path: e.target.value }))}
+                        placeholder="/data/movies"
+                      />
+                      <button
+                        type="button"
+                        title="Browse directories"
+                        className="shrink-0 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-cyan-300 transition-colors"
+                        onClick={() => openDirBrowser('new', libraryDraft.path)}
+                      >
+                        <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/></svg>
+                      </button>
+                    </div>
                   </FormField>
                   <div className="md:col-span-2">
                     <Toggle
@@ -1455,11 +1563,21 @@ export default function App() {
                         />
                       </FormField>
                       <FormField label="Path">
-                        <TextInput
-                          type="text"
-                          value={selectedLibrary.path}
-                          onChange={(e) => setLibraries((prev) => prev.map((lib) => lib.id === selectedLibrary.id ? { ...lib, path: e.target.value } : lib))}
-                        />
+                        <div className="flex gap-2">
+                          <TextInput
+                            type="text"
+                            value={selectedLibrary.path}
+                            onChange={(e) => setLibraries((prev) => prev.map((lib) => lib.id === selectedLibrary.id ? { ...lib, path: e.target.value } : lib))}
+                          />
+                          <button
+                            type="button"
+                            title="Browse directories"
+                            className="shrink-0 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-cyan-300 transition-colors"
+                            onClick={() => openDirBrowser(selectedLibrary.id, selectedLibrary.path)}
+                          >
+                            <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 20 20"><path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/></svg>
+                          </button>
+                        </div>
                       </FormField>
                       <p className="text-xs text-slate-400">
                         Status: <span className="text-slate-200">{libraryRuntimeStates.find((item) => item.library.id === selectedLibrary.id)?.state}</span>

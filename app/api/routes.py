@@ -3,7 +3,7 @@ from datetime import timezone
 from pathlib import Path
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, field_validator
@@ -611,6 +611,33 @@ def _validate_resolution_constraints(target_resolution: int, minimum_source_reso
 @router.get('/health')
 def health() -> dict[str, str]:
     return {'status': 'ok'}
+
+
+class DirListResponse(BaseModel):
+    path: str
+    parent: str | None
+    dirs: list[str]
+
+
+@router.get('/fs/dirs', response_model=DirListResponse)
+def list_dirs(
+    path: str | None = Query(default=None),
+    _: None = Depends(require_ui_auth),
+) -> DirListResponse:
+    media_root = MEDIA_ROOT.resolve()
+    target = media_root if path is None else Path(path).resolve()
+
+    if not target.is_relative_to(media_root):
+        raise HTTPException(status_code=400, detail=f'path must be under {media_root}')
+    if not target.is_dir():
+        raise HTTPException(status_code=404, detail='path not found or not a directory')
+
+    dirs = sorted(
+        p.name for p in target.iterdir()
+        if p.is_dir() and not p.name.startswith('.')
+    )
+    parent = str(target.parent) if target != media_root else None
+    return DirListResponse(path=str(target), parent=parent, dirs=dirs)
 
 
 @router.get('/version')

@@ -270,6 +270,11 @@ export function fetchDownloadJobs() {
   return request('/download-jobs');
 }
 
+export function fetchDirs(path) {
+  const qs = path ? `?path=${encodeURIComponent(path)}` : '';
+  return request(`/fs/dirs${qs}`);
+}
+
 export function cancelDownloadJob(jobId) {
   return request(`/download-jobs/${jobId}/cancel`, { method: 'POST' });
 }
