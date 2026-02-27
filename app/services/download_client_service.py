@@ -121,16 +121,19 @@ def tag_qbt_torrent(s: QBittorrentSettings, torrent_hash: str) -> None:
         client = _qbt_session(s)
         _ensure_qbt_tag(client)
         hash_lower = torrent_hash.lower()
-        for attempt in range(3):
+        for attempt in range(5):
             client.post('/api/v2/torrents/addTags', data={'hashes': hash_lower, 'tags': _QBT_TAG})
             # Verify the tag was actually applied; the torrent may not be
-            # indexed in qBit yet if this is called immediately after the grab.
+            # indexed in qBit yet if this is called immediately after the grab
+            # (e.g. magnet links require metadata resolution before qBit indexes
+            # the torrent).  5 retries × 3 s gives ~12 s total, enough for
+            # most slow-indexing scenarios.
             info = _qbt_torrent_info(client, hash_lower)
             if info and _QBT_TAG in (info.get('tags') or ''):
                 return  # success
-            if attempt < 2:
-                time.sleep(2)
-        logger.warning('Could not verify optimizarr tag on torrent %s after 3 attempts', torrent_hash)
+            if attempt < 4:
+                time.sleep(3)
+        logger.warning('Could not verify optimizarr tag on torrent %s after 5 attempts', torrent_hash)
     except Exception as exc:
         logger.warning('Failed to tag qBittorrent torrent %s: %s', torrent_hash, exc)
 
