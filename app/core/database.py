@@ -242,3 +242,9 @@ def init_db() -> None:
             'release_name',
             'release_name TEXT',
         )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
+            'download_started_at',
+            'download_started_at DATETIME',
+        )

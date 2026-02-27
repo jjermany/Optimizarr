@@ -222,6 +222,7 @@ def download_job_to_dict(dj: DownloadJob) -> dict:
         'error_message': dj.error_message,
         'encode_job_id': dj.encode_job_id,
         'created_at': dj.created_at.isoformat() if dj.created_at else None,
+        'download_started_at': dj.download_started_at.isoformat() if dj.download_started_at else None,
         'completed_at': dj.completed_at.isoformat() if dj.completed_at else None,
     }
 
@@ -350,6 +351,22 @@ def _client_type_for_protocol(protocol: str) -> str:
     return 'sabnzbd'
 
 
+def _extract_hash_from_guid(guid: str) -> str:
+    """Extract a 40-character BitTorrent info-hash embedded in a GUID URL.
+
+    Many indexers encode the torrent hash directly in the GUID path, e.g.:
+      https://www.torrentdownload.info/<HASH>/release-name
+    When Prowlarr's grab response omits 'downloadId' and 'hash' fields we can
+    still recover the hash from the GUID so tracking doesn't fall back to the
+    slow name-matching heuristic.
+    """
+    if not guid:
+        return ''
+    # SHA-1 info-hash: exactly 40 hex characters, not part of a longer hex run
+    match = re.search(r'(?<![0-9a-fA-F])([0-9a-fA-F]{40})(?![0-9a-fA-F])', guid)
+    return match.group(1) if match else ''
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Processing: searching → downloading
 # ─────────────────────────────────────────────────────────────────────────────
@@ -443,6 +460,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     download_hash = (
         grab_result.get('downloadId')  # infohash returned by the download client
         or grab_result.get('hash')     # secondary hash field used by some Prowlarr versions
+        or _extract_hash_from_guid(grab_result.get('guid', ''))  # hash embedded in GUID URL
         or ''
         # downloadClientId (integer Prowlarr client config ID) and id (record ID)
         # are intentionally excluded — neither is a torrent infohash.
@@ -468,6 +486,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         dj.download_hash = None
         dj.client_type = client_type
         dj.status = DownloadJobStatus.downloading.value
+        dj.download_started_at = datetime.utcnow()
         dj.progress_percent = 0
         db.commit()
         db.refresh(dj)
@@ -482,6 +501,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     dj.download_hash = normalised_hash
     dj.client_type = client_type
     dj.status = DownloadJobStatus.downloading.value
+    dj.download_started_at = datetime.utcnow()
     dj.progress_percent = 0
     db.commit()
     db.refresh(dj)
@@ -521,7 +541,12 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
 
     profile = library.profile
     timeout_minutes = int(getattr(profile, 'download_timeout_minutes', 60) or 60)
-    elapsed = datetime.utcnow() - dj.created_at
+    # Use download_started_at (when the torrent was sent to the client) as the
+    # timeout reference so that jobs created in a previous run don't immediately
+    # time out when the app restarts.  Fall back to created_at for rows that
+    # pre-date the download_started_at column.
+    timeout_reference = dj.download_started_at or dj.created_at
+    elapsed = datetime.utcnow() - timeout_reference
     if elapsed > timedelta(minutes=timeout_minutes):
         logger.warning('Download job %s timed out after %s minutes', dj.id, timeout_minutes)
         dj.status = DownloadJobStatus.timed_out.value
@@ -957,8 +982,13 @@ def run_download_startup_recovery(db: Session) -> dict:
                 else:
                     _mark_failed(db, dj, 'Torrent complete but no save path available')
             else:
-                # Still downloading — leave as-is; the normal loop will catch up
+                # Still downloading — reset the timeout clock to now so the job
+                # gets a fresh window after the restart instead of immediately
+                # timing out because created_at (or an old download_started_at)
+                # is already past the threshold.
                 logger.info('Download job %s: still in progress (state=%s), resuming monitoring', dj.id, state)
+                dj.download_started_at = datetime.utcnow()
+                db.commit()
 
         # ── SABnzbd ──────────────────────────────────────────────────────────
         elif dj.client_type == 'sabnzbd':
