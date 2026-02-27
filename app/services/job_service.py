@@ -386,3 +386,18 @@ def remove_all_terminal_jobs(db: Session) -> list[int]:
         db.delete(job)
     db.commit()
     return removed_job_ids
+
+
+def cancel_all_queued_jobs(db: Session) -> list[Job]:
+    targets = db.query(Job).filter(Job.status == 'queued').all()
+    if not targets:
+        return []
+
+    now = datetime.utcnow()
+    for job in targets:
+        job.status = 'cancelled'
+        job.completed_at = now
+    db.commit()
+    for job in targets:
+        db.refresh(job)
+    return targets

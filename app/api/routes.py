@@ -33,6 +33,7 @@ from app.services import download_client_service, notification_service, plex_ser
 from app.services.job_service import (
     abort_all_jobs,
     abort_job,
+    cancel_all_queued_jobs,
     cancel_job,
     cleanup_optimized_outputs,
     create_job,
@@ -272,6 +273,11 @@ class AbortAllJobsResponse(BaseModel):
 
 class RemoveAllJobsResponse(BaseModel):
     removed_job_ids: list[int]
+
+
+class CancelAllQueuedResponse(BaseModel):
+    cancelled_job_ids: list[int]
+
 
 class NotificationTriggerSettings(BaseModel):
     job_complete: bool = True
@@ -1149,6 +1155,16 @@ def remove_all_jobs_endpoint(_: None = Depends(require_ui_auth), db: Session = D
     for job_id in removed_job_ids:
         broker.publish_system_event('job_removed', job_id=job_id)
     return RemoveAllJobsResponse(removed_job_ids=removed_job_ids)
+
+
+@router.post('/jobs/cancel-all-queued', response_model=CancelAllQueuedResponse)
+def cancel_all_queued_jobs_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> CancelAllQueuedResponse:
+    jobs = cancel_all_queued_jobs(db)
+    for job in jobs:
+        response = JobResponse.from_orm_job(job)
+        broker.publish_job_update(response.model_dump(), throttle_progress=False)
+        broker.publish_system_event('job_cancelled', job_id=response.id)
+    return CancelAllQueuedResponse(cancelled_job_ids=[job.id for job in jobs])
 
 
 @router.post('/jobs/{job_id}/abort', response_model=JobResponse)

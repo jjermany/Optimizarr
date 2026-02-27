@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   abortAllJobs,
   abortJob,
+  cancelAllQueued,
   cancelJob,
   cancelDownloadJob,
   deleteDownloadJob,
@@ -591,8 +592,16 @@ export default function App() {
   const [historyPage, setHistoryPage] = useState(1);
   const [queueSearch, setQueueSearch] = useState(() => String(jobsUiPrefs.queueSearch ?? ''));
   const [historySearch, setHistorySearch] = useState(() => String(jobsUiPrefs.historySearch ?? ''));
-  const [queueSort, setQueueSort] = useState(() => String(jobsUiPrefs.queueSort ?? 'default'));
-  const [historySort, setHistorySort] = useState(() => String(jobsUiPrefs.historySort ?? 'completed_desc'));
+  const [queueSort, setQueueSort] = useState(() => {
+    const val = String(jobsUiPrefs.queueSort ?? 'default');
+    return val === 'oldest' ? 'default' : val;
+  });
+  const [historySort, setHistorySort] = useState(() => {
+    const val = String(jobsUiPrefs.historySort ?? 'completed_desc');
+    if (val === 'year_desc') return 'year_newest';
+    if (val === 'year_asc') return 'year_oldest';
+    return val;
+  });
   const [jobsView, setJobsView] = useState(() => (jobsUiPrefs.jobsView === 'history' ? 'history' : 'queue'));
   const [nowHour, setNowHour] = useState(() => new Date().getHours());
 
@@ -1082,6 +1091,16 @@ export default function App() {
       await refreshAll();
     } catch (actionError) {
       pushToast(actionError.message || 'Remove all failed.', 'error');
+    }
+  }
+
+  async function handleCancelAllQueued() {
+    try {
+      const result = await cancelAllQueued();
+      pushToast(`Cancelled ${result.cancelled_job_ids.length} queued job(s).`, 'success');
+      await refreshAll();
+    } catch (actionError) {
+      pushToast(actionError.message || 'Cancel all queued failed.', 'error');
     }
   }
 
@@ -2034,8 +2053,8 @@ export default function App() {
                       <option value="newest">Date Added (Newest)</option>
                       <option value="year_newest">Release Year (Newest)</option>
                       <option value="year_oldest">Release Year (Oldest)</option>
-                      {queueSort === 'oldest' && <option value="oldest">Date Added (Oldest)</option>}
                     </select>
+                    <Btn size="sm" variant="secondary" onClick={handleCancelAllQueued}>Cancel Queued</Btn>
                     <Btn size="sm" variant="danger" onClick={handleAbortAllJobs}>Abort All</Btn>
                     <Btn size="sm" variant="warning" onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}>
                       {queuePaused ? 'Start Queue' : 'Pause Queue'}
@@ -2057,10 +2076,10 @@ export default function App() {
                       className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30"
                     >
                       <option value="completed_desc">Completed (Newest)</option>
-                      <option value="year_desc">Year (Newest first)</option>
-                      <option value="year_asc">Year (Oldest first)</option>
+                      <option value="year_newest">Release Year (Newest)</option>
+                      <option value="year_oldest">Release Year (Oldest)</option>
                     </select>
-                    <Btn size="sm" variant="danger" onClick={handlePurgeHistory}>Purge All</Btn>
+                    <Btn size="sm" variant="danger" onClick={handlePurgeHistory}>Clear History</Btn>
                   </div>
                 )}
               </div>
