@@ -62,7 +62,7 @@ from app.services.recovery_service import requeue_interrupted_job, run_startup_r
 from app.workers import queue as worker_queue
 
 router = APIRouter()
-MEDIA_ROOT = Path('/media')
+MEDIA_ROOT = Path(os.getenv('MEDIA_ROOT', '/media'))
 BRANDING_ROOTS = (
     MEDIA_ROOT / 'Logo',
     Path(__file__).resolve().parents[2] / 'media' / 'Logo',
@@ -418,7 +418,7 @@ class LibraryBaseRequest(BaseModel):
         resolved_candidate = candidate.resolve(strict=False)
 
         if not resolved_candidate.is_relative_to(media_root):
-            raise ValueError('path must be under /media')
+            raise ValueError(f'path must be under {media_root}')
         if not candidate.exists():
             raise ValueError('path must exist')
 
