@@ -10,6 +10,7 @@ from app.services.download_monitor_service import (
     _select_best_release,
     download_job_exists_for_source,
     run_download_startup_recovery,
+    run_scan_recovery,
 )
 
 
@@ -495,3 +496,112 @@ def test_check_search_job_stays_searching_on_prowlarr_error(monkeypatch):
 
         # Job must remain in 'searching' so the monitor retries on the next cycle
         assert dj.status == DownloadJobStatus.searching.value
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# run_scan_recovery: mid-runtime qBit reconciliation after a library scan
+# ─────────────────────────────────────────────────────────────────────────────
+
+def test_scan_recovery_imports_stalled_job_completed_in_qbit(monkeypatch):
+    """run_scan_recovery imports a stalled job whose torrent finished in qBit."""
+    imported_paths = []
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Oppenheimer (2023).mkv',
+            release_name='Oppenheimer.2023.1080p.WEB-DL',
+            download_hash='aabbccdd',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.stalled.value,
+            error_message='No seeders',
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            'name': 'Oppenheimer.2023.1080p.WEB-DL',
+            'hash': 'aabbccdd',
+            'state': 'uploading',
+            'progress': 1.0,
+            'content_path': '/downloads/complete/Oppenheimer.2023.1080p.WEB-DL',
+            'save_path': '/downloads/complete/Oppenheimer.2023.1080p.WEB-DL',
+            'added_on': 1,
+        }])
+
+        def _fake_import(_db, _dj, save_path, *_args):
+            imported_paths.append(save_path)
+            _dj.status = DownloadJobStatus.complete.value
+            _dj.error_message = None
+            _db.commit()
+
+        monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
+
+        summary = run_scan_recovery(db)
+        db.refresh(dj)
+
+        assert summary['imported'] == 1
+        assert dj.status == DownloadJobStatus.complete.value
+        assert dj.error_message is None
+        assert imported_paths == ['/downloads/complete/Oppenheimer.2023.1080p.WEB-DL']
+
+
+def test_scan_recovery_skips_active_downloading_jobs(monkeypatch):
+    """run_scan_recovery does not touch jobs currently in 'downloading' status."""
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Avatar (2009).mkv',
+            release_name='Avatar.2009.1080p.WEB-DL',
+            download_hash='11223344',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            'name': 'Avatar.2009.1080p.WEB-DL',
+            'hash': '11223344',
+            'state': 'uploading',
+            'progress': 1.0,
+            'content_path': '/downloads/complete/Avatar.2009.1080p.WEB-DL',
+            'save_path': '/downloads/complete/Avatar.2009.1080p.WEB-DL',
+            'added_on': 1,
+        }])
+
+        # If run_scan_recovery accidentally processes this job it would call
+        # _import_file, which would cause an error — patching it to detect that.
+        import_called = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._import_file',
+            lambda *_a: import_called.append(True),
+        )
+
+        summary = run_scan_recovery(db)
+        db.refresh(dj)
+
+        # downloading job must be untouched by scan recovery
+        assert summary['imported'] == 0
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert not import_called
