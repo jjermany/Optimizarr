@@ -265,7 +265,9 @@ def _build_search_query(source_path: str, profile: LibraryProfile) -> str:
     year_match = re.search(r'\b(19|20)\d{2}\b', clean)
     if year_match:
         year = year_match.group(0)
-        title = clean[:year_match.start()].strip()
+        # Strip any trailing punctuation/brackets left by the year pattern
+        # e.g. "Movie Name (2024) [...]" → title up to start of "2024" contains "("
+        title = re.sub(r'[\s()\[\]]+$', '', clean[:year_match.start()]).strip()
     else:
         year = ''
         title = clean.strip()
@@ -538,23 +540,50 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             t for t in download_client_service.get_all_qbt_torrents(qbt)
             if t.get('added_on', 0) >= job_ts
         ]
-        if len(recent) == 1:
-            recovered_hash = recent[0]['hash'].lower()
-            logger.info('Download job %s: recovered hash %s via qBit scan', dj.id, recovered_hash)
-            dj.download_hash = recovered_hash
-            db.commit()
-            db.refresh(dj)
-            if download_client_service.tag_qbt_torrent(qbt, recovered_hash):
-                _tagged_job_ids.add(dj.id)
-        elif not recent:
+        if not recent:
             logger.debug('Download job %s: no recent qBit torrent found yet; waiting', dj.id)
             return
+
+        if len(recent) == 1:
+            best = recent[0]
         else:
-            logger.warning(
-                'Download job %s: %d recent qBit torrents found; cannot recover hash unambiguously — waiting',
-                dj.id, len(recent),
-            )
-            return
+            # Multiple recent torrents: use word-overlap scoring against the
+            # stored search query (or source file stem) to pick the best match.
+            # This happens when qBit already had torrents from previous grab
+            # attempts for the same job.
+            ref_text = dj.search_query or Path(dj.source_file_path or '').stem
+            ref_words = set(re.sub(r'[^a-z0-9]', ' ', ref_text.lower()).split())
+
+            def _name_score(torrent: dict) -> int:
+                name_words = set(re.sub(r'[^a-z0-9]', ' ', torrent.get('name', '').lower()).split())
+                return len(ref_words & name_words)
+
+            scored = sorted(recent, key=_name_score, reverse=True)
+            top_score = _name_score(scored[0])
+            second_score = _name_score(scored[1]) if len(scored) > 1 else 0
+
+            if top_score > 0 and top_score > second_score:
+                best = scored[0]
+                logger.info(
+                    'Download job %s: %d recent qBit torrents; picked %r via name matching '
+                    '(score %d vs %d)',
+                    dj.id, len(recent), best.get('name'), top_score, second_score,
+                )
+            else:
+                logger.warning(
+                    'Download job %s: %d recent qBit torrents; name matching inconclusive '
+                    '(top=%d second=%d) — waiting',
+                    dj.id, len(recent), top_score, second_score,
+                )
+                return
+
+        recovered_hash = best['hash'].lower()
+        logger.info('Download job %s: recovered hash %s via qBit scan', dj.id, recovered_hash)
+        dj.download_hash = recovered_hash
+        db.commit()
+        db.refresh(dj)
+        if download_client_service.tag_qbt_torrent(qbt, recovered_hash):
+            _tagged_job_ids.add(dj.id)
 
     # If the initial tag attempt failed (e.g. torrent wasn't indexed in qBit
     # yet when we grabbed it), retry with a few quick attempts each monitoring
