@@ -88,7 +88,8 @@ def _qbt_session(s: QBittorrentSettings) -> httpx.Client:
 
 
 def _qbt_torrent_info(client: httpx.Client, torrent_hash: str) -> dict | None:
-    resp = client.get('/api/v2/torrents/info', params={'hashes': torrent_hash})
+    # qBittorrent stores hashes in lowercase; normalise before querying.
+    resp = client.get('/api/v2/torrents/info', params={'hashes': torrent_hash.lower()})
     resp.raise_for_status()
     items = resp.json()
     return items[0] if items else None
@@ -98,9 +99,25 @@ def tag_qbt_torrent(s: QBittorrentSettings, torrent_hash: str) -> None:
     """Tag a torrent with 'optimizarr' so it can be identified in the qBittorrent UI."""
     try:
         client = _qbt_session(s)
-        client.post('/api/v2/torrents/addTags', data={'hashes': torrent_hash, 'tags': _QBT_TAG})
+        client.post('/api/v2/torrents/addTags', data={'hashes': torrent_hash.lower(), 'tags': _QBT_TAG})
     except Exception as exc:
         logger.warning('Failed to tag qBittorrent torrent %s: %s', torrent_hash, exc)
+
+
+def get_all_qbt_tagged_torrents(s: QBittorrentSettings) -> list[dict]:
+    """Return all torrents tagged with 'optimizarr' from qBittorrent.
+
+    Used on startup to reconcile in-flight download jobs against what qBit
+    actually has, including finding downloads that completed while offline.
+    """
+    try:
+        client = _qbt_session(s)
+        resp = client.get('/api/v2/torrents/info', params={'tag': _QBT_TAG})
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning('Failed to fetch tagged torrents from qBittorrent: %s', exc)
+        return []
 
 
 def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
