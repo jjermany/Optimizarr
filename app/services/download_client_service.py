@@ -120,6 +120,23 @@ def get_all_qbt_tagged_torrents(s: QBittorrentSettings) -> list[dict]:
         return []
 
 
+def get_all_qbt_torrents(s: QBittorrentSettings) -> list[dict]:
+    """Return ALL torrents from qBittorrent (no tag filter).
+
+    Used to recover a torrent hash when Prowlarr's grab response didn't
+    include one.  Each dict includes at minimum: hash, name, added_on,
+    state, content_path, save_path, progress.
+    """
+    try:
+        client = _qbt_session(s)
+        resp = client.get('/api/v2/torrents/info')
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        logger.warning('Failed to fetch all torrents from qBittorrent: %s', exc)
+        return []
+
+
 def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
     """Returns progress_percent, is_complete, is_stalled, save_path."""
     try:

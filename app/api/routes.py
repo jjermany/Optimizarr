@@ -1374,6 +1374,25 @@ def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     return DownloadJobResponse.from_orm(dj)
 
 
+@router.get('/download-queue/status')
+def get_download_queue_status(_: None = Depends(require_ui_auth)) -> dict:
+    from app.services.download_monitor_service import (
+        get_download_queue_stop_reason,
+        is_download_queue_stopped,
+    )
+    return {
+        'stopped': is_download_queue_stopped(),
+        'reason': get_download_queue_stop_reason(),
+    }
+
+
+@router.post('/download-queue/resume')
+def resume_download_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict:
+    from app.services.download_monitor_service import resume_download_queue
+    resume_download_queue()
+    return {'status': 'resumed'}
+
+
 @router.get('/auth/ws-token')
 def get_ws_token(_: None = Depends(require_ui_auth)) -> dict[str, str]:
     token = expected_ws_token()

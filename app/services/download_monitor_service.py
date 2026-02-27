@@ -27,6 +27,36 @@ _stop_event = threading.Event()
 _wake_event = threading.Event()
 _thread: threading.Thread | None = None
 
+# When set, the search pipeline is halted after an import error so the user
+# can investigate before more downloads are started.
+_download_queue_stopped: bool = False
+_download_queue_stop_reason: str = ''
+
+
+def is_download_queue_stopped() -> bool:
+    return _download_queue_stopped
+
+
+def get_download_queue_stop_reason() -> str:
+    return _download_queue_stop_reason
+
+
+def resume_download_queue() -> None:
+    global _download_queue_stopped, _download_queue_stop_reason
+    _download_queue_stopped = False
+    _download_queue_stop_reason = ''
+    _wake_event.set()
+    logger.info('Download queue resumed by user')
+
+
+def _stop_download_queue(reason: str) -> None:
+    global _download_queue_stopped, _download_queue_stop_reason
+    _download_queue_stopped = True
+    _download_queue_stop_reason = reason
+    logger.warning('Download queue stopped: %s', reason)
+    broker.publish_notification(f'Download queue stopped due to error: {reason}')
+
+
 # Adaptive poll intervals
 _POLL_DOWNLOADING_SECONDS = 3   # fast polling while files are transferring
 _POLL_SEARCHING_SECONDS = 10    # moderate polling while waiting for Prowlarr
@@ -284,6 +314,9 @@ def _client_type_for_protocol(protocol: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _process_searching_jobs(db: Session) -> None:
+    if _download_queue_stopped:
+        return
+
     prowlarr = prowlarr_service.get_or_create_prowlarr_settings(db)
     qbt = download_client_service.get_or_create_qbt_settings(db)
     sab = download_client_service.get_or_create_sab_settings(db)
@@ -337,6 +370,15 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         _fallback_to_encode(db, dj, library, profile)
         return
 
+    # Safety check: refuse to grab if another download is already active.
+    # Guards against any state inconsistency that slips past the outer check.
+    if db.query(DownloadJob).filter(DownloadJob.status.in_([
+        DownloadJobStatus.downloading.value,
+        DownloadJobStatus.importing.value,
+    ])).count() > 0:
+        logger.warning('Download job %s: active download detected before grab; deferring', dj.id)
+        return
+
     logger.info('Download job %s: grabbing release %r', dj.id, best.get('title'))
     grab_result = prowlarr_service.grab(prowlarr, best.get('guid', ''), best.get('indexerId', 0))
 
@@ -353,9 +395,24 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         or ''
     )
     if not download_hash:
-        logger.warning('Download job %s: grab succeeded but no hash returned; result: %s', dj.id, json.dumps(grab_result)[:200])
-        _mark_failed(db, dj, 'No download ID returned from Prowlarr grab')
-        _fallback_to_encode(db, dj, library, profile)
+        # Prowlarr's HTTP call succeeded (torrent IS in qBit) but no hash was
+        # returned.  Do NOT fall back to encode — that would unblock the serial
+        # constraint and let a second torrent be sent while the first sits
+        # untracked.  Instead keep status=downloading so the queue stays blocked;
+        # _check_download_progress() will scan qBit to recover the hash.
+        logger.warning(
+            'Download job %s: grab succeeded but no hash returned; '
+            'will attempt qBit recovery scan. result=%s',
+            dj.id, json.dumps(grab_result)[:200],
+        )
+        client_type = _client_type_for_protocol(best.get('protocol', ''))
+        dj.download_hash = None
+        dj.client_type = client_type
+        dj.status = DownloadJobStatus.downloading.value
+        dj.progress_percent = 0
+        db.commit()
+        db.refresh(dj)
+        _publish_download_job(dj)
         return
 
     # Determine which client received this download based on the release protocol
@@ -416,6 +473,33 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         return
 
     client_type = dj.client_type or 'qbittorrent'
+
+    # If the hash is unknown (grab succeeded but Prowlarr returned no hash),
+    # scan all qBit torrents for one added since this job was created.
+    # Since only one Optimizarr download runs at a time, any new torrent is ours.
+    if not dj.download_hash and client_type == 'qbittorrent' and qbt.enabled:
+        job_ts = dj.created_at.timestamp()
+        recent = [
+            t for t in download_client_service.get_all_qbt_torrents(qbt)
+            if t.get('added_on', 0) >= job_ts
+        ]
+        if len(recent) == 1:
+            recovered_hash = recent[0]['hash'].lower()
+            logger.info('Download job %s: recovered hash %s via qBit scan', dj.id, recovered_hash)
+            dj.download_hash = recovered_hash
+            db.commit()
+            db.refresh(dj)
+            download_client_service.tag_qbt_torrent(qbt, recovered_hash)
+        elif not recent:
+            logger.debug('Download job %s: no recent qBit torrent found yet; waiting', dj.id)
+            return
+        else:
+            logger.warning(
+                'Download job %s: %d recent qBit torrents found; cannot recover hash unambiguously — waiting',
+                dj.id, len(recent),
+            )
+            return
+
     status = download_client_service.get_download_status(client_type, qbt, sab, dj.download_hash or '')
     progress = status.get('progress_percent', 0)
 
@@ -495,19 +579,42 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             _cleanup_download_client(dj, qbt, sab)
             return
 
-    # Move file from complete directory to library
+    # Place the downloaded file into the library.
+    # Strategy differs by download client:
+    #   qBittorrent — hard-link so both the library and the seed directory
+    #                 reference the same inode; the original is never removed,
+    #                 allowing qBit to keep seeding.  Falls back to a copy
+    #                 (without deleting the source) if the library and the seed
+    #                 dir are on different filesystems.
+    #   SABnzbd     — move (rename on same fs, copy+delete across filesystems);
+    #                 SABnzbd manages its own files so removing the original
+    #                 is correct here.
     dest.parent.mkdir(parents=True, exist_ok=True)
+    is_qbt = dj.client_type == 'qbittorrent'
     try:
-        if _is_same_filesystem(video_file, dest.parent):
-            os.replace(video_file, dest)
+        if is_qbt:
+            try:
+                os.link(video_file, dest)
+                logger.info('Download job %s: hard linked %r → %r', dj.id, str(video_file), str(dest))
+            except OSError:
+                # Cross-device or unsupported fs — copy without deleting source
+                temp_dest = dest.parent / f'.optimizarr-import-{dj.id}-{int(time.time() * 1000)}{dest.suffix}'
+                shutil.copy2(video_file, temp_dest)
+                os.replace(temp_dest, dest)
+                logger.info('Download job %s: copied %r → %r (cross-device, original kept for seeding)',
+                            dj.id, str(video_file), str(dest))
         else:
-            temp_dest = dest.parent / f'.optimizarr-import-{dj.id}-{int(time.time() * 1000)}{dest.suffix}'
-            shutil.copy2(video_file, temp_dest)
-            os.replace(temp_dest, dest)
-            video_file.unlink(missing_ok=True)
+            if _is_same_filesystem(video_file, dest.parent):
+                os.replace(video_file, dest)
+            else:
+                temp_dest = dest.parent / f'.optimizarr-import-{dj.id}-{int(time.time() * 1000)}{dest.suffix}'
+                shutil.copy2(video_file, temp_dest)
+                os.replace(temp_dest, dest)
+                video_file.unlink(missing_ok=True)
     except OSError as exc:
-        logger.error('Download job %s: failed to move %r → %r: %s', dj.id, video_file, dest, exc)
-        _mark_failed(db, dj, f'File move failed: {exc}')
+        logger.error('Download job %s: failed to import %r → %r: %s', dj.id, video_file, dest, exc)
+        _mark_failed(db, dj, f'File import failed: {exc}')
+        _stop_download_queue(f'Import error for job {dj.id}: {exc}')
         _fallback_to_encode(db, dj, library, profile)
         return
 
