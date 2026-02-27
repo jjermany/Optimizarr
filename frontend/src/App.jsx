@@ -56,7 +56,7 @@ import {
   updateSettings,
 } from './api';
 import StatCard from './components/StatCard';
-import { buildUnifiedQueueItems, isPinnedActiveQueueItem } from './queueSorting';
+import { buildUnifiedQueueItems } from './queueSorting';
 import { isWithinWindow } from './scheduleWindow';
 
 const WS_PATH = '/ws';
@@ -771,15 +771,8 @@ export default function App() {
     [filteredActiveJobs, filteredDlQueueItems, queueSort],
   );
 
-  const activeNowQueueItems = useMemo(
-    () => unifiedQueueItems.filter((item) => isPinnedActiveQueueItem(item)),
-    [unifiedQueueItems],
-  );
-
-  const paginatedQueueItems = useMemo(
-    () => unifiedQueueItems.filter((item) => !isPinnedActiveQueueItem(item)),
-    [unifiedQueueItems],
-  );
+  // All queue items in a single list: active jobs sort to the top, rest follow.
+  const paginatedQueueItems = useMemo(() => unifiedQueueItems, [unifiedQueueItems]);
 
   const totalJobPages = useMemo(
     () => Math.max(1, Math.ceil(paginatedQueueItems.length / JOBS_PAGE_SIZE)),
@@ -2153,19 +2146,6 @@ export default function App() {
               {/* Queue tab content */}
               {jobsView === 'queue' && (
                 <>
-                  {activeNowQueueItems.length > 0 && (
-                    <div className="border-b border-slate-800 bg-cyan-500/5 px-5 py-2.5">
-                      <p className="text-xs font-semibold uppercase tracking-wider text-cyan-300">Active now</p>
-                      <p className="mt-1 text-xs text-slate-400">
-                        Showing {activeNowQueueItems.length} active task{activeNowQueueItems.length === 1 ? '' : 's'} above paginated queue rows.
-                      </p>
-                      <p className="mt-1 truncate text-xs text-slate-500">
-                        {activeNowQueueItems
-                          .map((item) => (item._itemType === 'download' ? extractTitleYear(item.source_file_path).title : extractTitleYear(item.source_path).title))
-                          .join(' • ')}
-                      </p>
-                    </div>
-                  )}
                   <div className="overflow-x-auto">
                     <table className="min-w-full divide-y divide-slate-800">
                       <thead className="bg-slate-800/50">
@@ -2176,7 +2156,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60">
-                        {activeNowQueueItems.length === 0 && pagedJobs.length === 0 && (
+                        {pagedJobs.length === 0 && (
                           <tr>
                             <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
                               {queueSearch ? 'No matching jobs.' : 'No jobs in queue.'}
