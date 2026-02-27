@@ -12,6 +12,7 @@ import time
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
 from app.models.settings import QueueSortEnum, Settings
@@ -305,9 +306,10 @@ def _process_job(job_id: int) -> None:
             if job.status in TERMINAL_STATUSES or job.status in PAUSED_STATUSES:
                 return
             job.progress_percent = int(update.get('progress_percent') or 0)
-            job.fps = update.get('fps') if isinstance(update.get('fps'), float) else None
-            eta_seconds = update.get('eta_seconds')
-            job.eta_seconds = int(eta_seconds) if isinstance(eta_seconds, int) else None
+            fps_val = update.get('fps')
+            job.fps = float(fps_val) if isinstance(fps_val, (int, float)) else None
+            eta_val = update.get('eta_seconds')
+            job.eta_seconds = int(eta_val) if isinstance(eta_val, (int, float)) else None
             db.commit()
             _publish_job(job, throttle_progress=True)
 
@@ -564,9 +566,29 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         return (has_resume, job.created_at.timestamp() if job.created_at else 0, job.id)
 
     queued.sort(key=sort_key)
+    _ACTIVE_DOWNLOAD_STATUSES = (
+        DownloadJobStatus.searching.value,
+        DownloadJobStatus.downloading.value,
+        DownloadJobStatus.importing.value,
+    )
+
     for job, library, profile in queued:
         if not _library_job_can_start(settings, now, library, profile):
             continue
+
+        # If this library uses download mode and the source file is still
+        # being searched for or downloaded, hold off on encoding it.
+        if getattr(profile, 'download_enabled', False) and job.source_path:
+            has_active_download = db.query(
+                db.query(DownloadJob)
+                .filter(
+                    DownloadJob.source_file_path == job.source_path,
+                    DownloadJob.status.in_(_ACTIVE_DOWNLOAD_STATUSES),
+                )
+                .exists()
+            ).scalar()
+            if has_active_download:
+                continue
 
         job.status = 'starting'
         db.commit()

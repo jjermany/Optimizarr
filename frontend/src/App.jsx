@@ -600,6 +600,15 @@ export default function App() {
     [libraries],
   );
 
+  // Build a lookup map: source_file_path → most-recent active download job
+  const downloadJobBySource = useMemo(() => {
+    const map = {};
+    for (const dj of downloadJobs) {
+      map[dj.source_file_path] = dj;
+    }
+    return map;
+  }, [downloadJobs]);
+
   // Active queue jobs (non-terminal)
   const activeJobs = useMemo(
     () => jobs.filter((job) => !TERMINAL_STATUSES.has(job.status?.toLowerCase())),
@@ -2017,6 +2026,8 @@ export default function App() {
                           const eta = formatEta(job.eta_seconds);
                           const { title, year } = extractTitleYear(job.source_path);
                           const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
+                          const activeDj = downloadJobBySource[job.source_path];
+                          const djIsActive = activeDj && ['searching', 'downloading', 'importing'].includes(activeDj.status);
                           return (
                             <tr key={job.id} className="transition-colors duration-100 hover:bg-slate-800/30">
                               <td className="px-4 py-3 text-xs text-slate-500">{job.id}</td>
@@ -2027,6 +2038,21 @@ export default function App() {
                                 <span className={job.status === 'running' ? 'text-cyan-300' : job.status === 'failed' ? 'text-red-400' : 'text-slate-300'}>{job.status}</span>
                                 {job.status === 'failed' && job.error_message && (
                                   <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
+                                )}
+                                {djIsActive && activeDj.status === 'searching' && (
+                                  <p className="mt-0.5 flex items-center gap-1 text-xs text-sky-400">
+                                    <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />
+                                    Searching…
+                                  </p>
+                                )}
+                                {djIsActive && activeDj.status === 'downloading' && (
+                                  <p className="mt-0.5 text-xs text-violet-400">↓ Downloading {activeDj.progress_percent}%</p>
+                                )}
+                                {djIsActive && activeDj.status === 'importing' && (
+                                  <p className="mt-0.5 flex items-center gap-1 text-xs text-violet-400">
+                                    <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
+                                    Importing…
+                                  </p>
                                 )}
                               </td>
                               <td className="px-4 py-3 text-xs text-slate-400">
@@ -2220,22 +2246,46 @@ export default function App() {
                           dj.status === 'complete' ? 'text-emerald-400' :
                           dj.status === 'downloading' ? 'text-cyan-400' :
                           dj.status === 'importing' ? 'text-violet-400' :
+                          dj.status === 'searching' ? 'text-sky-400' :
                           dj.status === 'failed' || dj.status === 'timed_out' ? 'text-red-400' :
                           dj.status === 'stalled' ? 'text-amber-400' :
                           dj.status === 'fallback_queued' ? 'text-slate-400' :
                           'text-slate-300';
+                        const elapsedMs = dj.created_at ? Date.now() - new Date(dj.created_at).getTime() : 0;
+                        const elapsedLabel = (() => {
+                          const s = Math.floor(elapsedMs / 1000);
+                          if (s < 60) return `${s}s`;
+                          const m = Math.floor(s / 60);
+                          if (m < 60) return `${m}m ${s % 60}s`;
+                          return `${Math.floor(m / 60)}h ${m % 60}m`;
+                        })();
                         return (
                           <tr key={dj.id} className="transition-colors duration-100 hover:bg-slate-800/30">
                             <td className="px-4 py-3 text-xs text-slate-500">{dj.id}</td>
                             <td className="max-w-[200px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{fileName}</td>
                             <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
                             <td className="px-4 py-3 text-sm">
-                              <span className={`capitalize ${statusColor}`}>{dj.status.replace(/_/g, ' ')}</span>
+                              <div className="flex items-center gap-1.5">
+                                {dj.status === 'searching' && (
+                                  <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />
+                                )}
+                                {dj.status === 'importing' && (
+                                  <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />
+                                )}
+                                <span className={`capitalize ${statusColor}`}>{dj.status.replace(/_/g, ' ')}</span>
+                              </div>
+                              {isActive && (
+                                <p className="mt-0.5 text-xs text-slate-500">Elapsed: {elapsedLabel}</p>
+                              )}
                               {dj.error_message && (
                                 <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>
                               )}
                             </td>
-                            <td className="max-w-[180px] truncate px-4 py-3 text-xs text-slate-400" title={dj.search_query}>{dj.search_query ?? '—'}</td>
+                            <td className="max-w-[180px] truncate px-4 py-3 text-xs text-slate-400" title={dj.search_query}>
+                              {dj.status === 'searching' && !dj.search_query
+                                ? <span className="italic text-slate-500">Building query…</span>
+                                : (dj.search_query ?? '—')}
+                            </td>
                             <td className="px-4 py-3">
                               {dj.status === 'downloading' ? (
                                 <div className="flex items-center gap-2">
@@ -2243,6 +2293,12 @@ export default function App() {
                                     <div className="h-full rounded-full bg-violet-500 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
                                   </div>
                                   <span className="text-xs text-slate-400">{dj.progress_percent}%</span>
+                                </div>
+                              ) : dj.status === 'searching' ? (
+                                <div className="flex gap-1">
+                                  <span className="inline-block h-1 w-1 animate-bounce rounded-full bg-sky-500" style={{ animationDelay: '0ms' }} />
+                                  <span className="inline-block h-1 w-1 animate-bounce rounded-full bg-sky-500" style={{ animationDelay: '150ms' }} />
+                                  <span className="inline-block h-1 w-1 animate-bounce rounded-full bg-sky-500" style={{ animationDelay: '300ms' }} />
                                 </div>
                               ) : (
                                 <span className="text-xs text-slate-600">—</span>
