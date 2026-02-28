@@ -128,4 +128,41 @@ describe('buildUnifiedQueueItems', () => {
 
     expect(items).toEqual([]);
   });
+
+  it('hides waiting_encode download rows when an active encode exists for the same source path', () => {
+    const source = '/media/Shadow.of.God.2025.2160p.mkv';
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 202, status: 'running', source_path: source },
+      ],
+      downloadItems: [
+        { id: 209, status: 'waiting_encode', source_file_path: source },
+      ],
+      sortOption: 'default',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
+      'encode-202',
+    ]);
+  });
+
+  it('hides waiting_encode download rows when an active encode matches by title/year', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 202, status: 'running', source_path: '/movies/Shadow of God (2025).mkv' },
+      ],
+      downloadItems: [
+        { id: 209, status: 'waiting_encode', source_file_path: '/downloads/Shadow.of.God.2025.1080p.WEB-DL.x264.mkv' },
+      ],
+      sortOption: 'default',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
+      'encode-202',
+    ]);
+  });
 });

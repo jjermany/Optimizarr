@@ -6,6 +6,48 @@ function queueItemPath(item) {
   return item._itemType === 'download' ? item.source_file_path : item.source_path;
 }
 
+function normalizedPath(pathValue) {
+  return String(pathValue || '').trim().toLowerCase();
+}
+
+function normalizedTitle(titleValue) {
+  const baseName = String(titleValue || '').split('/').pop() || '';
+  return baseName
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function parseTitleYearFromPath(pathValue) {
+  const fileName = String(pathValue || '').split('/').pop() || '';
+  const stem = fileName.replace(/\.[^.]+$/, '');
+  const spaced = stem.replace(/[._]/g, ' ').trim();
+  const parenMatch = spaced.match(/\(((19|20)\d{2})\)/);
+  if (parenMatch) {
+    const title = spaced.slice(0, spaced.indexOf(parenMatch[0])).replace(/\s+$/, '').trim();
+    return { title: title || spaced, year: parenMatch[1] };
+  }
+  const yearMatch = spaced.match(/\b((19|20)\d{2})\b/);
+  if (yearMatch) {
+    const yearIdx = spaced.indexOf(yearMatch[0]);
+    const title = spaced.slice(0, yearIdx).replace(/[\s\-]+$/, '').trim();
+    return { title: title || spaced, year: yearMatch[1] };
+  }
+  return { title: spaced, year: null };
+}
+
+function titleYearKeyForPath(pathValue, extractTitleYear) {
+  const parsed = parseTitleYearFromPath(pathValue);
+  const fallback = extractTitleYear(pathValue);
+  const title = parsed.title || fallback.title;
+  const year = parsed.year || fallback.year;
+  const normalizedTitleValue = normalizedTitle(title);
+  const normalizedYear = String(year || '').trim();
+  if (!normalizedTitleValue) return '';
+  return `${normalizedTitleValue}::${normalizedYear}`;
+}
+
 function queueItemYear(item, extractTitleYear) {
   return extractTitleYear(queueItemPath(item)).year;
 }
@@ -67,16 +109,35 @@ export function buildUnifiedQueueItems({
     const normalized = String(sourcePath || '').trim();
     if (normalized) dedupeSources.add(normalized);
   }
+
+  const activeEncodePaths = new Set();
+  const activeEncodeTitleYearKeys = new Set();
+  for (const item of encodeItems) {
+    if (!ENCODE_ACTIVE_STATUSES.has(String(item.status || '').toLowerCase())) continue;
+    const sourcePath = String(item.source_path || '').trim();
+    if (sourcePath) activeEncodePaths.add(normalizedPath(sourcePath));
+    const titleYearKey = titleYearKeyForPath(sourcePath, extractTitleYear);
+    if (titleYearKey) activeEncodeTitleYearKeys.add(titleYearKey);
+  }
+
   const dedupedEncodeItems = encodeItems.filter((item) => {
     const sourcePath = String(item.source_path || '').trim();
     if (!sourcePath || !dedupeSources.has(sourcePath)) return true;
     // Keep truly active encode rows visible even if a download row exists.
     return ENCODE_ACTIVE_STATUSES.has(String(item.status || '').toLowerCase());
   });
+  const dedupedDownloadItems = downloadItems.filter((item) => {
+    if (!DOWNLOAD_WAITING_ENCODE_STATUSES.has(String(item.status || '').toLowerCase())) return true;
+    const sourcePath = String(item.source_file_path || '').trim();
+    if (sourcePath && activeEncodePaths.has(normalizedPath(sourcePath))) return false;
+    const titleYearKey = titleYearKeyForPath(sourcePath, extractTitleYear);
+    if (titleYearKey && activeEncodeTitleYearKeys.has(titleYearKey)) return false;
+    return true;
+  });
 
   const merged = [
     ...dedupedEncodeItems.map((item) => ({ ...item, _itemType: 'encode' })),
-    ...downloadItems.map((item) => ({ ...item, _itemType: 'download' })),
+    ...dedupedDownloadItems.map((item) => ({ ...item, _itemType: 'download' })),
   ];
 
   return merged.sort((left, right) => {
