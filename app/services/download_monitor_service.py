@@ -557,6 +557,79 @@ def _extract_hash_from_guid(guid: str) -> str:
     return match.group(1) if match else ''
 
 
+def _extract_hash_from_release(release: dict) -> str:
+    """Best-effort info-hash extraction from a Prowlarr release payload."""
+    if not isinstance(release, dict):
+        return ''
+    candidates = [
+        release.get('infoHash'),
+        release.get('downloadId'),
+        release.get('hash'),
+        release.get('magnetUrl'),
+        release.get('downloadUrl'),
+        release.get('guid'),
+        release.get('infoUrl'),
+        release.get('comments'),
+    ]
+    for raw in candidates:
+        value = str(raw or '')
+        if not value:
+            continue
+        # Magnet links often carry btih in either hex or base32.
+        btih = re.search(r'btih:([A-Za-z0-9]{32,40})', value, re.IGNORECASE)
+        if btih:
+            token = btih.group(1)
+            if re.fullmatch(r'[0-9a-fA-F]{40}', token):
+                return token.lower()
+        extracted = _extract_hash_from_guid(value)
+        if extracted:
+            return extracted.lower()
+    return ''
+
+
+def _extract_title_tokens(source_path: str) -> list[str]:
+    stem = Path(source_path or '').stem.lower()
+    stem = re.sub(r'[\._-]+', ' ', stem)
+    stem = re.sub(r'\(?(19|20)\d{2}\)?', ' ', stem)
+    raw_tokens = re.findall(r'[a-z0-9]+', stem)
+    stopwords = {'the', 'a', 'an', 'and', 'part', 'pt', 'movie'}
+    tokens = [t for t in raw_tokens if len(t) > 2 and t not in stopwords]
+    return tokens[:8]
+
+
+def _recover_qbt_hash_for_job(dj: DownloadJob, torrents: list[dict]) -> str:
+    """Recover a qBit hash for jobs where Prowlarr grab did not return one."""
+    if not torrents:
+        return ''
+    match = _find_qbt_torrent_for_release(dj, torrents)
+    if match and match.get('hash'):
+        return str(match.get('hash')).lower()
+
+    tokens = _extract_title_tokens(dj.source_file_path)
+    if not tokens:
+        return ''
+    job_ts = dj.download_started_at or dj.created_at
+    job_epoch = int(job_ts.replace(tzinfo=timezone.utc).timestamp()) if job_ts else 0
+
+    scored: list[tuple[int, int, dict]] = []
+    for torrent in torrents:
+        name = str(torrent.get('name') or '').lower()
+        if not name:
+            continue
+        overlap = sum(1 for token in tokens if token in name)
+        if overlap == 0:
+            continue
+        added_on = int(torrent.get('added_on') or 0)
+        recency_bonus = 1 if added_on >= (job_epoch - 600) else 0
+        scored.append((overlap + recency_bonus, added_on, torrent))
+
+    if not scored:
+        return ''
+    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    winner = scored[0][2]
+    return str(winner.get('hash') or '').lower()
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Processing: searching → downloading
 # ─────────────────────────────────────────────────────────────────────────────
@@ -683,6 +756,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     download_hash = (
         grab_result.get('downloadId')  # infohash returned by the download client
         or grab_result.get('hash')     # secondary hash field used by some Prowlarr versions
+        or _extract_hash_from_release(best)  # hash/magnet data from search payload
         or _extract_hash_from_guid(grab_result.get('guid', ''))  # hash embedded in GUID URL
         or ''
         # downloadClientId (integer Prowlarr client config ID) and id (record ID)
@@ -714,6 +788,19 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         dj.eta_seconds = None
         db.commit()
         db.refresh(dj)
+
+        # Immediate best-effort recovery so progress/tagging can start without
+        # waiting for a later poll cycle.
+        if client_type == 'qbittorrent' and qbt.enabled:
+            recovered = _recover_qbt_hash_for_job(dj, download_client_service.get_all_qbt_torrents(qbt))
+            if recovered:
+                dj.download_hash = recovered
+                db.commit()
+                db.refresh(dj)
+                logger.info('Download job %s: recovered qBit hash immediately after grab: %s', dj.id, recovered)
+                if download_client_service.tag_qbt_torrent(qbt, recovered):
+                    _tagged_job_ids.add(dj.id)
+
         _publish_download_job(dj)
         return
 
@@ -823,7 +910,12 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                     'Download job %s: %d recent qBit torrents and no release_name to disambiguate — waiting',
                     dj.id, len(recent),
                 )
-                return
+                recovered_hash = _recover_qbt_hash_for_job(dj, all_torrents)
+                if not recovered_hash:
+                    return
+                recovered = next((t for t in all_torrents if str(t.get('hash', '')).lower() == recovered_hash), None)
+                if recovered is None:
+                    return
 
         recovered_hash = recovered['hash'].lower()
         logger.info('Download job %s: recovered hash %s', dj.id, recovered_hash)

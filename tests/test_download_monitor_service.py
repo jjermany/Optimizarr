@@ -6,6 +6,7 @@ from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum
 from app.services.download_monitor_service import (
+    _extract_hash_from_release,
     _build_search_query,
     _check_download_progress,
     _process_searching_jobs,
@@ -35,6 +36,13 @@ def test_select_best_release_web_dl_rejects_webrip_only_titles():
     selected = _select_best_release(releases, _profile(DownloadQualityProfileEnum.web_dl), qbt_enabled=True, sab_enabled=True)
 
     assert selected is None
+
+
+def test_extract_hash_from_release_reads_magnet_btih():
+    release = {
+        'magnetUrl': 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Example',
+    }
+    assert _extract_hash_from_release(release) == '0123456789abcdef0123456789abcdef01234567'
 
 
 
