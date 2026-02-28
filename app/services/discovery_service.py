@@ -318,6 +318,32 @@ def _cancel_queued_encode_for_source(db: Session, source_path: str, library_id: 
         db.commit()
 
 
+def _blocking_encode_job_exists_for_download_route(db: Session, source_path: str, library_id: int) -> bool:
+    """Return True when an existing encode job should block download routing.
+
+    Queued/paused encode rows are treated as stale placeholders in download mode
+    and are intentionally ignored so they can be cancelled/replaced.
+    """
+    candidates = (
+        db.query(Job)
+        .filter(
+            Job.input_path == source_path,
+            Job.library_id == library_id,
+            ~Job.status.in_(['failed', 'skipped', 'cancelled']),
+        )
+        .all()
+    )
+    for job in candidates:
+        if job.status in {'queued', 'paused'}:
+            continue
+        if job.status != 'complete':
+            return True
+        output = Path(job.output_path) if job.output_path else None
+        if output and output.exists():
+            return True
+    return False
+
+
 def _release_matches_target_resolution_label(path: Path, target_resolution: int) -> bool:
     stem_lower = path.stem.lower()
     target = int(target_resolution)
@@ -434,11 +460,9 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         # If a download job is already active for this file, nothing more to do.
         if download_job_exists_for_source(db, source_path):
             return None
-        # Mirror the encoding-path guard: skip if a non-retryable encoding job
-        # (complete, queued, paused, or running) already exists for this source.
-        # Prevents redundant downloads when a file was previously encoded or is
-        # currently being encoded.
-        if job_exists_for_source(db, source_path, library_id=library.id):
+        # In download mode, queued/paused encode rows are stale placeholders that
+        # can be cancelled once download routing succeeds.
+        if _blocking_encode_job_exists_for_download_route(db, source_path, library.id):
             return None
     else:
         # Encoding-only mode: skip the (expensive) ffprobe if a job already exists.
@@ -484,13 +508,13 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
                 source_path,
             )
         # Prowlarr / client not ready – fall through to queuing an encoding job.
-        if job_exists_for_source(db, source_path, library_id=library.id):
-            return None
         if route_to_download:
             # If a stale queued/paused encode placeholder exists from a previous
             # run/version, cancel it so queue UI shows one active row per source.
             _cancel_queued_encode_for_source(db, source_path, library.id)
             broker.publish_system_event('discovery_download_routed', source_path=source_path, library_id=library.id)
+            return None
+        if job_exists_for_source(db, source_path, library_id=library.id):
             return None
 
     job = create_job(
