@@ -1,20 +1,36 @@
 import logging
 import os
 import sys
-from logging.handlers import TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-LOG_DIR = Path(os.getenv('OPTIMIZARR_LOG_DIR', '/config/logs'))
-LOG_FILE = LOG_DIR / 'optimizarr.log'
+DEFAULT_LOG_DIR = '/config/logs'
+DEFAULT_LOG_LEVEL = 'INFO'
+DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
+DEFAULT_LOG_BACKUP_COUNT = 14
 
-# Configurable via LOG_LEVEL env var (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-_LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').upper()
+
+def _parse_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def configure_logging() -> None:
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_dir = Path(os.getenv('OPTIMIZARR_LOG_DIR', DEFAULT_LOG_DIR))
+    log_file = log_dir / 'optimizarr.log'
+    log_level_name = os.getenv('LOG_LEVEL', DEFAULT_LOG_LEVEL).upper()
+    max_bytes = _parse_positive_int_env('OPTIMIZARR_LOG_MAX_BYTES', DEFAULT_LOG_MAX_BYTES)
+    backup_count = _parse_positive_int_env('OPTIMIZARR_LOG_BACKUP_COUNT', DEFAULT_LOG_BACKUP_COUNT)
 
-    level = getattr(logging, _LOG_LEVEL, logging.INFO)
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    level = getattr(logging, log_level_name, logging.INFO)
 
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
@@ -28,14 +44,14 @@ def configure_logging() -> None:
         datefmt='%Y-%m-%d %H:%M:%S',
     )
 
-    # Rotate at midnight UTC, keep 14 days; files are suffixed YYYY-MM-DD
-    file_handler = TimedRotatingFileHandler(
-        LOG_FILE,
-        when='midnight',
-        interval=1,
-        backupCount=14,
+    # Rotate when a file reaches max_bytes and keep backup_count historical files.
+    # Total disk use is bounded to roughly max_bytes * (backup_count + 1).
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
         encoding='utf-8',
-        utc=True,
+        delay=True,
     )
     file_handler.setFormatter(formatter)
     root_logger.addHandler(file_handler)

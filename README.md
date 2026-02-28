@@ -112,6 +112,8 @@ Key environment variables:
 | `OPTIMIZARR_SESSION_COOKIE_SECURE` | `auto` | Session cookie `Secure` policy (`auto`, `true`, `false`) |
 | `OPTIMIZARR_SECRETS_KEY` | _(unset)_ | Optional base64url 32-byte key for secrets encryption at rest |
 | `OPTIMIZARR_SECRETS_KEY_PATH` | `/config/optimizarr.secrets.key` | Path to persisted encryption key file when env key is unset |
+| `OPTIMIZARR_LOG_MAX_BYTES` | `5242880` | Max size per log file before rotation (5 MiB default) |
+| `OPTIMIZARR_LOG_BACKUP_COUNT` | `14` | Number of rotated log files to keep (`.1`, `.2`, etc.) |
 
 Authentication:
 - On first startup (or first startup after upgrading from legacy basic-auth builds), Optimizarr prompts you to create an admin account.
