@@ -1208,9 +1208,14 @@ def run_download_startup_recovery(db: Session) -> dict:
 
     Returns a summary dict with 'imported' and 'reset_to_searching' counts.
     """
-    downloading_jobs = (
+    in_flight_jobs = (
         db.query(DownloadJob)
-        .filter(DownloadJob.status == DownloadJobStatus.downloading.value)
+        .filter(
+            DownloadJob.status.in_([
+                DownloadJobStatus.downloading.value,
+                DownloadJobStatus.importing.value,
+            ])
+        )
         .all()
     )
 
@@ -1219,10 +1224,9 @@ def run_download_startup_recovery(db: Session) -> dict:
     # status may change, but if the underlying torrent finished in qBit while
     # we were offline we still want to import it.
     _skip_statuses = {
-        DownloadJobStatus.downloading.value,  # already covered by downloading_jobs loop
+        DownloadJobStatus.downloading.value,  # already covered by in_flight_jobs loop
         DownloadJobStatus.pending.value,       # not yet started — nothing to recover
         DownloadJobStatus.searching.value,     # Prowlarr search in progress
-        DownloadJobStatus.importing.value,     # import in progress
     }
     qbt_candidate_jobs = (
         db.query(DownloadJob)
@@ -1241,7 +1245,7 @@ def run_download_startup_recovery(db: Session) -> dict:
     # that Prowlarr grabs don't fire the instant the monitor loop starts.
     _arm_startup_grace_if_needed(db)
 
-    if not downloading_jobs and not qbt_candidate_jobs:
+    if not in_flight_jobs and not qbt_candidate_jobs:
         logger.info('Download startup recovery: no in-flight or unimported download jobs found')
         return {'imported': 0, 'reset_to_searching': 0}
 
@@ -1271,7 +1275,7 @@ def run_download_startup_recovery(db: Session) -> dict:
             if h and h not in qbt_map:
                 qbt_map[h] = torrent
 
-    for dj in downloading_jobs:
+    for dj in in_flight_jobs:
         logger.info('Download startup recovery: checking job %s (hash=%s, client=%s)',
                     dj.id, dj.download_hash, dj.client_type)
 

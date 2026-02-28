@@ -460,6 +460,59 @@ def test_startup_recovery_imports_timed_out_job_completed_in_qbit(monkeypatch):
         assert imported_paths == ['/downloads/complete/Dune.2021.1080p.WEB-DL']
 
 
+def test_startup_recovery_imports_importing_job_completed_in_qbit(monkeypatch):
+    """A job left in importing during restart must be recovered and completed."""
+    imported_paths = []
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/The Gorge (2025).mkv',
+            release_name='The.Gorge.2025.1080p.WEB-DL',
+            download_hash='feedface',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.importing.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_qbt_default_save_path', lambda _q: '/downloads/complete')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            'name': 'The.Gorge.2025.1080p.WEB-DL',
+            'hash': 'feedface',
+            'state': 'uploading',
+            'progress': 1.0,
+            'content_path': '/downloads/complete/The.Gorge.2025.1080p.WEB-DL',
+            'save_path': '/downloads/complete/The.Gorge.2025.1080p.WEB-DL',
+            'added_on': 1,
+        }])
+
+        def _fake_import(_db, _dj, save_path, *_args):
+            imported_paths.append(save_path)
+            _dj.status = DownloadJobStatus.complete.value
+            _db.commit()
+
+        monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(dj)
+
+        assert summary['imported'] == 1
+        assert summary['reset_to_searching'] == 0
+        assert dj.status == DownloadJobStatus.complete.value
+        assert imported_paths == ['/downloads/complete/The.Gorge.2025.1080p.WEB-DL']
+
+
 def test_startup_recovery_skips_import_when_completed_release_does_not_match_profile(monkeypatch):
     """Completed torrents that do not match profile filters must not be imported."""
     with SessionLocal() as db:
