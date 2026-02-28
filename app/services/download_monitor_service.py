@@ -327,6 +327,89 @@ def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
     return len(linked_jobs)
 
 
+def _recover_completed_root_for_waiting_queue_jobs(
+    db: Session,
+    qbt,
+    sab,
+    qbt_completed_root: str | None,
+) -> int:
+    """Adopt completed qBit artifacts for queued download-enabled encode jobs.
+
+    This handles restarts/data-gaps where an encode Job exists but its DownloadJob
+    row is missing or never persisted.
+    """
+    if not getattr(qbt, 'enabled', False) or not qbt_completed_root:
+        return 0
+
+    waiting_statuses = ('queued', 'paused', 'starting', 'preflight')
+    queue_rows = (
+        db.query(Job, Library, LibraryProfile)
+        .join(Library, Job.library_id == Library.id)
+        .join(LibraryProfile, LibraryProfile.library_id == Library.id)
+        .filter(
+            Job.status.in_(waiting_statuses),
+            LibraryProfile.download_enabled.is_(True),
+        )
+        .all()
+    )
+
+    adopted = 0
+    for job, library, profile in queue_rows:
+        if not job.source_path:
+            continue
+        existing = (
+            db.query(DownloadJob.id)
+            .filter(DownloadJob.source_file_path == job.source_path)
+            .first()
+        )
+        if existing is not None:
+            continue
+
+        probe = DownloadJob(
+            library_id=library.id,
+            source_file_path=job.source_path,
+            release_name=None,
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        completed_match = _find_completed_download_match(probe, qbt_completed_root)
+        if not completed_match:
+            continue
+
+        completed_name = Path(completed_match).name
+        if not _release_title_matches_profile(completed_name, profile):
+            logger.info(
+                'Queue adoption: source %r matched completed path %r but failed profile check',
+                job.source_path,
+                completed_name,
+            )
+            continue
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path=job.source_path,
+            release_name=completed_name,
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        logger.info(
+            'Queue adoption: created download job %s for queued job %s from completed path %r',
+            dj.id,
+            job.id,
+            completed_match,
+        )
+        _import_file(db, dj, completed_match, library, profile, qbt, sab)
+        adopted += 1
+
+    if adopted:
+        logger.info('Queue adoption: imported %s completed artifact(s) for waiting queue jobs', adopted)
+    return adopted
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Quality profile helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1516,15 +1599,15 @@ def run_download_startup_recovery(db: Session) -> dict:
     # that Prowlarr grabs don't fire the instant the monitor loop starts.
     _arm_startup_grace_if_needed(db)
 
-    linked_jobs = _link_completed_downloads_to_waiting_jobs(db)
-
-    if not in_flight_jobs and not qbt_candidate_jobs:
-        logger.info('Download startup recovery: no in-flight or unimported download jobs found')
-        return {'imported': 0, 'reset_to_searching': 0, 'linked_jobs': linked_jobs}
-
     qbt = download_client_service.get_or_create_qbt_settings(db)
     sab = download_client_service.get_or_create_sab_settings(db)
     qbt_completed_root = download_client_service.get_qbt_default_save_path(qbt) if qbt.enabled else None
+    linked_jobs = _link_completed_downloads_to_waiting_jobs(db)
+    adopted_queue_jobs = _recover_completed_root_for_waiting_queue_jobs(db, qbt, sab, qbt_completed_root)
+
+    if not in_flight_jobs and not qbt_candidate_jobs and adopted_queue_jobs == 0:
+        logger.info('Download startup recovery: no in-flight or unimported download jobs found')
+        return {'imported': 0, 'reset_to_searching': 0, 'linked_jobs': linked_jobs, 'adopted_queue_jobs': 0}
 
     imported = 0
     reset_count = 0
@@ -1710,10 +1793,15 @@ def run_download_startup_recovery(db: Session) -> dict:
     linked_jobs += _link_completed_downloads_to_waiting_jobs(db)
 
     logger.info(
-        'Download startup recovery complete: imported=%s, reset_to_searching=%s, linked_jobs=%s',
-        imported, reset_count, linked_jobs,
+        'Download startup recovery complete: imported=%s, reset_to_searching=%s, linked_jobs=%s, adopted_queue_jobs=%s',
+        imported, reset_count, linked_jobs, adopted_queue_jobs,
     )
-    return {'imported': imported, 'reset_to_searching': reset_count, 'linked_jobs': linked_jobs}
+    return {
+        'imported': imported,
+        'reset_to_searching': reset_count,
+        'linked_jobs': linked_jobs,
+        'adopted_queue_jobs': adopted_queue_jobs,
+    }
 
 
 def _import_completed_qbt_candidates(
@@ -1844,6 +1932,7 @@ def run_scan_recovery(db: Session) -> dict:
 
         qbt = download_client_service.get_or_create_qbt_settings(db)
         sab = download_client_service.get_or_create_sab_settings(db)
+        qbt_completed_root = download_client_service.get_qbt_default_save_path(qbt) if qbt.enabled else None
 
         qbt_map: dict[str, dict] = {}
         all_qbt_torrents: list[dict] = []
@@ -1862,12 +1951,13 @@ def run_scan_recovery(db: Session) -> dict:
             db,
             qbt,
             sab,
-            download_client_service.get_qbt_default_save_path(qbt) if qbt.enabled else None,
+            qbt_completed_root,
             qbt_map,
             all_qbt_torrents,
             candidate_jobs,
             context='scan',
         )
+        imported += _recover_completed_root_for_waiting_queue_jobs(db, qbt, sab, qbt_completed_root)
         logger.info('Scan recovery complete: imported=%s', imported)
         return {'imported': imported}
     except Exception:

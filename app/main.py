@@ -75,6 +75,7 @@ async def lifespan(_: FastAPI):
         download_imported=download_recovery_summary.get('imported', 0),
         download_reset=download_recovery_summary.get('reset_to_searching', 0),
         download_linked=download_recovery_summary.get('linked_jobs', 0),
+        download_adopted=download_recovery_summary.get('adopted_queue_jobs', 0),
     )
     notification_service.enqueue_recovery_ran(
         trigger='startup',
