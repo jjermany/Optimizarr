@@ -599,6 +599,54 @@ def test_startup_recovery_links_completed_download_to_waiting_encode_job(monkeyp
         assert queued.completed_at is not None
 
 
+def test_startup_recovery_imports_searching_job_via_source_name_match(monkeypatch):
+    imported_paths = []
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Doctor Strange (2016).mkv',
+            status=DownloadJobStatus.searching.value,
+            release_name=None,
+            download_hash=None,
+            client_type='qbittorrent',
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_qbt_default_save_path', lambda _q: '/downloads/complete')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [])
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._find_completed_download_match',
+            lambda job, _root: '/downloads/complete/Doctor Strange (2016) IMAX (1080p DSNP WEB-DL x265 HEVC 10bit EAC3 5.1 Silence)' if job.id == dj.id else None,
+        )
+
+        def _fake_import(_db, _dj, save_path, *_args):
+            imported_paths.append(save_path)
+            _dj.status = DownloadJobStatus.complete.value
+            _db.commit()
+
+        monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(dj)
+
+        assert summary['imported'] == 1
+        assert summary['reset_to_searching'] == 0
+        assert dj.status == DownloadJobStatus.complete.value
+        assert imported_paths == ['/downloads/complete/Doctor Strange (2016) IMAX (1080p DSNP WEB-DL x265 HEVC 10bit EAC3 5.1 Silence)']
+
+
 def test_startup_recovery_skips_import_when_completed_release_does_not_match_profile(monkeypatch):
     """Completed torrents that do not match profile filters must not be imported."""
     with SessionLocal() as db:
@@ -809,6 +857,40 @@ def test_process_searching_jobs_skips_work_when_main_queue_is_paused(monkeypatch
 
         assert dj.status == DownloadJobStatus.pending.value
         assert search_calls == []
+
+
+def test_process_searching_jobs_retries_existing_searching_job(monkeypatch):
+    from app.services import download_client_service, prowlarr_service
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Doctor Strange (2016).mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(prowlarr_service, 'get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+
+        calls = []
+
+        def _fake_do_search(_db, job, *_args):
+            calls.append(job.id)
+
+        monkeypatch.setattr('app.services.download_monitor_service._do_search', _fake_do_search)
+
+        _process_searching_jobs(db)
+        assert calls == [dj.id]
 
 
 # ─────────────────────────────────────────────────────────────────────────────

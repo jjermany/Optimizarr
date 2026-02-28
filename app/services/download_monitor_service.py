@@ -12,7 +12,6 @@ from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -681,6 +680,37 @@ def _process_searching_jobs(db: Session) -> None:
     if is_queue_paused():
         return
 
+    prowlarr = prowlarr_service.get_or_create_prowlarr_settings(db)
+    qbt = download_client_service.get_or_create_qbt_settings(db)
+    sab = download_client_service.get_or_create_sab_settings(db)
+
+    if not prowlarr.enabled or (not qbt.enabled and not sab.enabled):
+        return
+
+    # Always process an existing searching job first so transient errors
+    # can be retried and startup resumes in-flight search work.
+    searching_job = (
+        db.query(DownloadJob)
+        .filter(DownloadJob.status == DownloadJobStatus.searching.value)
+        .order_by(DownloadJob.created_at.asc())
+        .first()
+    )
+    if searching_job is not None:
+        _do_search(db, searching_job, prowlarr, qbt, sab)
+        return
+
+    # If a download/import is currently active, do not start a new search.
+    active_download = (
+        db.query(DownloadJob)
+        .filter(DownloadJob.status.in_([
+            DownloadJobStatus.downloading.value,
+            DownloadJobStatus.importing.value,
+        ]))
+        .count()
+    )
+    if active_download > 0:
+        return
+
     global _startup_grace_until
     if _startup_grace_until is not None:
         if datetime.utcnow() < _startup_grace_until:
@@ -692,28 +722,6 @@ def _process_searching_jobs(db: Session) -> None:
             )
             return
         _startup_grace_until = None  # expired — clear and proceed normally
-
-    prowlarr = prowlarr_service.get_or_create_prowlarr_settings(db)
-    qbt = download_client_service.get_or_create_qbt_settings(db)
-    sab = download_client_service.get_or_create_sab_settings(db)
-
-    if not prowlarr.enabled or (not qbt.enabled and not sab.enabled):
-        return
-
-    # Serial pipeline: one item at a time through the full cycle
-    # pending → searching → downloading → importing → complete.
-    # Block if any job is already searching, downloading, or importing.
-    active = (
-        db.query(DownloadJob)
-        .filter(DownloadJob.status.in_([
-            DownloadJobStatus.searching.value,
-            DownloadJobStatus.downloading.value,
-            DownloadJobStatus.importing.value,
-        ]))
-        .count()
-    )
-    if active > 0:
-        return
 
     # Pick the oldest pending job, promote it to searching, then run the search.
     dj = (
@@ -1482,24 +1490,19 @@ def run_download_startup_recovery(db: Session) -> dict:
         .all()
     )
 
-    # All other non-imported download jobs that have a hash or release name —
-    # regardless of status.  When the user clears or aborts history items the
-    # status may change, but if the underlying torrent finished in qBit while
-    # we were offline we still want to import it.
+    # All other non-imported download jobs regardless of status (except true
+    # active/pending states). This allows source-name matching against qBit
+    # torrents or completed-root folders even when no hash/release metadata
+    # was persisted on the DownloadJob row.
     _skip_statuses = {
         DownloadJobStatus.downloading.value,  # already covered by in_flight_jobs loop
         DownloadJobStatus.pending.value,       # not yet started — nothing to recover
-        DownloadJobStatus.searching.value,     # Prowlarr search in progress
     }
     qbt_candidate_jobs = (
         db.query(DownloadJob)
         .filter(
             DownloadJob.imported_file_path.is_(None),
             DownloadJob.status.notin_(list(_skip_statuses)),
-            or_(
-                DownloadJob.download_hash.isnot(None),
-                DownloadJob.release_name.isnot(None),
-            ),
         )
         .all()
     )
@@ -1733,9 +1736,6 @@ def _import_completed_qbt_candidates(
 
     imported = 0
     for dj in candidate_jobs:
-        if not dj.download_hash and not dj.release_name:
-            continue
-
         library = db.query(Library).filter(Library.id == dj.library_id).first()
         if library is None or library.profile is None:
             continue
@@ -1826,7 +1826,6 @@ def run_scan_recovery(db: Session) -> dict:
     try:
         _skip_statuses = {
             DownloadJobStatus.pending.value,
-            DownloadJobStatus.searching.value,
             DownloadJobStatus.downloading.value,
             DownloadJobStatus.importing.value,
         }
@@ -1835,10 +1834,6 @@ def run_scan_recovery(db: Session) -> dict:
             .filter(
                 DownloadJob.imported_file_path.is_(None),
                 DownloadJob.status.notin_(list(_skip_statuses)),
-                or_(
-                    DownloadJob.download_hash.isnot(None),
-                    DownloadJob.release_name.isnot(None),
-                ),
             )
             .all()
         )
