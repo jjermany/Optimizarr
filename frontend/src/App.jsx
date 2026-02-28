@@ -2667,13 +2667,25 @@ export default function App() {
                 {/* Action buttons for the active view */}
                 {jobsView === 'queue' && (
                   <div className="flex flex-wrap items-center gap-2">
-                    <TextInput
-                      type="text"
-                      placeholder="Search queue…"
-                      value={queueSearch}
-                      onChange={(e) => { setQueueSearch(e.target.value); setJobsPage(1); }}
-                      className="w-48 py-1.5 text-xs"
-                    />
+                    <div className="relative">
+                      <TextInput
+                        type="text"
+                        placeholder="Search queue…"
+                        value={queueSearch}
+                        onChange={(e) => { setQueueSearch(e.target.value); setJobsPage(1); }}
+                        className="w-48 py-1.5 pr-8 text-xs"
+                      />
+                      {queueSearch && (
+                        <button
+                          type="button"
+                          aria-label="Clear queue search"
+                          onClick={() => { setQueueSearch(''); setJobsPage(1); }}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-xs font-semibold text-slate-400 transition-colors hover:text-slate-100"
+                        >
+                          x
+                        </button>
+                      )}
+                    </div>
                     <SelectInput
                       value={queueSort}
                       onChange={(e) => { void handleQueueSortChange(e.target.value); }}
@@ -2764,7 +2776,7 @@ export default function App() {
                             )}
                             {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
                             <MobileActionMenu>
-                              {['pending', 'searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
+                              {['searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
                                 <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Remove + Reset</Btn>
                               )}
                               {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
@@ -2912,7 +2924,7 @@ export default function App() {
                                 </td>
                                 <td className="px-4 py-3">
                                   <div className="flex flex-wrap gap-1.5">
-                                    {['pending', 'searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
+                                    {['searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
                                       <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Remove + Reset</Btn>
                                     )}
                                     {['failed', 'timed_out', 'stalled'].includes(dj.status) && (

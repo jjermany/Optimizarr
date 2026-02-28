@@ -71,6 +71,8 @@ def _stop_download_queue(reason: str) -> None:
 _POLL_DOWNLOADING_SECONDS = 3   # fast polling while files are transferring
 _POLL_SEARCHING_SECONDS = 10    # moderate polling while waiting for Prowlarr
 _POLL_IDLE_SECONDS = 30         # slow polling when nothing is active
+_IDLE_RECOVERY_INTERVAL_SECONDS = 30
+_last_idle_recovery_monotonic = 0.0
 
 # Startup grace period: holds off Prowlarr grabs for this many seconds after a
 # restart so the user has time to review / remove queued jobs before they fire.
@@ -111,6 +113,7 @@ def stop_download_monitor() -> None:
 
 
 def _monitor_loop() -> None:
+    global _last_idle_recovery_monotonic
     while not _stop_event.is_set():
         db = SessionLocal()
         sleep_seconds = _POLL_IDLE_SECONDS
@@ -128,6 +131,16 @@ def _monitor_loop() -> None:
 
             _process_searching_jobs(db)
             _process_downloading_jobs(db)
+
+            # Safety net: when the pipeline is otherwise idle, periodically
+            # reconcile non-active download jobs so completed qBit items that
+            # finished after a transient stall/not-found state are imported.
+            if not has_downloading and not has_searching and not _download_queue_stopped:
+                now_monotonic = time.monotonic()
+                if now_monotonic - _last_idle_recovery_monotonic >= _IDLE_RECOVERY_INTERVAL_SECONDS:
+                    run_scan_recovery(db)
+                    _link_completed_downloads_to_waiting_jobs(db)
+                    _last_idle_recovery_monotonic = now_monotonic
 
             if has_downloading:
                 sleep_seconds = _POLL_DOWNLOADING_SECONDS
