@@ -448,7 +448,8 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
     source_resolution = probe_video_height(source_path)
     source_is_hdr = is_hdr_video(source_path)
 
-    if profile.hdr_only:
+    hdr_required = bool(getattr(profile, 'hdr_only', False) or getattr(profile, 'tone_map_hdr', False))
+    if hdr_required:
         if not source_is_hdr:
             return None
         minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
