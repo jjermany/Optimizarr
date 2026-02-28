@@ -1,8 +1,11 @@
 from fastapi.testclient import TestClient
 
 from app.api import routes
+from app.core.database import SessionLocal
 from app.main import app
+from app.models.library import Library, LibraryProfile
 from app.services import discovery_service
+from app.services import download_monitor_service
 from app.services.realtime_service import broker
 
 
@@ -222,3 +225,36 @@ def test_scan_library_can_requeue_source_after_abort_all(monkeypatch, tmp_path):
         assert len(second_jobs) == 1
         assert second_jobs[0]['id'] != first_jobs[0]['id']
         assert second_jobs[0]['source_path'] == str(source_file)
+
+
+def test_queue_file_if_eligible_download_mode_queues_before_probe(monkeypatch, tmp_path):
+    media_file = tmp_path / 'Doctor Strange (2016).mkv'
+    media_file.write_text('content')
+
+    with SessionLocal() as db:
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(tmp_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        created = []
+        monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
+        monkeypatch.setattr(download_monitor_service, 'download_job_exists_for_source', lambda _db, _path: False)
+        monkeypatch.setattr(download_monitor_service, 'create_download_job', lambda _db, source_path, *_args: created.append(source_path))
+
+        # Would have skipped previously; now download-mode should queue before probe.
+        monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _path: None)
+        monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
+
+        result = discovery_service._queue_file_if_eligible(db, media_file, library, profile)
+        assert result is None
+        assert created == [str(media_file)]

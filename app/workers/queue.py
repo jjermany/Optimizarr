@@ -550,11 +550,19 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.importing.value,
     )
-    active_download_sources = {
-        source_path
-        for (source_path,) in db.query(DownloadJob.source_file_path)
+    active_download_rows = (
+        db.query(DownloadJob.id, DownloadJob.source_file_path, DownloadJob.status)
         .filter(DownloadJob.status.in_(_ACTIVE_DOWNLOAD_STATUSES))
         .all()
+    )
+    active_download_sources = {
+        source_path
+        for _, source_path, _ in active_download_rows
+        if source_path
+    }
+    active_download_by_source = {
+        source_path: (download_id, status)
+        for download_id, source_path, status in active_download_rows
         if source_path
     }
 
@@ -587,6 +595,14 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         # being searched for or downloaded, hold off on encoding it.
         if getattr(profile, 'download_enabled', False) and job.source_path:
             if job.source_path in active_download_sources:
+                dj_id, dj_status = active_download_by_source.get(job.source_path, (None, None))
+                logger.info(
+                    'Queue hold: encode job %s for %r is waiting on download job %s (%s)',
+                    job.id,
+                    job.source_path,
+                    dj_id,
+                    dj_status,
+                )
                 continue
 
         job.status = 'starting'

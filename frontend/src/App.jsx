@@ -1872,7 +1872,7 @@ export default function App() {
       const updated = await fetchDownloadJobs();
       setDownloadJobs((updated ?? []).map(normalizeDownloadJob));
       await refreshAll();
-      pushToast('Download removed from client and reset to pending.', 'success');
+      pushToast('Download removed from client, files deleted, and reset to pending.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not remove/reset download job.', 'error');
     }

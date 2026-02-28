@@ -583,8 +583,12 @@ def test_cancel_download_job_removes_active_qbit_torrent_when_enabled(monkeypatc
     from app.models.library import Library, LibraryProfile
     from app.models.qbittorrent_settings import QBittorrentSettings
 
-    removed_hashes = []
-    monkeypatch.setattr(routes.download_client_service, 'remove_qbt_torrent', lambda _s, torrent_hash, **_kwargs: removed_hashes.append(torrent_hash) or True)
+    removed_calls = []
+    monkeypatch.setattr(
+        routes.download_client_service,
+        'remove_qbt_torrent',
+        lambda _s, torrent_hash, **kwargs: removed_calls.append({'hash': torrent_hash, **kwargs}) or True,
+    )
 
     with TestClient(app) as client:
         with SessionLocal() as db:
@@ -622,7 +626,7 @@ def test_cancel_download_job_removes_active_qbit_torrent_when_enabled(monkeypatc
         response = client.post(f'/download-jobs/{job_id}/cancel')
 
     assert response.status_code == 200
-    assert removed_hashes == ['abc123']
+    assert removed_calls == [{'hash': 'abc123', 'delete_files': True}]
 
 
 def test_scan_uses_enabled_libraries(monkeypatch, tmp_path):
