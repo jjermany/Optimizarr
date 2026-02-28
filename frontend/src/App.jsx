@@ -184,13 +184,24 @@ export function mergeJobsWithUpdate(previousJobs, nextJob) {
   };
 }
 
-function libraryQueueCount(library, jobs) {
+function libraryEncodeQueueCount(library, jobs) {
   return jobs.filter((job) => {
     if (!QUEUED_STATUSES.has(job.status?.toLowerCase())) return false;
     // Prefer library_id match (accurate); fall back to path prefix for legacy data
     if (job.library_id != null) return job.library_id === library.id;
     return job.source_path === library.path || job.source_path?.startsWith(`${library.path}/`);
   }).length;
+}
+
+function libraryDownloadQueueCount(library, downloadJobs) {
+  return downloadJobs.filter((job) => {
+    if (!ACTIVE_DL_STATUSES.has(job.status)) return false;
+    return job.library_id === library.id;
+  }).length;
+}
+
+function libraryQueueCount(library, jobs, downloadJobs) {
+  return libraryEncodeQueueCount(library, jobs) + libraryDownloadQueueCount(library, downloadJobs);
 }
 
 function jobSortRank(job) {
@@ -841,6 +852,8 @@ export default function App() {
       let state = 'Running';
       if (!library.enabled) {
         state = 'Paused (library disabled)';
+      } else if (queuePaused) {
+        state = 'Paused (queue paused)';
       } else if (
         profile
         && profile.schedule_enabled !== false
@@ -848,9 +861,9 @@ export default function App() {
       ) {
         state = 'Paused by schedule';
       }
-      return { library, state, queue: libraryQueueCount(library, jobs) };
+      return { library, state, queue: libraryQueueCount(library, jobs, downloadJobs) };
     });
-  }, [jobs, libraries, libraryProfiles, nowHour]);
+  }, [jobs, downloadJobs, libraries, libraryProfiles, nowHour, queuePaused]);
 
   async function refreshAll() {
     try {
@@ -1712,7 +1725,7 @@ export default function App() {
                         <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setSelectedLibraryId(library.id)}>
                           <p className="font-medium text-cyan-200 truncate">{library.name}</p>
                           <p className="mt-0.5 text-xs text-slate-500 truncate">{library.path}</p>
-                          <p className="mt-0.5 text-xs text-slate-400">Queue: {libraryQueueCount(library, jobs)}</p>
+                          <p className="mt-0.5 text-xs text-slate-400">Queue: {libraryQueueCount(library, jobs, downloadJobs)}</p>
                         </button>
                         <div className="flex shrink-0 items-center gap-2">
                           <Toggle
