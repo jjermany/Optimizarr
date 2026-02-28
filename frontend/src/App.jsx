@@ -2504,7 +2504,8 @@ export default function App() {
                           <tbody className="divide-y divide-slate-800/60">
                             {downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).map((dj) => {
                               const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
-                              const fileName = dj.source_file_path ? dj.source_file_path.split('/').pop() : '—';
+                              const { title, year } = extractTitleYear(dj.source_file_path);
+                              const displayName = title ? `${title}${year ? ` (${year})` : ''}` : '—';
                               const statusColor =
                                 dj.status === 'complete' ? 'text-emerald-400' :
                                 dj.status === 'failed' || dj.status === 'timed_out' ? 'text-red-400' :
@@ -2515,7 +2516,7 @@ export default function App() {
                               return (
                                 <tr key={dj.id} className="transition-colors duration-100 hover:bg-slate-800/30">
                                   <td className="px-4 py-3 text-xs text-slate-500">{dj.id}</td>
-                                  <td className="max-w-[200px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{fileName}</td>
+                                  <td className="max-w-[200px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{displayName}</td>
                                   <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
                                   <td className="px-4 py-3 text-sm">
                                     <span className={`capitalize ${statusColor}`}>{dj.status.replace(/_/g, ' ')}</span>
