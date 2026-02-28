@@ -548,6 +548,8 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         DownloadJobStatus.pending.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.downloading.value,
+        DownloadJobStatus.moving.value,
+        DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
     )
     active_download_rows = (
@@ -599,6 +601,31 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
                 create_download_job,
                 download_job_exists_for_source,
             )
+            completed_import_row = (
+                db.query(DownloadJob.id)
+                .filter(
+                    DownloadJob.source_file_path == job.source_path,
+                    DownloadJob.library_id == job.library_id,
+                    DownloadJob.status == DownloadJobStatus.complete.value,
+                    DownloadJob.imported_file_path.isnot(None),
+                )
+                .order_by(DownloadJob.id.desc())
+                .first()
+            )
+            if completed_import_row is not None:
+                completed_download_id = int(completed_import_row[0])
+                logger.info(
+                    'Queue cleanup: removing stale encode placeholder job %s for source %r '
+                    'because download job %s already completed import',
+                    job.id,
+                    job.source_path,
+                    completed_download_id,
+                )
+                placeholder_job_id = job.id
+                db.delete(job)
+                db.commit()
+                broker.publish_system_event('job_removed', job_id=placeholder_job_id)
+                continue
             if job.source_path in active_download_sources:
                 dj_id, dj_status = active_download_by_source.get(job.source_path, (None, None))
                 logger.info(
@@ -655,6 +682,13 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
                     continue
                 else:
                     continue
+            elif download_job_exists_for_source(db, job.source_path):
+                logger.info(
+                    'Queue hold: encode job %s for %r skipped because a download job already exists',
+                    job.id,
+                    job.source_path,
+                )
+                continue
 
         job.status = 'starting'
         db.commit()

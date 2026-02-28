@@ -5,7 +5,7 @@ from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
 from app.services import optimization_service
-from app.services.job_service import cancel_job, create_job, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
+from app.services.job_service import abort_job, cancel_job, create_job, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
 
 
 def test_create_job_stores_profile_snapshot():
@@ -156,6 +156,68 @@ def test_cancel_job_stops_running_ffmpeg_and_requeues(monkeypatch):
         assert updated.status == 'queued'
         assert updated.cancel_requested is False
         assert stopped == [job.id]
+
+
+def test_abort_job_marks_running_job_aborting_and_requests_cancel(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.commit()
+
+        settings = Settings(workspace_root=str(tmp_path / 'workspaces'))
+        db.add(settings)
+        db.commit()
+
+        job = Job(input_path='/media/abort-running.mkv', status='running', cancel_requested=False)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        stopped: list[int] = []
+        deleted_workspaces: list[int] = []
+        monkeypatch.setattr(optimization_service, 'stop_active_ffmpeg', lambda job_id: stopped.append(job_id))
+        monkeypatch.setattr(optimization_service, 'delete_workspace', lambda _settings, job_id: deleted_workspaces.append(job_id))
+
+        updated = abort_job(db, job.id)
+
+        assert updated is not None
+        assert updated.status == 'aborting'
+        assert updated.cancel_requested is True
+        assert updated.completed_at is None
+        assert stopped == [job.id]
+        assert deleted_workspaces == []
+
+
+def test_abort_job_cancels_queued_job_immediately(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.commit()
+
+        settings = Settings(workspace_root=str(tmp_path / 'workspaces'))
+        db.add(settings)
+        db.commit()
+
+        job = Job(input_path='/media/abort-queued.mkv', status='queued', cancel_requested=False, progress_percent=37)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        stopped: list[int] = []
+        deleted_workspaces: list[int] = []
+        monkeypatch.setattr(optimization_service, 'stop_active_ffmpeg', lambda job_id: stopped.append(job_id))
+        monkeypatch.setattr(optimization_service, 'delete_workspace', lambda _settings, job_id: deleted_workspaces.append(job_id))
+
+        updated = abort_job(db, job.id)
+
+        assert updated is not None
+        assert updated.status == 'cancelled'
+        assert updated.error_message == 'Aborted by user'
+        assert updated.cancel_requested is False
+        assert updated.completed_at is not None
+        assert updated.progress_percent == 0
+        assert stopped == [job.id]
+        assert deleted_workspaces == [job.id]
 
 
 def test_resume_job_requeues_paused_job_without_clearing_resume_state():

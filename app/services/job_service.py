@@ -272,17 +272,40 @@ def abort_job(db: Session, job_id: int) -> Job | None:
     if not job:
         return None
 
+    if job.status in TERMINAL_STATUSES:
+        return job
+
     settings = _get_settings(db)
     optimization_service.stop_active_ffmpeg(job_id)
-    optimization_service.delete_workspace(settings, job_id)
-    job.status = 'failed'
-    job.progress_percent = 0
-    job.fps = None
-    job.eta_seconds = None
-    job.output_path = None
-    job.error_message = 'Aborted by user'
-    job.cancel_requested = False
-    job.completed_at = datetime.now(UTC)
+    # Keep the workspace while a running worker is winding down so an in-flight
+    # ffmpeg process does not continue writing into a deleted directory.
+    # The worker cooperatively observes cancel_requested and finalizes state.
+    job.cancel_requested = True
+    if job.status == 'queued':
+        optimization_service.delete_workspace(settings, job_id)
+        job.status = 'cancelled'
+        job.progress_percent = 0
+        job.fps = None
+        job.eta_seconds = None
+        job.output_path = None
+        job.error_message = 'Aborted by user'
+        job.cancel_requested = False
+        job.completed_at = datetime.now(UTC)
+    elif job.status in {'starting', 'preflight', 'running'}:
+        job.status = 'aborting'
+        job.error_message = 'Aborting by user request'
+        job.eta_seconds = None
+        job.completed_at = None
+    else:
+        optimization_service.delete_workspace(settings, job_id)
+        job.status = 'cancelled'
+        job.error_message = 'Aborted by user'
+        job.progress_percent = 0
+        job.fps = None
+        job.eta_seconds = None
+        job.output_path = None
+        job.completed_at = datetime.now(UTC)
+        job.cancel_requested = False
     db.commit()
     db.refresh(job)
     return job

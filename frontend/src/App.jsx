@@ -139,10 +139,6 @@ function progressFromJob(job) {
   return 0;
 }
 
-function isAbortedJob(job) {
-  return job.status?.toLowerCase() === 'failed' && job.error_message === 'Aborted by user';
-}
-
 function formatHour(hour) {
   return `${String(hour).padStart(2, '0')}:00`;
 }
@@ -152,7 +148,7 @@ function parseHour(timeValue) {
   return Number(hour);
 }
 
-const ACTIVE_STATUSES = new Set(['starting', 'running', 'preflight']);
+const ACTIVE_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting']);
 const PAUSED_STATUSES = new Set(['paused', 'paused_schedule']);
 const QUEUED_STATUSES = new Set(['pending', 'queued', 'created']);
 const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']);
@@ -166,13 +162,6 @@ function isActiveEncodeStatus(status) {
 }
 
 export function mergeJobsWithUpdate(previousJobs, nextJob) {
-  if (isAbortedJob(nextJob)) {
-    return {
-      jobs: previousJobs.filter((job) => job.id !== nextJob.id),
-      resetToFirstPage: false,
-    };
-  }
-
   const existingIndex = previousJobs.findIndex((job) => job.id === nextJob.id);
   if (existingIndex === -1) {
     return {
@@ -1164,7 +1153,7 @@ export default function App() {
         fetchDownloadJobs().catch(() => []),
       ]);
       setMetrics(nextMetrics);
-      setJobs(nextJobs.filter((job) => !isAbortedJob(job)));
+      setJobs(nextJobs);
       setSettings(nextSettings);
       setAccountSettings(nextAccountSettings);
       setNotificationSettings(nextNotificationSettings);

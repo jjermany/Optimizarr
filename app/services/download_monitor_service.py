@@ -20,7 +20,7 @@ from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum, Library, LibraryProfile
 from app.services import download_client_service, prowlarr_service
 from app.services.job_service import create_job
-from app.services.optimization_service import is_hdr_video, probe_video_height
+from app.services.optimization_service import is_hdr_video, probe_video_height, stop_active_ffmpeg
 from app.services.realtime_service import broker
 
 logger = logging.getLogger(__name__)
@@ -290,7 +290,8 @@ def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
     placeholder should disappear rather than creating an "encoded complete"
     history record.
     """
-    terminal_waiting_statuses = ('queued', 'paused', 'starting', 'preflight')
+    terminal_waiting_statuses = ('queued', 'paused')
+    active_encode_statuses = ('starting', 'preflight', 'running', 'aborting')
     completed_downloads = (
         db.query(DownloadJob)
         .filter(
@@ -303,6 +304,7 @@ def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
         return 0
 
     removed_job_ids: list[int] = []
+    cancel_requested_job_ids: list[int] = []
     for dj in completed_downloads:
         waiting_jobs = (
             db.query(Job)
@@ -316,18 +318,38 @@ def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
         for job in waiting_jobs:
             removed_job_ids.append(job.id)
             db.delete(job)
+        active_jobs = (
+            db.query(Job)
+            .filter(
+                Job.input_path == dj.source_file_path,
+                Job.library_id == dj.library_id,
+                Job.status.in_(active_encode_statuses),
+            )
+            .all()
+        )
+        for job in active_jobs:
+            stop_active_ffmpeg(job.id)
+            job.cancel_requested = True
+            job.error_message = 'Cancelled: completed download imported'
+            if job.status in {'starting', 'preflight', 'running'}:
+                job.status = 'aborting'
+                job.completed_at = None
+            cancel_requested_job_ids.append(job.id)
 
-    if not removed_job_ids:
+    if not removed_job_ids and not cancel_requested_job_ids:
         return 0
 
     db.commit()
     for job_id in removed_job_ids:
         broker.publish_system_event('job_removed', job_id=job_id)
+    for job_id in cancel_requested_job_ids:
+        broker.publish_system_event('job_aborted', job_id=job_id)
     logger.info(
-        'Removed %s waiting encode placeholder job(s) after completed download imports',
+        'Resolved completed-download placeholder conflicts: removed=%s cancel_requested=%s',
         len(removed_job_ids),
+        len(cancel_requested_job_ids),
     )
-    return len(removed_job_ids)
+    return len(removed_job_ids) + len(cancel_requested_job_ids)
 
 
 def _recover_completed_root_for_waiting_queue_jobs(

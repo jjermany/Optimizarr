@@ -515,6 +515,100 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_pending_downlo
         assert job.status == 'queued'
 
 
+def test_claim_next_queued_job_skips_download_enabled_source_with_moving_download():
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        db.add(profile)
+        db.commit()
+
+        source_path = '/media/movies/title-moving.mkv'
+        job = Job(input_path=source_path, status='queued', library_id=library.id)
+        db.add(job)
+        db.commit()
+
+        moving_download = DownloadJob(
+            library_id=library.id,
+            source_file_path=source_path,
+            status=DownloadJobStatus.moving.value,
+        )
+        db.add(moving_download)
+        db.commit()
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        db.refresh(job)
+
+        assert selected_id is None
+        assert job.status == 'queued'
+
+
+def test_claim_next_queued_job_removes_placeholder_when_download_already_imported(monkeypatch):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        db.add(profile)
+        db.commit()
+
+        source_path = '/media/movies/title-imported.mkv'
+        placeholder = Job(input_path=source_path, status='queued', library_id=library.id)
+        db.add(placeholder)
+        db.commit()
+        placeholder_id = placeholder.id
+
+        completed_download = DownloadJob(
+            library_id=library.id,
+            source_file_path=source_path,
+            status=DownloadJobStatus.complete.value,
+            imported_file_path='/media/movies/title-imported-1080p.mkv',
+        )
+        db.add(completed_download)
+        db.commit()
+
+        events: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            queue.broker,
+            'publish_system_event',
+            lambda event, **payload: events.append((event, payload)),
+        )
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        remaining_placeholder = db.query(Job).filter(Job.id == placeholder_id).first()
+
+        assert selected_id is None
+        assert remaining_placeholder is None
+        assert events == [('job_removed', {'job_id': placeholder_id})]
+
+
 def test_claim_next_queued_job_routes_to_download_and_removes_placeholder(monkeypatch):
     queue.resume_queue()
 
