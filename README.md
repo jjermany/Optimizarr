@@ -182,6 +182,10 @@ Secrets at rest:
 - `POST /api/auth/bootstrap`
 - `POST /api/auth/login`
 - `POST /api/auth/logout`
+- `GET /api/auth/account`
+- `POST /api/auth/account`
+- `POST /api/auth/account/2fa/enable`
+- `POST /api/auth/account/2fa/disable`
 
 ---
 

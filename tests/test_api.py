@@ -268,6 +268,68 @@ def test_auth_bootstrap_and_login_flow():
 def test_auth_login_requires_totp_when_enabled():
     _clear_auth_state()
 
+
+def test_auth_account_update_and_enable_two_factor():
+    _clear_auth_state()
+
+    with TestClient(app) as client:
+        bootstrap = client.post(
+            '/auth/bootstrap',
+            json={
+                'username': 'admin',
+                'password': 'VeryStrongPassword123',
+                'enable_two_factor': False,
+            },
+        )
+        assert bootstrap.status_code == 201
+
+        csrf = client.cookies.get('optimizarr_csrf', '')
+        account_before = client.get('/auth/account')
+        assert account_before.status_code == 200
+        assert account_before.json()['username'] == 'admin'
+        assert account_before.json()['two_factor_enabled'] is False
+
+        update = client.post(
+            '/auth/account',
+            headers={'X-CSRF-Token': csrf},
+            json={
+                'current_password': 'VeryStrongPassword123',
+                'username': 'media-admin',
+                'new_password': 'AnotherStrongPassword123',
+            },
+        )
+        assert update.status_code == 200
+        assert update.json()['username'] == 'media-admin'
+
+        secret = client.post('/auth/totp/secret', json={'username': 'media-admin'})
+        assert secret.status_code == 200
+        secret_value = secret.json()['secret']
+
+        enable_2fa = client.post(
+            '/auth/account/2fa/enable',
+            headers={'X-CSRF-Token': csrf},
+            json={
+                'current_password': 'AnotherStrongPassword123',
+                'totp_secret': secret_value,
+                'totp_code': routes.auth_service.current_totp_code(secret_value, at_time=int(time.time())),
+            },
+        )
+        assert enable_2fa.status_code == 200
+        assert enable_2fa.json()['two_factor_enabled'] is True
+
+        disable_2fa = client.post(
+            '/auth/account/2fa/disable',
+            headers={'X-CSRF-Token': csrf},
+            json={
+                'current_password': 'AnotherStrongPassword123',
+                'totp_code': routes.auth_service.current_totp_code(secret_value, at_time=int(time.time())),
+            },
+        )
+        assert disable_2fa.status_code == 200
+        assert disable_2fa.json()['two_factor_enabled'] is False
+
+    _clear_auth_state()
+
     with TestClient(app) as client:
         secret_response = client.post('/auth/totp/secret', json={'username': 'admin'})
         assert secret_response.status_code == 200

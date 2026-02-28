@@ -19,6 +19,7 @@ import {
   fetchDownloadJobs,
   fetchLibraries,
   fetchEncoders,
+  fetchAccountSettings,
   fetchAuthStatus,
   fetchLibraryProfile,
   fetchJobs,
@@ -55,9 +56,12 @@ import {
   updateLibrary,
   updateLibraryProfile,
   updateNotificationSettings,
+  updateAccountSettings,
   updatePlexSettings,
   updateProwlarrSettings,
   updateSettings,
+  enableAccountTwoFactor,
+  disableAccountTwoFactor,
 } from './api';
 import StatCard from './components/StatCard';
 import { buildUnifiedQueueItems } from './queueSorting';
@@ -718,6 +722,26 @@ export default function App() {
   const [libraries, setLibraries] = useState([]);
   const [libraryProfiles, setLibraryProfiles] = useState({});
   const [settings, setSettings] = useState();
+  const [accountSettings, setAccountSettings] = useState();
+  const [accountForm, setAccountForm] = useState({
+    username: '',
+    currentPassword: '',
+    newPassword: '',
+    confirmNewPassword: '',
+  });
+  const [savingAccountSettings, setSavingAccountSettings] = useState(false);
+  const [enablingTwoFactor, setEnablingTwoFactor] = useState(false);
+  const [disablingTwoFactor, setDisablingTwoFactor] = useState(false);
+  const [generatingAccountTotpSecret, setGeneratingAccountTotpSecret] = useState(false);
+  const [accountTwoFactorDraft, setAccountTwoFactorDraft] = useState({
+    totpSecret: '',
+    totpCode: '',
+    currentPassword: '',
+  });
+  const [accountDisableTwoFactorDraft, setAccountDisableTwoFactorDraft] = useState({
+    currentPassword: '',
+    totpCode: '',
+  });
   const [notificationSettings, setNotificationSettings] = useState();
   const [plexSettings, setPlexSettings] = useState();
   const [plexLibraries, setPlexLibraries] = useState([]);
@@ -1071,10 +1095,11 @@ export default function App() {
 
   async function refreshAll() {
     try {
-      const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus, nextProwlarrSettings, nextQbtSettings, nextSabSettings, nextDownloadJobs] = await Promise.all([
+      const [nextMetrics, nextJobs, nextSettings, nextAccountSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus, nextProwlarrSettings, nextQbtSettings, nextSabSettings, nextDownloadJobs] = await Promise.all([
         fetchMetrics(),
         fetchJobs(),
         fetchSettings(),
+        fetchAccountSettings(),
         fetchNotificationSettings(),
         fetchPlexSettings(),
         fetchEncoders(),
@@ -1087,6 +1112,7 @@ export default function App() {
       setMetrics(nextMetrics);
       setJobs(nextJobs.filter((job) => !isAbortedJob(job)));
       setSettings(nextSettings);
+      setAccountSettings(nextAccountSettings);
       setNotificationSettings(nextNotificationSettings);
       setPlexSettings(nextPlexSettings);
       if (nextProwlarrSettings) setProwlarrSettings(nextProwlarrSettings);
@@ -1096,6 +1122,11 @@ export default function App() {
       const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
       setAvailableEncodersByCodec(encoderMap);
       setQueuePaused(nextQueueStatus?.status === 'paused');
+      setAuthStatus((prev) => ({
+        ...prev,
+        username: nextAccountSettings?.username ?? prev.username,
+        two_factor_enabled: !!nextAccountSettings?.two_factor_enabled,
+      }));
       if (nextPlexSettings?.enabled && nextPlexSettings?.token) {
         fetchPlexLibraries().then((sections) => setPlexLibraries(sections ?? [])).catch(() => {});
       }
@@ -1221,6 +1252,14 @@ export default function App() {
     });
     setProfileErrors({});
   }, [selectedLibraryId, selectedLibraryProfile]);
+
+  useEffect(() => {
+    if (!accountSettings) return;
+    setAccountForm((prev) => ({
+      ...prev,
+      username: accountSettings.username ?? '',
+    }));
+  }, [accountSettings?.username]);
 
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
@@ -1553,6 +1592,121 @@ export default function App() {
       pushToast(saveError.message || 'Failed to save settings.', 'error');
     } finally {
       setSavingSettings(false);
+    }
+  }
+
+  async function saveAccountSettings() {
+    if (!accountSettings) return;
+    const username = accountForm.username.trim();
+    const currentPassword = accountForm.currentPassword;
+    const newPassword = accountForm.newPassword;
+    const confirm = accountForm.confirmNewPassword;
+
+    if (!currentPassword) {
+      pushToast('Current password is required.', 'error');
+      return;
+    }
+    if (!username) {
+      pushToast('Username is required.', 'error');
+      return;
+    }
+    if (newPassword && newPassword !== confirm) {
+      pushToast('New password confirmation does not match.', 'error');
+      return;
+    }
+    if (newPassword && newPassword.length < 12) {
+      pushToast('New password must be at least 12 characters.', 'error');
+      return;
+    }
+
+    const payload = { current_password: currentPassword };
+    if (username !== accountSettings.username) payload.username = username;
+    if (newPassword) payload.new_password = newPassword;
+
+    setSavingAccountSettings(true);
+    try {
+      const updated = await updateAccountSettings(payload);
+      setAccountSettings(updated);
+      setAuthStatus((prev) => ({ ...prev, username: updated.username, two_factor_enabled: updated.two_factor_enabled }));
+      setAccountForm((prev) => ({ ...prev, currentPassword: '', newPassword: '', confirmNewPassword: '' }));
+      pushToast('Account settings updated.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Failed to update account settings.', 'error');
+    } finally {
+      setSavingAccountSettings(false);
+    }
+  }
+
+  async function generateAccountTotpSecret() {
+    if (!accountSettings?.username) return;
+    setGeneratingAccountTotpSecret(true);
+    try {
+      const payload = await createTotpSecret(accountSettings.username);
+      setAccountTwoFactorDraft((prev) => ({ ...prev, totpSecret: payload.secret }));
+      pushToast('Generated 2FA secret.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Failed to generate 2FA secret.', 'error');
+    } finally {
+      setGeneratingAccountTotpSecret(false);
+    }
+  }
+
+  async function enableTwoFactorForAccount() {
+    if (!accountTwoFactorDraft.currentPassword) {
+      pushToast('Current password is required to enable 2FA.', 'error');
+      return;
+    }
+    if (!accountTwoFactorDraft.totpSecret) {
+      pushToast('Generate a TOTP secret first.', 'error');
+      return;
+    }
+    if (!accountTwoFactorDraft.totpCode) {
+      pushToast('Enter a valid authenticator code.', 'error');
+      return;
+    }
+
+    setEnablingTwoFactor(true);
+    try {
+      const updated = await enableAccountTwoFactor({
+        current_password: accountTwoFactorDraft.currentPassword,
+        totp_secret: accountTwoFactorDraft.totpSecret.trim(),
+        totp_code: accountTwoFactorDraft.totpCode.trim(),
+      });
+      setAccountSettings(updated);
+      setAuthStatus((prev) => ({ ...prev, two_factor_enabled: true }));
+      setAccountTwoFactorDraft({ totpSecret: '', totpCode: '', currentPassword: '' });
+      pushToast('Dual-factor authentication enabled.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Failed to enable 2FA.', 'error');
+    } finally {
+      setEnablingTwoFactor(false);
+    }
+  }
+
+  async function disableTwoFactorForAccount() {
+    if (!accountDisableTwoFactorDraft.currentPassword) {
+      pushToast('Current password is required to disable 2FA.', 'error');
+      return;
+    }
+    if (!accountDisableTwoFactorDraft.totpCode) {
+      pushToast('Enter your authenticator code to disable 2FA.', 'error');
+      return;
+    }
+
+    setDisablingTwoFactor(true);
+    try {
+      const updated = await disableAccountTwoFactor({
+        current_password: accountDisableTwoFactorDraft.currentPassword,
+        totp_code: accountDisableTwoFactorDraft.totpCode.trim(),
+      });
+      setAccountSettings(updated);
+      setAuthStatus((prev) => ({ ...prev, two_factor_enabled: false }));
+      setAccountDisableTwoFactorDraft({ currentPassword: '', totpCode: '' });
+      pushToast('Dual-factor authentication disabled.', 'success');
+    } catch (err) {
+      pushToast(err.message || 'Failed to disable 2FA.', 'error');
+    } finally {
+      setDisablingTwoFactor(false);
     }
   }
 
@@ -3118,8 +3272,127 @@ export default function App() {
         )}
 
         {/* ── Settings ───────────────────────────────────────────────────────── */}
-        {activePage === 'settings' && settings && notificationSettings && plexSettings && (
+        {activePage === 'settings' && settings && accountSettings && notificationSettings && plexSettings && (
           <section className="animate-fade-in space-y-5">
+            <SectionCard>
+              <SectionTitle>Account Settings</SectionTitle>
+              <div className="grid gap-4 md:grid-cols-2">
+                <FormField label="Username">
+                  <TextInput
+                    type="text"
+                    value={accountForm.username}
+                    onChange={(e) => setAccountForm((prev) => ({ ...prev, username: e.target.value }))}
+                    autoComplete="username"
+                  />
+                </FormField>
+                <FormField label="Current Password" hint="Required to change username/password and enable 2FA.">
+                  <TextInput
+                    type="password"
+                    value={accountForm.currentPassword}
+                    onChange={(e) => setAccountForm((prev) => ({ ...prev, currentPassword: e.target.value }))}
+                    autoComplete="current-password"
+                  />
+                </FormField>
+                <FormField label="New Password" hint="Optional. Minimum 12 characters." span2>
+                  <TextInput
+                    type="password"
+                    value={accountForm.newPassword}
+                    onChange={(e) => setAccountForm((prev) => ({ ...prev, newPassword: e.target.value }))}
+                    autoComplete="new-password"
+                  />
+                </FormField>
+                <FormField label="Confirm New Password" span2>
+                  <TextInput
+                    type="password"
+                    value={accountForm.confirmNewPassword}
+                    onChange={(e) => setAccountForm((prev) => ({ ...prev, confirmNewPassword: e.target.value }))}
+                    autoComplete="new-password"
+                  />
+                </FormField>
+              </div>
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Btn variant="violet" disabled={savingAccountSettings} onClick={saveAccountSettings}>
+                  {savingAccountSettings ? 'Saving…' : 'Save Account'}
+                </Btn>
+                <span className="rounded-full border border-slate-700 bg-slate-900/80 px-3 py-2 text-xs text-slate-300">
+                  2FA: {accountSettings.two_factor_enabled ? 'Enabled' : 'Disabled'}
+                </span>
+              </div>
+
+              {!accountSettings.two_factor_enabled && (
+                <div className="mt-5 space-y-3 rounded-xl border border-slate-700/80 bg-slate-950/50 p-4">
+                  <p className="text-sm font-medium text-slate-200">Enable Dual-Factor Authentication</p>
+                  <p className="text-xs text-slate-500">Generate a TOTP secret, add it to your authenticator app, then verify with a live code.</p>
+                  <div className="flex flex-wrap gap-3">
+                    <Btn variant="secondary" disabled={generatingAccountTotpSecret} onClick={generateAccountTotpSecret}>
+                      {generatingAccountTotpSecret ? 'Generating…' : 'Generate 2FA Secret'}
+                    </Btn>
+                  </div>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <FormField label="TOTP Secret" span2>
+                      <TextInput
+                        type="text"
+                        value={accountTwoFactorDraft.totpSecret}
+                        onChange={(e) => setAccountTwoFactorDraft((prev) => ({ ...prev, totpSecret: e.target.value }))}
+                      />
+                    </FormField>
+                    <FormField label="Authenticator Code">
+                      <TextInput
+                        type="text"
+                        inputMode="numeric"
+                        value={accountTwoFactorDraft.totpCode}
+                        onChange={(e) => setAccountTwoFactorDraft((prev) => ({ ...prev, totpCode: e.target.value }))}
+                      />
+                    </FormField>
+                    <FormField label="Current Password">
+                      <TextInput
+                        type="password"
+                        autoComplete="current-password"
+                        value={accountTwoFactorDraft.currentPassword}
+                        onChange={(e) => setAccountTwoFactorDraft((prev) => ({ ...prev, currentPassword: e.target.value }))}
+                      />
+                    </FormField>
+                  </div>
+                  <div>
+                    <Btn variant="primary" disabled={enablingTwoFactor} onClick={enableTwoFactorForAccount}>
+                      {enablingTwoFactor ? 'Enabling…' : 'Enable 2FA'}
+                    </Btn>
+                  </div>
+                </div>
+              )}
+
+              {accountSettings.two_factor_enabled && (
+                <div className="mt-5 space-y-3 rounded-xl border border-red-900/40 bg-red-950/10 p-4">
+                  <p className="text-sm font-medium text-red-200">Disable Dual-Factor Authentication</p>
+                  <p className="text-xs text-red-300/80">For security, confirm with your current password and a valid authenticator code.</p>
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <FormField label="Current Password">
+                      <TextInput
+                        type="password"
+                        autoComplete="current-password"
+                        value={accountDisableTwoFactorDraft.currentPassword}
+                        onChange={(e) => setAccountDisableTwoFactorDraft((prev) => ({ ...prev, currentPassword: e.target.value }))}
+                      />
+                    </FormField>
+                    <FormField label="Authenticator Code">
+                      <TextInput
+                        type="text"
+                        inputMode="numeric"
+                        value={accountDisableTwoFactorDraft.totpCode}
+                        onChange={(e) => setAccountDisableTwoFactorDraft((prev) => ({ ...prev, totpCode: e.target.value }))}
+                      />
+                    </FormField>
+                  </div>
+                  <div>
+                    <Btn variant="danger" disabled={disablingTwoFactor} onClick={disableTwoFactorForAccount}>
+                      {disablingTwoFactor ? 'Disabling…' : 'Disable 2FA'}
+                    </Btn>
+                  </div>
+                </div>
+              )}
+            </SectionCard>
+
             <SectionCard>
               <SectionTitle>General Settings</SectionTitle>
               <div className="grid gap-4 md:grid-cols-2">

@@ -65,6 +65,10 @@ export function fetchAuthStatus() {
   return request('/auth/status');
 }
 
+export function fetchAccountSettings() {
+  return request('/auth/account');
+}
+
 export function createTotpSecret(username) {
   return request('/auth/totp/secret', {
     method: 'POST',
@@ -88,6 +92,27 @@ export function login(payload) {
 
 export function logout() {
   return request('/auth/logout', { method: 'POST' });
+}
+
+export function updateAccountSettings(payload) {
+  return request('/auth/account', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function enableAccountTwoFactor(payload) {
+  return request('/auth/account/2fa/enable', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function disableAccountTwoFactor(payload) {
+  return request('/auth/account/2fa/disable', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 }
 
 export function fetchJobs() {

@@ -281,6 +281,23 @@ class AuthUserResponse(BaseModel):
     two_factor_enabled: bool
 
 
+class AccountUpdateRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    username: str | None = Field(default=None, min_length=3)
+    new_password: str | None = Field(default=None, min_length=12)
+
+
+class EnableTwoFactorRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    totp_secret: str = Field(..., min_length=16)
+    totp_code: str = Field(..., min_length=6, max_length=12)
+
+
+class DisableTwoFactorRequest(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    totp_code: str = Field(..., min_length=6, max_length=12)
+
+
 class TotpSecretRequest(BaseModel):
     username: str = Field(..., min_length=1)
 
@@ -421,6 +438,100 @@ def logout(
     auth_service.revoke_session(db, token)
     _clear_session_cookie(response)
     return {'status': 'ok'}
+
+
+@router.get('/auth/account', response_model=AuthUserResponse)
+def get_auth_account(current_user: AdminUser | None = Depends(require_ui_auth)) -> AuthUserResponse:
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Authentication required')
+    return AuthUserResponse(username=current_user.username, two_factor_enabled=current_user.two_factor_enabled)
+
+
+@router.post('/auth/account', response_model=AuthUserResponse)
+def update_auth_account(
+    payload: AccountUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: AdminUser | None = Depends(require_ui_auth),
+) -> AuthUserResponse:
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Authentication required')
+
+    if not auth_service.verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid current password')
+
+    has_any_update = False
+
+    if payload.username is not None:
+        normalized_username = auth_service.normalize_username(payload.username)
+        if len(normalized_username) < 3:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='Username must be at least 3 characters long')
+        existing = (
+            db.query(AdminUser)
+            .filter(AdminUser.username == normalized_username, AdminUser.id != current_user.id)
+            .first()
+        )
+        if existing is not None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Username already exists')
+        if normalized_username != current_user.username:
+            current_user.username = normalized_username
+            has_any_update = True
+
+    if payload.new_password is not None:
+        if len(payload.new_password) < 12:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='Password must be at least 12 characters long')
+        current_user.password_hash = auth_service.hash_password(payload.new_password)
+        has_any_update = True
+
+    if not has_any_update:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='No account changes provided')
+
+    db.commit()
+    db.refresh(current_user)
+    return AuthUserResponse(username=current_user.username, two_factor_enabled=current_user.two_factor_enabled)
+
+
+@router.post('/auth/account/2fa/enable', response_model=AuthUserResponse)
+def enable_auth_account_two_factor(
+    payload: EnableTwoFactorRequest,
+    db: Session = Depends(get_db),
+    current_user: AdminUser | None = Depends(require_ui_auth),
+) -> AuthUserResponse:
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Authentication required')
+    if current_user.two_factor_enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Two-factor authentication is already enabled')
+    if not auth_service.verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid current password')
+    if not auth_service.verify_totp_code(payload.totp_secret, payload.totp_code):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='Invalid two-factor code')
+
+    current_user.two_factor_enabled = True
+    current_user.totp_secret = payload.totp_secret
+    db.commit()
+    db.refresh(current_user)
+    return AuthUserResponse(username=current_user.username, two_factor_enabled=current_user.two_factor_enabled)
+
+
+@router.post('/auth/account/2fa/disable', response_model=AuthUserResponse)
+def disable_auth_account_two_factor(
+    payload: DisableTwoFactorRequest,
+    db: Session = Depends(get_db),
+    current_user: AdminUser | None = Depends(require_ui_auth),
+) -> AuthUserResponse:
+    if current_user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Authentication required')
+    if not current_user.two_factor_enabled:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Two-factor authentication is not enabled')
+    if not auth_service.verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid current password')
+    if not current_user.totp_secret or not auth_service.verify_totp_code(current_user.totp_secret, payload.totp_code):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail='Invalid two-factor code')
+
+    current_user.two_factor_enabled = False
+    current_user.totp_secret = None
+    db.commit()
+    db.refresh(current_user)
+    return AuthUserResponse(username=current_user.username, two_factor_enabled=current_user.two_factor_enabled)
 
 
 class JobCreateRequest(BaseModel):
