@@ -756,6 +756,107 @@ def test_startup_recovery_adopts_queue_when_stale_complete_download_row_exists(m
         assert imported_paths == ['/downloads/complete/Doctor Strange (2016) IMAX (1080p DSNP WEB-DL x265 HEVC 10bit EAC3 5.1 Silence)']
 
 
+def test_startup_recovery_adopts_untracked_completed_sab_item(monkeypatch):
+    imported_paths = []
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        queued = Job(
+            input_path='/media/The Gorge (2025).mkv',
+            status='queued',
+            library_id=library.id,
+            progress_percent=0,
+        )
+        db.add(queued)
+        db.commit()
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_sab_completed_history_items', lambda _s: [
+            {
+                'nzo_id': 'SABNZBD_NZO_abc123',
+                'name': 'The.Gorge.2025.1080p.WEB-DL',
+                'save_path': '/data/complete/usenet/The.Gorge.2025.1080p.WEB-DL',
+            }
+        ])
+
+        def _fake_import(_db, _dj, save_path, *_args):
+            imported_paths.append(save_path)
+            _dj.status = DownloadJobStatus.complete.value
+            _dj.imported_file_path = '/media/The Gorge (2025)-1080p.mkv'
+            _db.commit()
+
+        monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(queued)
+        adopted = (
+            db.query(DownloadJob)
+            .filter(DownloadJob.source_file_path == '/media/The Gorge (2025).mkv')
+            .order_by(DownloadJob.id.desc())
+            .first()
+        )
+
+        assert summary.get('adopted_queue_jobs', 0) == 1
+        assert queued.status == 'complete'
+        assert imported_paths == ['/data/complete/usenet/The.Gorge.2025.1080p.WEB-DL']
+        assert adopted is not None
+        assert adopted.client_type == 'sabnzbd'
+        assert adopted.download_hash == 'SABNZBD_NZO_abc123'
+
+
+def test_startup_recovery_skips_untracked_completed_sab_item_on_profile_mismatch(monkeypatch):
+    import_calls = []
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        queued = Job(
+            input_path='/media/The Gorge (2025).mkv',
+            status='queued',
+            library_id=library.id,
+            progress_percent=0,
+        )
+        db.add(queued)
+        db.commit()
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_sab_completed_history_items', lambda _s: [
+            {
+                'nzo_id': 'SABNZBD_NZO_bad',
+                'name': 'The.Gorge.2025.720p.WEB-DL',
+                'save_path': '/data/complete/usenet/The.Gorge.2025.720p.WEB-DL',
+            }
+        ])
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._import_file',
+            lambda *_args, **_kwargs: import_calls.append(True),
+        )
+
+        summary = run_download_startup_recovery(db)
+        adopted = (
+            db.query(DownloadJob)
+            .filter(DownloadJob.source_file_path == '/media/The Gorge (2025).mkv')
+            .all()
+        )
+        db.refresh(queued)
+
+        assert summary.get('adopted_queue_jobs', 0) == 0
+        assert import_calls == []
+        assert adopted == []
+        assert queued.status == 'queued'
+
+
 def test_startup_recovery_imports_searching_job_via_source_name_match(monkeypatch):
     imported_paths = []
 
@@ -1207,6 +1308,42 @@ def test_check_download_progress_marks_missing_client_item_stalled_without_fallb
         assert fallback_calls == []
 
 
+def test_check_download_progress_sab_hashless_waits_for_nzo_recovery(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/The.Perfect.Neighbor.2025.mkv',
+            release_name='The.Perfect.Neighbor.2025.1080p.WEB-DL.DD.5.1.H.264-playWEB',
+            download_hash=None,
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        # NZO id not visible in SAB yet — job should remain downloading and wait.
+        monkeypatch.setattr(download_client_service, 'find_sab_nzo_for_release', lambda *_args: '')
+        status_calls = []
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: status_calls.append(True) or {})
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.download_hash is None
+        assert status_calls == []
+
+
 def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
     from app.services import prowlarr_service
     from app.services.download_monitor_service import _do_search
@@ -1241,12 +1378,18 @@ def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
         }])
         monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
         grab_calls = []
+        sab_category_calls = []
 
         def _fake_grab(_settings, guid, indexer_id, download_client_id=None):
             grab_calls.append({'guid': guid, 'indexer_id': indexer_id, 'download_client_id': download_client_id})
             return {'downloadId': 'NZO12345'}
 
         monkeypatch.setattr(prowlarr_service, 'grab', _fake_grab)
+        monkeypatch.setattr(
+            download_client_service,
+            'set_sab_category',
+            lambda _sab, nzo_id, category='optimizarr': sab_category_calls.append({'nzo_id': nzo_id, 'category': category}) or True,
+        )
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
@@ -1255,3 +1398,4 @@ def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
         assert dj.client_type == 'sabnzbd'
         assert dj.indexer_id == 1
         assert dj.indexer_name == 'TestIndexer'
+        assert sab_category_calls and sab_category_calls[0]['category'] == 'optimizarr'

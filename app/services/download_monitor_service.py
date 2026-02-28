@@ -396,6 +396,105 @@ def _recover_completed_root_for_waiting_queue_jobs(
     return adopted
 
 
+def _recover_sab_completed_for_waiting_queue_jobs(
+    db: Session,
+    qbt,
+    sab,
+) -> int:
+    """Adopt completed SAB history entries for queued download-enabled encode jobs."""
+    if not getattr(sab, 'enabled', False):
+        return 0
+
+    completed_items = download_client_service.get_sab_completed_history_items(sab)
+    if not completed_items:
+        return 0
+
+    waiting_statuses = ('queued', 'paused', 'starting', 'preflight')
+    queue_rows = (
+        db.query(Job, Library, LibraryProfile)
+        .join(Library, Job.library_id == Library.id)
+        .join(LibraryProfile, LibraryProfile.library_id == Library.id)
+        .filter(
+            Job.status.in_(waiting_statuses),
+            LibraryProfile.download_enabled.is_(True),
+        )
+        .all()
+    )
+
+    adopted = 0
+    for job, library, profile in queue_rows:
+        if not job.source_path:
+            continue
+        if download_job_exists_for_source(db, job.source_path):
+            logger.info(
+                'SAB queue adoption: skipping source %r because an active/complete download job already exists',
+                job.source_path,
+            )
+            continue
+
+        probe = DownloadJob(
+            library_id=library.id,
+            source_file_path=job.source_path,
+            release_name=None,
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+        )
+        keys = _build_completed_root_match_keys(probe)
+        if not keys:
+            continue
+
+        matched_item = None
+        for item in completed_items:
+            name = str(item.get('name') or '')
+            name_key = _normalize_release_key(name)
+            if not name_key:
+                continue
+            if any(k and (k in name_key or name_key in k) for k in keys):
+                matched_item = item
+                break
+        if not matched_item:
+            continue
+
+        matched_name = str(matched_item.get('name') or '')
+        if not _release_title_matches_profile(matched_name, profile):
+            logger.info(
+                'SAB queue adoption: source %r matched completed history %r but failed profile check',
+                job.source_path,
+                matched_name,
+            )
+            continue
+
+        save_path = str(matched_item.get('save_path') or '').strip()
+        nzo_id = str(matched_item.get('nzo_id') or '').strip()
+        if not save_path or not nzo_id:
+            continue
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path=job.source_path,
+            release_name=matched_name,
+            download_hash=nzo_id,
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        logger.info(
+            'SAB queue adoption: created download job %s for queued job %s from history item %r',
+            dj.id,
+            job.id,
+            matched_name,
+        )
+        _import_file(db, dj, save_path, library, profile, qbt, sab)
+        adopted += 1
+
+    if adopted:
+        logger.info('SAB queue adoption: imported %s completed artifact(s) for waiting queue jobs', adopted)
+    return adopted
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Quality profile helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -951,14 +1050,14 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     dj.release_name = release_title
 
     if not download_hash:
-        # Prowlarr's HTTP call succeeded (torrent IS in qBit) but no hash was
-        # returned.  Do NOT fall back to encode — that would unblock the serial
-        # constraint and let a second torrent be sent while the first sits
-        # untracked.  Instead keep status=downloading so the queue stays blocked;
-        # _check_download_progress() will scan qBit to recover the hash.
+        # Prowlarr grab succeeded but returned no client download id/hash.
+        # Do NOT fall back to encode — that would unblock the serial constraint
+        # and allow additional grabs while the current item is untracked.
+        # Keep status=downloading so queue/search stays blocked; progress checks
+        # will recover the client-side identifier.
         logger.warning(
-            'Download job %s: grab succeeded but no hash returned; '
-            'will attempt qBit name recovery using release %r. result=%s',
+            'Download job %s: grab succeeded but no download id/hash returned; '
+            'will attempt client-side recovery using release %r. result=%s',
             dj.id, release_title, json.dumps(grab_result)[:200],
         )
         client_type = _client_type_for_protocol(best.get('protocol', ''))
@@ -983,6 +1082,14 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
                 logger.info('Download job %s: recovered qBit hash immediately after grab: %s', dj.id, recovered)
                 if download_client_service.tag_qbt_torrent(qbt, recovered):
                     _tagged_job_ids.add(dj.id)
+        elif client_type == 'sabnzbd' and sab.enabled and dj.release_name:
+            recovered = download_client_service.find_sab_nzo_for_release(sab, dj.release_name)
+            if recovered:
+                dj.download_hash = recovered
+                db.commit()
+                db.refresh(dj)
+                logger.info('Download job %s: recovered SABnzbd NZO id immediately after grab: %s', dj.id, recovered)
+                download_client_service.set_sab_category(sab, recovered, category='optimizarr')
 
         _publish_download_job(dj)
         return
@@ -1009,6 +1116,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     if client_type == 'qbittorrent' and qbt.enabled:
         if download_client_service.tag_qbt_torrent(qbt, normalised_hash):
             _tagged_job_ids.add(dj.id)
+    elif client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
+        download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1108,6 +1217,28 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         db.refresh(dj)
         if download_client_service.tag_qbt_torrent(qbt, recovered_hash):
             _tagged_job_ids.add(dj.id)
+
+    # If SAB grab succeeded but Prowlarr didn't return NZO id, recover by
+    # matching release name against queue/history and wait until it appears.
+    if not dj.download_hash and client_type == 'sabnzbd' and sab.enabled:
+        if dj.release_name:
+            recovered_nzo = download_client_service.find_sab_nzo_for_release(sab, dj.release_name)
+            if recovered_nzo:
+                dj.download_hash = recovered_nzo
+                db.commit()
+                db.refresh(dj)
+                logger.info('Download job %s: recovered SABnzbd NZO id %s', dj.id, recovered_nzo)
+                download_client_service.set_sab_category(sab, recovered_nzo, category='optimizarr')
+            else:
+                logger.debug(
+                    'Download job %s: SABnzbd NZO id not found yet for release %r; waiting',
+                    dj.id,
+                    dj.release_name,
+                )
+                return
+        else:
+            logger.debug('Download job %s: no release_name for SABnzbd hash recovery yet; waiting', dj.id)
+            return
 
     # If the initial tag attempt failed (e.g. torrent wasn't indexed in qBit
     # yet when we grabbed it), retry with a few quick attempts each monitoring
@@ -1724,6 +1855,7 @@ def run_download_startup_recovery(db: Session) -> dict:
     qbt_completed_root = download_client_service.get_qbt_default_save_path(qbt) if qbt.enabled else None
     linked_jobs = _link_completed_downloads_to_waiting_jobs(db)
     adopted_queue_jobs = _recover_completed_root_for_waiting_queue_jobs(db, qbt, sab, qbt_completed_root)
+    adopted_queue_jobs += _recover_sab_completed_for_waiting_queue_jobs(db, qbt, sab)
 
     if not in_flight_jobs and not qbt_candidate_jobs and adopted_queue_jobs == 0:
         logger.info('Download startup recovery: no in-flight or unimported download jobs found')
@@ -2046,13 +2178,15 @@ def run_scan_recovery(db: Session) -> dict:
             .all()
         )
 
-        if not candidate_jobs:
-            logger.debug('Scan recovery: no candidate download jobs to check')
-            return {'imported': 0}
-
         qbt = download_client_service.get_or_create_qbt_settings(db)
         sab = download_client_service.get_or_create_sab_settings(db)
         qbt_completed_root = download_client_service.get_qbt_default_save_path(qbt) if qbt.enabled else None
+
+        if not candidate_jobs:
+            imported = _recover_completed_root_for_waiting_queue_jobs(db, qbt, sab, qbt_completed_root)
+            imported += _recover_sab_completed_for_waiting_queue_jobs(db, qbt, sab)
+            logger.debug('Scan recovery: no candidate download jobs; queue adoption imported=%s', imported)
+            return {'imported': imported}
 
         qbt_map: dict[str, dict] = {}
         all_qbt_torrents: list[dict] = []

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+import re
 
 import httpx
 from sqlalchemy.orm import Session
@@ -437,6 +438,97 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
             'save_path': None,
             'not_found': False,
         }
+
+
+def _normalize_release_key(value: str) -> str:
+    text = str(value or '').lower().strip()
+    if not text:
+        return ''
+    text = re.sub(r'[\.\-_]+', ' ', text)
+    return re.sub(r'[^a-z0-9]+', '', text)
+
+
+def find_sab_nzo_for_release(s: SabnzbdSettings, release_name: str) -> str:
+    """Best-effort lookup of SABnzbd NZO id by release title."""
+    key = _normalize_release_key(release_name)
+    if not key:
+        return ''
+    try:
+        queue_data = _sab_api(s, mode='queue')
+        queue_slots = queue_data.get('queue', {}).get('slots', [])
+        for slot in queue_slots:
+            name = str(slot.get('filename') or slot.get('name') or '')
+            nzo_id = str(slot.get('nzo_id') or '').strip()
+            if not nzo_id:
+                continue
+            slot_key = _normalize_release_key(name)
+            if slot_key and (key in slot_key or slot_key in key):
+                return nzo_id
+
+        history_data = _sab_api(s, mode='history', limit=200)
+        history_slots = history_data.get('history', {}).get('slots', [])
+        for slot in history_slots:
+            name = str(slot.get('name') or slot.get('filename') or '')
+            nzo_id = str(slot.get('nzo_id') or '').strip()
+            if not nzo_id:
+                continue
+            slot_key = _normalize_release_key(name)
+            if slot_key and (key in slot_key or slot_key in key):
+                return nzo_id
+    except Exception as exc:
+        logger.warning('SABnzbd release lookup failed for %r: %s', release_name, exc)
+    return ''
+
+
+def get_sab_completed_history_items(s: SabnzbdSettings, limit: int = 500) -> list[dict]:
+    """Return completed SAB history entries with normalized fields."""
+    try:
+        history_data = _sab_api(s, mode='history', limit=max(1, int(limit)))
+    except Exception as exc:
+        logger.warning('SABnzbd history fetch failed: %s', exc)
+        return []
+
+    slots = history_data.get('history', {}).get('slots', [])
+    items: list[dict] = []
+    for slot in slots:
+        if str(slot.get('status') or '').lower() != 'completed':
+            continue
+        nzo_id = str(slot.get('nzo_id') or '').strip()
+        name = str(slot.get('name') or slot.get('filename') or slot.get('nzb_name') or '').strip()
+        save_path = str(slot.get('storage') or '').strip()
+        if not nzo_id or not name or not save_path:
+            continue
+        items.append(
+            {
+                'nzo_id': nzo_id,
+                'name': name,
+                'save_path': save_path,
+            }
+        )
+    return items
+
+
+def set_sab_category(s: SabnzbdSettings, nzo_id: str, category: str = 'optimizarr') -> bool:
+    """Assign category on a SABnzbd job. Returns True if a call succeeded."""
+    nzo = str(nzo_id or '').strip()
+    cat = str(category or '').strip()
+    if not nzo or not cat:
+        return False
+
+    attempts = (
+        {'mode': 'change_opts', 'value': nzo, 'name': 'cat', 'value2': cat},
+        {'mode': 'change_opts', 'value': nzo, 'name': 'category', 'value2': cat},
+        {'mode': 'queue', 'name': 'change_opts', 'value': nzo, 'cat': cat},
+    )
+    for params in attempts:
+        try:
+            _sab_api(s, **params)
+            logger.info('SABnzbd: set category=%r for NZO %s', cat, nzo)
+            return True
+        except Exception:
+            continue
+    logger.warning('SABnzbd: failed setting category=%r for NZO %s', cat, nzo)
+    return False
 
 
 def delete_sab_history(s: SabnzbdSettings, nzo_id: str) -> None:
