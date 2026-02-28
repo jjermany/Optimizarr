@@ -1559,6 +1559,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
                 shutil.copy2(video_file, temp_dest)
                 os.replace(temp_dest, dest)
                 video_file.unlink(missing_ok=True)
+            _cleanup_sab_import_source(save_path, video_file)
     except OSError as exc:
         logger.error('Download job %s: failed to import %r → %r: %s', dj.id, video_file, dest, exc)
         _mark_failed(db, dj, f'File import failed: {exc}')
@@ -1626,6 +1627,32 @@ def _cleanup_download_client(dj: DownloadJob, qbt, sab) -> None:
     """
     if dj.client_type == 'sabnzbd' and sab is not None and dj.download_hash:
         download_client_service.delete_sab_history(sab, dj.download_hash)
+
+
+def _cleanup_sab_import_source(save_path: str, imported_source_file: Path) -> None:
+    """Ensure SAB/Usenet source files are removed from completed storage.
+
+    The import path already does move semantics for SAB, but this extra cleanup
+    guarantees the imported video is not left behind in completed folders when
+    edge cases occur. Empty parent folders are pruned conservatively.
+    """
+    if imported_source_file.exists():
+        try:
+            imported_source_file.unlink(missing_ok=True)
+        except OSError:
+            logger.debug('SAB import cleanup: could not remove source file %r', str(imported_source_file))
+
+    root = Path(save_path)
+    boundary = root if root.is_dir() else root.parent
+    current = imported_source_file.parent
+    while current and current.exists() and current.is_dir():
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        if current == boundary:
+            break
+        current = current.parent
 
 
 def _is_same_filesystem(file_path: Path, target_dir: Path) -> bool:
