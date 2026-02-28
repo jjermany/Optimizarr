@@ -139,6 +139,23 @@ def test_download_job_exists_for_source_treats_pending_as_active_non_terminal():
         assert download_job_exists_for_source(db, '/media/download-failed.mkv') is False
 
 
+def test_download_job_exists_for_source_ignores_stale_complete_without_imported_file():
+    source_path = '/media/download-complete-stale.mkv'
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        stale_complete = DownloadJob(
+            source_file_path=source_path,
+            status=DownloadJobStatus.complete.value,
+            imported_file_path='/path/that/does/not/exist/output.mkv',
+        )
+        db.add(stale_complete)
+        db.commit()
+
+        assert download_job_exists_for_source(db, source_path) is False
+
+
 from app.models.library import Library, LibraryProfile
 from app.services import download_client_service
 

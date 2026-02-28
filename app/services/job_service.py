@@ -90,15 +90,22 @@ def refresh_queued_job_snapshots(db: Session, library_id: int, profile: LibraryP
 
 
 def job_exists_for_source(db: Session, source_path: str, library_id: int | None = None) -> bool:
-    # 'complete' is intentionally excluded so successfully-finished jobs prevent re-queuing.
-    # Only failed/skipped/cancelled jobs are retryable on the next scan.
+    # Completed jobs normally block re-queuing, but stale "complete" rows whose
+    # output no longer exists are treated as retryable.
     _RETRYABLE_STATUSES = {'failed', 'skipped', 'cancelled'}
     query = db.query(Job).filter(Job.input_path == source_path, ~Job.status.in_(_RETRYABLE_STATUSES))
     if library_id is None:
         query = query.filter(Job.library_id.is_(None))
     else:
         query = query.filter(Job.library_id == library_id)
-    return db.query(query.exists()).scalar()
+    candidates = query.all()
+    for job in candidates:
+        if job.status != 'complete':
+            return True
+        output = Path(job.output_path) if job.output_path else None
+        if output and output.exists():
+            return True
+    return False
 
 
 def get_job(db: Session, job_id: int) -> Job | None:

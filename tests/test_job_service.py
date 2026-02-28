@@ -29,7 +29,26 @@ def test_create_job_stores_profile_snapshot():
         assert job.profile_snapshot_json is not None
         assert '"codec": "av1"' in job.profile_snapshot_json
         assert '"output_suffix": "-opt"' in job.profile_snapshot_json
-        assert '"minimum_source_resolution"' in job.profile_snapshot_json
+    assert '"minimum_source_resolution"' in job.profile_snapshot_json
+
+
+def test_job_exists_for_source_ignores_stale_complete_without_output(tmp_path):
+    from app.services.job_service import job_exists_for_source
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        job = Job(
+            input_path='/media/stale-complete.mkv',
+            library_id=1,
+            status='complete',
+            output_path=str(tmp_path / 'missing-output.mkv'),
+        )
+        db.add(job)
+        db.commit()
+
+        assert job_exists_for_source(db, '/media/stale-complete.mkv', library_id=1) is False
 
 
 def test_prune_job_history_removes_stale_terminal_jobs():

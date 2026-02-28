@@ -180,14 +180,21 @@ def download_job_exists_for_source(db: Session, source_path: str) -> bool:
         DownloadJobStatus.importing.value,
         DownloadJobStatus.complete.value,
     }
-    return db.query(
+    rows = (
         db.query(DownloadJob)
         .filter(
             DownloadJob.source_file_path == source_path,
             DownloadJob.status.in_(active_statuses),
         )
-        .exists()
-    ).scalar()
+        .all()
+    )
+    for dj in rows:
+        if dj.status != DownloadJobStatus.complete.value:
+            return True
+        imported = Path(dj.imported_file_path) if dj.imported_file_path else None
+        if imported and imported.exists():
+            return True
+    return False
 
 
 _ACTIVE_DOWNLOAD_STATUSES = (
