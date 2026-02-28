@@ -123,7 +123,10 @@ def _monitor_loop() -> None:
         try:
             has_downloading = (
                 db.query(DownloadJob)
-                .filter(DownloadJob.status == DownloadJobStatus.downloading.value)
+                .filter(DownloadJob.status.in_([
+                    DownloadJobStatus.downloading.value,
+                    DownloadJobStatus.moving.value,
+                ]))
                 .count()
             ) > 0
             has_searching = (
@@ -206,12 +209,13 @@ _ACTIVE_DOWNLOAD_STATUSES = (
     DownloadJobStatus.pending.value,
     DownloadJobStatus.searching.value,
     DownloadJobStatus.downloading.value,
+    DownloadJobStatus.moving.value,
     DownloadJobStatus.importing.value,
 )
 
 
 def any_active_download_job(db: Session) -> bool:
-    """Return True if any download job is currently searching, downloading, or importing."""
+    """Return True if any download job is currently searching, downloading, moving, or importing."""
     return db.query(
         db.query(DownloadJob)
         .filter(DownloadJob.status.in_(_ACTIVE_DOWNLOAD_STATUSES))
@@ -1307,6 +1311,7 @@ def _process_searching_jobs(db: Session) -> None:
         db.query(DownloadJob)
         .filter(DownloadJob.status.in_([
             DownloadJobStatus.downloading.value,
+            DownloadJobStatus.moving.value,
             DownloadJobStatus.importing.value,
         ]))
         .count()
@@ -1443,6 +1448,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     # Guards against any state inconsistency that slips past the outer check.
     if db.query(DownloadJob).filter(DownloadJob.status.in_([
         DownloadJobStatus.downloading.value,
+        DownloadJobStatus.moving.value,
         DownloadJobStatus.importing.value,
     ])).count() > 0:
         logger.warning('Download job %s: active download detected before grab; deferring', dj.id)
@@ -1578,7 +1584,10 @@ def _process_downloading_jobs(db: Session) -> None:
 
     jobs = (
         db.query(DownloadJob)
-        .filter(DownloadJob.status == DownloadJobStatus.downloading.value)
+        .filter(DownloadJob.status.in_([
+            DownloadJobStatus.downloading.value,
+            DownloadJobStatus.moving.value,
+        ]))
         .all()
     )
 
@@ -1711,6 +1720,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         and dj.release_name
         and dj.download_hash
         and not status.get('is_complete')
+        and not status.get('is_moving')
         and int(status.get('progress_percent', 0) or 0) == 0
     ):
         all_torrents = download_client_service.get_all_qbt_torrents(qbt)
@@ -1748,12 +1758,33 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         )
         return
     progress = status.get('progress_percent', 0)
+    try:
+        progress = int(float(progress))
+    except (TypeError, ValueError):
+        progress = 0
+    progress = max(0, min(100, progress))
+
+    is_complete = bool(status.get('is_complete'))
+    is_moving = bool(status.get('is_moving')) and not is_complete
+    if is_moving and progress == 0 and int(dj.progress_percent or 0) > 0:
+        # Clients can report 0% while post-download file moves are in progress.
+        # Keep the last known progress to avoid UI regressions/jumps.
+        progress = int(dj.progress_percent or 0)
+
     eta_seconds = status.get('eta_seconds')
     eta_seconds = int(eta_seconds) if isinstance(eta_seconds, (int, float)) and eta_seconds >= 0 else None
     speed_bps = status.get('download_speed_bps')
     speed_bps = int(speed_bps) if isinstance(speed_bps, (int, float)) and speed_bps >= 0 else None
 
-    if progress != dj.progress_percent or eta_seconds != dj.eta_seconds or speed_bps != dj.download_speed_bps:
+    expected_status = DownloadJobStatus.moving.value if is_moving else DownloadJobStatus.downloading.value
+    should_update = (
+        progress != dj.progress_percent
+        or eta_seconds != dj.eta_seconds
+        or speed_bps != dj.download_speed_bps
+        or dj.status != expected_status
+    )
+    if should_update:
+        dj.status = expected_status
         dj.progress_percent = progress
         dj.eta_seconds = eta_seconds
         dj.download_speed_bps = speed_bps
@@ -1763,7 +1794,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
 
     # Always check for completion BEFORE applying the timeout.  A download that
     # finished just as the deadline elapsed should be imported, not discarded.
-    if status.get('is_complete'):
+    if is_complete:
         if dj.eta_seconds != 0:
             dj.eta_seconds = 0
             dj.download_speed_bps = 0
@@ -1797,6 +1828,8 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     # pre-date the download_started_at column.
     timeout_minutes = int(getattr(profile, 'download_timeout_minutes', 60) or 60)
     timeout_reference = dj.download_started_at or dj.created_at
+    if timeout_reference.tzinfo is None:
+        timeout_reference = timeout_reference.replace(tzinfo=timezone.utc)
     elapsed = datetime.now(timezone.utc) - timeout_reference
     if elapsed > timedelta(minutes=timeout_minutes):
         _retry_failed_download(
@@ -2310,6 +2343,7 @@ def run_download_startup_recovery(db: Session) -> dict:
         .filter(
             DownloadJob.status.in_([
                 DownloadJobStatus.downloading.value,
+                DownloadJobStatus.moving.value,
                 DownloadJobStatus.importing.value,
             ])
         )
@@ -2322,6 +2356,7 @@ def run_download_startup_recovery(db: Session) -> dict:
     # was persisted on the DownloadJob row.
     _skip_statuses = {
         DownloadJobStatus.downloading.value,  # already covered by in_flight_jobs loop
+        DownloadJobStatus.moving.value,
         DownloadJobStatus.pending.value,       # not yet started — nothing to recover
     }
     qbt_candidate_jobs = (
@@ -2660,6 +2695,7 @@ def run_scan_recovery(db: Session) -> dict:
         _skip_statuses = {
             DownloadJobStatus.pending.value,
             DownloadJobStatus.downloading.value,
+            DownloadJobStatus.moving.value,
             DownloadJobStatus.importing.value,
         }
         candidate_jobs = (

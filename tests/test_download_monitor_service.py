@@ -1454,6 +1454,48 @@ def test_check_download_progress_missing_client_item_retries_without_fallback(mo
         assert fallback_calls == []
 
 
+def test_check_download_progress_marks_moving_and_preserves_nonzero_progress(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Moving.Phase.Item.mkv',
+            release_name='Moving.Phase.Item.2025.1080p.WEB-DL',
+            download_hash='movehash',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            progress_percent=88,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'download_speed_bps': 0,
+            'is_complete': False,
+            'is_moving': True,
+            'is_stalled': False,
+            'save_path': None,
+            'not_found': False,
+        })
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.moving.value
+        assert dj.progress_percent == 88
+
+
 def test_check_download_progress_stalled_retries_search_before_fallback(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()

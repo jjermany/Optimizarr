@@ -67,3 +67,50 @@ def test_get_sab_status_prefers_mbps_over_mb_size_field(monkeypatch):
     status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO999')
 
     assert status['download_speed_bps'] == 67 * 1024 * 1024
+
+
+def test_get_qbt_status_marks_moving_state(monkeypatch):
+    monkeypatch.setattr(download_client_service, '_qbt_session', lambda _s: object())
+    monkeypatch.setattr(
+        download_client_service,
+        '_qbt_torrent_info',
+        lambda _client, _hash: {
+            'state': 'moving',
+            'progress': 0,
+            'eta': -1,
+            'dlspeed': 0,
+            'content_path': '/downloads/complete/Movie.2025.1080p',
+        },
+    )
+
+    status = download_client_service.get_qbt_status(SimpleNamespace(), 'abc123')
+
+    assert status['is_moving'] is True
+    assert status['is_complete'] is False
+    assert status['not_found'] is False
+
+
+def test_get_sab_status_marks_moving_state(monkeypatch):
+    queue_payload = {
+        'queue': {
+            'slots': [
+                {
+                    'nzo_id': 'NZO-MOVE',
+                    'percentage': '0',
+                    'status': 'Moving',
+                    'timeleft': '0',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-MOVE')
+
+    assert status['is_moving'] is True
+    assert status['is_complete'] is False
+    assert status['not_found'] is False

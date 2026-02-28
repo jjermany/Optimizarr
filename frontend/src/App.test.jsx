@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { estimateDownloadEtaSeconds, getDownloadEtaSeconds, mergeJobsWithUpdate } from './App';
+import { estimateDownloadEtaSeconds, getDownloadEtaSeconds, mergeDownloadJobsWithUpdate, mergeJobsWithUpdate } from './App';
 
 describe('mergeJobsWithUpdate', () => {
   it('resets to page one when an existing queued job transitions to running', () => {
@@ -49,6 +49,29 @@ describe('estimateDownloadEtaSeconds', () => {
 
   it('returns null when created_at is missing', () => {
     expect(estimateDownloadEtaSeconds({ progress_percent: 50 }, Date.UTC(2026, 0, 1, 0, 10, 0))).toBeNull();
+  });
+});
+
+describe('mergeDownloadJobsWithUpdate', () => {
+  it('ignores stale active update after a job is already complete', () => {
+    const previousJobs = [
+      { id: 7, status: 'complete', progress_percent: 100, completed_at: '2026-02-28T10:00:00Z' },
+    ];
+
+    const merged = mergeDownloadJobsWithUpdate(previousJobs, { id: 7, status: 'importing', progress_percent: 100 });
+
+    expect(merged[0].status).toBe('complete');
+  });
+
+  it('allows normal active progression updates', () => {
+    const previousJobs = [
+      { id: 8, status: 'downloading', progress_percent: 43 },
+    ];
+
+    const merged = mergeDownloadJobsWithUpdate(previousJobs, { id: 8, status: 'moving', progress_percent: 88 });
+
+    expect(merged[0].status).toBe('moving');
+    expect(merged[0].progress_percent).toBe(88);
   });
 });
 

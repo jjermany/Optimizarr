@@ -15,6 +15,7 @@ class DownloadJobStatus(str, Enum):
     pending = 'pending'           # waiting in queue for its turn
     searching = 'searching'
     downloading = 'downloading'
+    moving = 'moving'
     stalled = 'stalled'
     importing = 'importing'
     complete = 'complete'

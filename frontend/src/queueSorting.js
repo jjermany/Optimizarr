@@ -1,5 +1,5 @@
 const ENCODE_ACTIVE_STATUSES = new Set(['starting', 'running', 'preflight']);
-const DOWNLOAD_ACTIVE_STATUSES = new Set(['downloading', 'importing']);
+const DOWNLOAD_ACTIVE_STATUSES = new Set(['downloading', 'moving', 'importing']);
 const DOWNLOAD_WAITING_ENCODE_STATUSES = new Set(['waiting_encode']);
 
 function queueItemPath(item) {
