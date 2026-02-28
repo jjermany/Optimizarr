@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import shutil
@@ -44,6 +45,26 @@ _tagged_job_ids: set[int] = set()
 # In-memory only; entries are retried on restart/progress checks as needed.
 _categorized_sab_job_ids: set[int] = set()
 _DEFAULT_DOWNLOAD_MAX_RETRIES = 5
+_UNWANTED_RELEASE_VARIANT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r'\bsing[\s._-]*along\b', re.IGNORECASE),
+    re.compile(r"\bdirector'?s[\s._-]*cut\b", re.IGNORECASE),
+    re.compile(r'\bextended\b', re.IGNORECASE),
+    re.compile(r'\btheatrical\b', re.IGNORECASE),
+    re.compile(r'\bimax\b', re.IGNORECASE),
+    re.compile(r'\bopen[\s._-]*matte\b', re.IGNORECASE),
+    re.compile(r'\bunrated\b', re.IGNORECASE),
+    re.compile(r'\buncut\b', re.IGNORECASE),
+)
+_UNWANTED_RELEASE_VARIANT_REQUIRED_TOKENS: dict[re.Pattern[str], tuple[str, ...]] = {
+    _UNWANTED_RELEASE_VARIANT_PATTERNS[0]: ('sing', 'along', 'version'),
+    _UNWANTED_RELEASE_VARIANT_PATTERNS[1]: ('director', 'cut'),
+    _UNWANTED_RELEASE_VARIANT_PATTERNS[2]: ('extended',),
+    _UNWANTED_RELEASE_VARIANT_PATTERNS[3]: ('theatrical',),
+    _UNWANTED_RELEASE_VARIANT_PATTERNS[4]: ('imax',),
+    _UNWANTED_RELEASE_VARIANT_PATTERNS[5]: ('open', 'matte'),
+    _UNWANTED_RELEASE_VARIANT_PATTERNS[6]: ('unrated',),
+    _UNWANTED_RELEASE_VARIANT_PATTERNS[7]: ('uncut',),
+}
 
 
 def is_download_queue_stopped() -> bool:
@@ -765,9 +786,6 @@ def _release_matches_target_resolution(release: dict, target_resolution: int) ->
         return True
     if re.search(rf'\b\d{{3,4}}x{target}\b', title_lower):
         return True
-    if re.search(rf'\b{target}i\b', title_lower):
-        return True
-
     for key in ('resolution', 'quality'):
         value = release.get(key)
         if isinstance(value, str):
@@ -830,8 +848,17 @@ def _extract_source_title_and_year(source_path: str) -> tuple[str, int | None]:
 def _title_tokens_for_matching(value: str) -> list[str]:
     normalized = _normalize_release_title(value)
     raw_tokens = re.findall(r'[a-z0-9]+', normalized)
-    stopwords = {'the', 'a', 'an', 'and', 'part', 'pt', 'movie'}
-    return [token for token in raw_tokens if len(token) > 2 and token not in stopwords]
+    stopwords = {'the', 'a', 'an', 'and', 'movie'}
+    tokens = [token for token in raw_tokens if len(token) > 2 and token not in stopwords]
+
+    # Preserve sequel markers so "Part One" / "Part Two" style titles can be
+    # distinguished even though short numerals are usually dropped.
+    sequel_markers = re.findall(r'\b(?:part|pt)\s*([0-9ivx]+)\b', normalized)
+    for marker in sequel_markers:
+        token = f'part{marker}'
+        if token not in tokens:
+            tokens.append(token)
+    return tokens
 
 
 def _is_probable_tv_episode_title(title: str) -> bool:
@@ -847,7 +874,7 @@ def _is_probable_tv_episode_title(title: str) -> bool:
 
 
 def _release_matches_source_title(release_title: str, source_path: str) -> bool:
-    source_title, _ = _extract_source_title_and_year(source_path)
+    source_title, source_year = _extract_source_title_and_year(source_path)
     source_tokens = _title_tokens_for_matching(source_title)
     if not source_tokens:
         return True
@@ -860,9 +887,18 @@ def _release_matches_source_title(release_title: str, source_path: str) -> bool:
     if _is_probable_tv_episode_title(release_title):
         return False
 
+    if source_year is not None:
+        release_years = {int(match) for match in re.findall(r'\b(?:19|20)\d{2}\b', release_title)}
+        if release_years and source_year not in release_years:
+            return False
+
     overlap = len(set(source_tokens) & set(release_tokens))
     if len(source_tokens) >= 2:
-        return overlap >= min(2, len(source_tokens))
+        # Require stronger overlap for longer multi-word titles to reduce
+        # accidental grabs from similarly named releases.
+        token_count = len(set(source_tokens))
+        required_overlap = min(token_count, max(2, math.ceil(token_count * 0.7)))
+        return overlap >= required_overlap
 
     # Single-word titles are ambiguous ("Wicked", "It", etc.). Require the
     # token to appear near the start of the release title to avoid partial
@@ -881,6 +917,36 @@ def _is_hdr_release(title_lower: str) -> bool:
         return True
     # Word-boundary match for standalone 'dv' or 'hlg' to avoid false positives
     return bool(re.search(r'\b(dv|hlg)\b', title_lower))
+
+
+def _source_allows_variant(source_path: str, required_tokens: tuple[str, ...]) -> bool:
+    source_title, _ = _extract_source_title_and_year(source_path or '')
+    source_tokens = set(_title_tokens_for_matching(source_title))
+
+    def _has_token(token: str) -> bool:
+        if token in source_tokens:
+            return True
+        if token.endswith('s') and token[:-1] in source_tokens:
+            return True
+        if f'{token}s' in source_tokens:
+            return True
+        return False
+
+    return all(_has_token(token) for token in required_tokens)
+
+
+def _is_unwanted_variant_release(title: str, source_path: str = '') -> bool:
+    """Return True when a release title matches a blocked edition/variant token."""
+    if not title:
+        return False
+    for pattern in _UNWANTED_RELEASE_VARIANT_PATTERNS:
+        if not pattern.search(title):
+            continue
+        required_tokens = _UNWANTED_RELEASE_VARIANT_REQUIRED_TOKENS.get(pattern, ())
+        if required_tokens and source_path and _source_allows_variant(source_path, required_tokens):
+            return False
+        return True
+    return False
 
 
 def _rank_candidates(releases: list[dict]) -> list[dict]:
@@ -910,6 +976,7 @@ def _select_best_release(
     qbt_enabled: bool,
     sab_enabled: bool,
     indexer_by_id: dict[int, dict] | None = None,
+    source_path: str = '',
 ) -> dict | None:
     """
     Select the best release at the target resolution, respecting the
@@ -937,6 +1004,7 @@ def _select_best_release(
     filtered_by_hdr_only = 0
     filtered_by_quality = 0
     filtered_by_client = 0
+    filtered_by_variant = 0
 
     for r in releases:
         title = r.get('title', '')
@@ -954,6 +1022,10 @@ def _select_best_release(
             continue
         if hdr_only and not is_hdr:
             filtered_by_hdr_only += 1
+            continue
+
+        if _is_unwanted_variant_release(title, source_path):
+            filtered_by_variant += 1
             continue
 
         # Quality source filter
@@ -1004,6 +1076,7 @@ def _select_best_release(
     logger.info(
         'Download filtering produced no candidates: total=%d filtered_resolution=%d '
         'filtered_tone_map_hdr=%d filtered_hdr_only=%d filtered_quality=%d '
+        'filtered_variant=%d '
         'filtered_client=%d profile={target_resolution=%s quality=%s hdr_only=%s tone_map_hdr=%s} '
         'clients={qbt=%s sab=%s}',
         len(releases),
@@ -1011,6 +1084,7 @@ def _select_best_release(
         filtered_by_tonemap_hdr,
         filtered_by_hdr_only,
         filtered_by_quality,
+        filtered_by_variant,
         filtered_by_client,
         getattr(profile, 'target_resolution', None),
         quality_val,
@@ -1459,11 +1533,11 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         qbt_enabled=qbt.enabled,
         sab_enabled=sab.enabled,
         indexer_by_id=indexer_by_id,
+        source_path=dj.source_file_path,
     )
 
     if best is None:
-        logger.info('Download job %s: no matching release found, falling back to encode', dj.id)
-        _mark_failed(db, dj, 'No matching release found')
+        logger.info('Download job %s: no matching release found; skipping grab and falling back to encode', dj.id)
         _fallback_to_encode(db, dj, library, profile)
         return
 

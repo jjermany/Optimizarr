@@ -14,6 +14,7 @@ from app.services.download_monitor_service import (
     _check_download_progress,
     _import_file,
     _process_searching_jobs,
+    _release_matches_source_title,
     _select_best_release,
     download_job_exists_for_source,
     run_download_startup_recovery,
@@ -206,6 +207,33 @@ def test_select_best_release_accepts_1920x1080_resolution_format():
     assert selected['title'] == 'Movie.2024.1920x1080.WEB-DL.x265-GROUP'
 
 
+def test_select_best_release_rejects_1080i_only_release():
+    releases = [
+        {
+            'title': 'Movie.2024.1080i.WEB-DL.x265-INTERLACED',
+            'seeders': 400,
+            'size': 1700,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-PROGRESSIVE',
+            'seeders': 10,
+            'size': 1600,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl),
+        qbt_enabled=True,
+        sab_enabled=True,
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-PROGRESSIVE'
+
+
 def test_select_best_release_tone_map_enabled_rejects_hdr():
     releases = [
         {
@@ -336,6 +364,138 @@ def test_select_best_release_resolves_conflicting_hdr_policy_by_prioritizing_ton
 
     assert selected is not None
     assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-SDR'
+
+
+def test_select_best_release_rejects_sing_along_variant():
+    releases = [
+        {
+            'title': 'Wicked.Sing-Along.Version.2024.1080p.WEB-DL.AV1.AAC.DD5.1-LUCY',
+            'seeders': 999,
+            'size': 1200,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Wicked.2024.1080p.WEB-DL.AV1.AAC.DD5.1-GROUP',
+            'seeders': 50,
+            'size': 1300,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl),
+        qbt_enabled=True,
+        sab_enabled=True,
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Wicked.2024.1080p.WEB-DL.AV1.AAC.DD5.1-GROUP'
+
+
+def test_select_best_release_allows_sing_along_variant_when_source_title_matches_all_words():
+    releases = [
+        {
+            'title': 'Wicked.Sing-Along.Version.2024.1080p.WEB-DL.AV1.AAC.DD5.1-LUCY',
+            'seeders': 999,
+            'size': 1200,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Wicked.2024.1080p.WEB-DL.AV1.AAC.DD5.1-GROUP',
+            'seeders': 50,
+            'size': 1300,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl),
+        qbt_enabled=True,
+        sab_enabled=True,
+        source_path='/media/Wicked Sing Along Version (2024).mkv',
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Wicked.Sing-Along.Version.2024.1080p.WEB-DL.AV1.AAC.DD5.1-LUCY'
+
+
+def test_select_best_release_rejects_directors_cut_variant_when_source_does_not_match():
+    releases = [
+        {
+            'title': 'Blade.Runner.1982.Directors.Cut.1080p.BluRay.x264-GROUP',
+            'seeders': 500,
+            'size': 1500,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Blade.Runner.1982.1080p.BluRay.x264-GROUP',
+            'seeders': 10,
+            'size': 1400,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.bluray),
+        qbt_enabled=True,
+        sab_enabled=True,
+        source_path='/media/Blade Runner (1982).mkv',
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Blade.Runner.1982.1080p.BluRay.x264-GROUP'
+
+
+def test_select_best_release_allows_directors_cut_variant_when_source_matches():
+    releases = [
+        {
+            'title': 'Blade.Runner.1982.Directors.Cut.1080p.BluRay.x264-GROUP',
+            'seeders': 500,
+            'size': 1500,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Blade.Runner.1982.1080p.BluRay.x264-GROUP',
+            'seeders': 10,
+            'size': 1400,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.bluray),
+        qbt_enabled=True,
+        sab_enabled=True,
+        source_path='/media/Blade Runner Directors Cut (1982).mkv',
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Blade.Runner.1982.Directors.Cut.1080p.BluRay.x264-GROUP'
+
+
+def test_release_matches_source_title_rejects_explicit_year_mismatch():
+    assert _release_matches_source_title(
+        'Suspiria.2018.1080p.BluRay.x264-GROUP',
+        '/media/Suspiria (1977).mkv',
+    ) is False
+
+
+def test_release_matches_source_title_requires_strong_overlap_for_long_titles():
+    assert _release_matches_source_title(
+        'The.Last.Witch.Hunter.2023.1080p.WEB-DL.x265-GROUP',
+        '/media/The Last Voyage of the Demeter (2023).mkv',
+    ) is False
+
+
+def test_release_matches_source_title_distinguishes_part_numbers():
+    assert _release_matches_source_title(
+        'Dune.Part.One.2024.1080p.WEB-DL.x265-GROUP',
+        '/media/Dune Part Two (2024).mkv',
+    ) is False
 
 
 def test_download_job_exists_for_source_treats_pending_as_active_non_terminal():
