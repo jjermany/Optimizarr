@@ -1485,6 +1485,13 @@ def run_download_startup_recovery(db: Session) -> dict:
 
             if torrent_info is None:
                 recovered = _find_qbt_torrent_for_release(dj, all_qbt_torrents)
+                if recovered is None and not stored_hash:
+                    recovered_hash = _recover_qbt_hash_for_job(dj, all_qbt_torrents)
+                    if recovered_hash:
+                        recovered = next(
+                            (t for t in all_qbt_torrents if str(t.get('hash', '')).lower() == recovered_hash),
+                            None,
+                        )
                 if recovered:
                     torrent_info = recovered
                 else:
@@ -1507,8 +1514,23 @@ def run_download_startup_recovery(db: Session) -> dict:
                         imported += 1
                         continue
 
-                    logger.warning('Download job %s: hash %r not found in qBittorrent; resetting to searching',
-                                   dj.id, dj.download_hash)
+                    if not stored_hash:
+                        # Hash-less qBit jobs can still be reconciled in the
+                        # normal monitor loop via release/source matching.
+                        # Keep them downloading instead of forcing a re-search.
+                        logger.warning(
+                            'Download job %s: no hash yet and no qBit match during startup; '
+                            'keeping status=downloading for runtime recovery',
+                            dj.id,
+                        )
+                        dj.download_started_at = datetime.utcnow()
+                        db.commit()
+                        continue
+
+                    logger.warning(
+                        'Download job %s: hash %r not found in qBittorrent; resetting to searching',
+                        dj.id, dj.download_hash,
+                    )
                     _reset_download_job_to_searching(db, dj)
                     reset_count += 1
                     continue

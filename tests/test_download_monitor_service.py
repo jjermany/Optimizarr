@@ -522,6 +522,40 @@ def test_startup_recovery_imports_importing_job_completed_in_qbit(monkeypatch):
         assert imported_paths == ['/downloads/complete/The.Gorge.2025.1080p.WEB-DL']
 
 
+def test_startup_recovery_keeps_hashless_qbit_job_downloading_when_unmatched(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Doctor Strange (2016).mkv',
+            release_name='Some.Release.Name',
+            download_hash=None,
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_qbt_default_save_path', lambda _q: '/downloads/complete')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [])
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(dj)
+
+        assert summary['imported'] == 0
+        assert summary['reset_to_searching'] == 0
+        assert dj.status == DownloadJobStatus.downloading.value
+
+
 def test_startup_recovery_links_completed_download_to_waiting_encode_job(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
