@@ -1,9 +1,57 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+html, body, #root {
+  min-height: 100%;
+}
+
+:root {
+  color-scheme: dark;
+}
+
 body {
-  @apply bg-slate-950 text-slate-100 antialiased;
+  font-family: 'Space Grotesk', 'Segoe UI', 'Avenir Next', sans-serif;
+  background:
+    radial-gradient(circle at 10% -10%, rgba(20, 184, 166, 0.16), transparent 38%),
+    radial-gradient(circle at 88% 4%, rgba(14, 165, 233, 0.18), transparent 34%),
+    linear-gradient(180deg, #020617 0%, #020617 45%, #0b1220 100%);
+  @apply text-slate-100 antialiased;
+}
+
+.app-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+.app-shell::before,
+.app-shell::after {
+  content: '';
+  position: fixed;
+  z-index: -1;
+  width: 18rem;
+  height: 18rem;
+  border-radius: 9999px;
+  filter: blur(48px);
+  pointer-events: none;
+}
+
+.app-shell::before {
+  top: -7rem;
+  left: -4rem;
+  background: rgba(6, 182, 212, 0.26);
+}
+
+.app-shell::after {
+  right: -4rem;
+  bottom: -6rem;
+  background: rgba(14, 165, 233, 0.2);
+}
+
+*:focus-visible {
+  @apply outline-none ring-2 ring-cyan-400/70 ring-offset-2 ring-offset-slate-950;
 }
 
 /* Smooth scrollbar */

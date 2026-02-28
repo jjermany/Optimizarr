@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   abortAllJobs,
   abortJob,
@@ -430,7 +430,8 @@ function validateLibraryForm(draft) {
 
 function SectionCard({ children, className = '' }) {
   return (
-    <div className={`rounded-xl border border-slate-800 bg-slate-900/80 p-5 shadow-lg shadow-slate-950/40 ${className}`}>
+    <div className={`relative overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-900/72 p-5 shadow-xl shadow-slate-950/45 backdrop-blur-sm ${className}`}>
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/[0.03] via-transparent to-transparent" />
       {children}
     </div>
   );
@@ -438,7 +439,10 @@ function SectionCard({ children, className = '' }) {
 
 function SectionTitle({ children }) {
   return (
-    <h2 className="mb-4 text-xs font-semibold uppercase tracking-widest text-slate-400">{children}</h2>
+    <h2 className="mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-cyan-300/80" />
+      {children}
+    </h2>
   );
 }
 
@@ -456,7 +460,7 @@ function FormField({ label, hint, error, children, span2 = false }) {
 function TextInput({ className = '', ...props }) {
   return (
     <input
-      className={`w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 outline-none transition-all duration-150 focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30 ${className}`}
+      className={`w-full rounded-xl border border-slate-600/80 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 placeholder-slate-500/90 shadow-inner shadow-black/20 outline-none transition-all duration-150 focus:border-cyan-400/70 focus:bg-slate-900 ${className}`}
       {...props}
     />
   );
@@ -465,7 +469,7 @@ function TextInput({ className = '', ...props }) {
 function SelectInput({ children, className = '', ...props }) {
   return (
     <select
-      className={`w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100 outline-none transition-all duration-150 focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30 ${className}`}
+      className={`w-full rounded-xl border border-slate-600/80 bg-slate-900/80 px-3 py-2 text-sm text-slate-100 shadow-inner shadow-black/20 outline-none transition-all duration-150 focus:border-cyan-400/70 focus:bg-slate-900 ${className}`}
       {...props}
     >
       {children}
@@ -474,20 +478,20 @@ function SelectInput({ children, className = '', ...props }) {
 }
 
 function Btn({ variant = 'primary', size = 'md', className = '', children, ...props }) {
-  const base = 'inline-flex items-center justify-center rounded-lg font-semibold transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-offset-slate-900 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95';
+  const base = 'inline-flex items-center justify-center rounded-xl font-semibold transition-all duration-150 focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-offset-slate-950 disabled:opacity-50 disabled:cursor-not-allowed active:scale-[0.98]';
   const sizes = {
     sm: 'px-3 py-1.5 text-xs',
     md: 'px-4 py-2 text-sm',
     lg: 'px-5 py-2.5 text-sm',
   };
   const variants = {
-    primary: 'bg-cyan-500 text-slate-950 hover:bg-cyan-400 focus:ring-cyan-500',
-    danger: 'bg-rose-600 text-white hover:bg-rose-500 focus:ring-rose-500',
-    warning: 'bg-amber-500 text-slate-950 hover:bg-amber-400 focus:ring-amber-500',
-    success: 'bg-emerald-500 text-slate-950 hover:bg-emerald-400 focus:ring-emerald-500',
-    secondary: 'border border-slate-600 bg-slate-800 text-slate-100 hover:bg-slate-700 focus:ring-slate-500',
-    violet: 'bg-violet-500 text-slate-950 hover:bg-violet-400 focus:ring-violet-500',
-    indigo: 'bg-indigo-500 text-slate-950 hover:bg-indigo-400 focus:ring-indigo-500',
+    primary: 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950 shadow-lg shadow-cyan-950/40 hover:from-cyan-300 hover:to-sky-300 focus:ring-cyan-400',
+    danger: 'bg-gradient-to-r from-rose-600 to-red-500 text-white shadow-lg shadow-rose-950/45 hover:from-rose-500 hover:to-red-400 focus:ring-rose-500',
+    warning: 'bg-gradient-to-r from-amber-400 to-orange-400 text-slate-950 shadow-lg shadow-amber-950/40 hover:from-amber-300 hover:to-orange-300 focus:ring-amber-400',
+    success: 'bg-gradient-to-r from-emerald-400 to-teal-400 text-slate-950 shadow-lg shadow-emerald-950/40 hover:from-emerald-300 hover:to-teal-300 focus:ring-emerald-400',
+    secondary: 'border border-slate-600/80 bg-slate-800/85 text-slate-100 hover:border-slate-500 hover:bg-slate-700/85 focus:ring-slate-500',
+    violet: 'bg-gradient-to-r from-indigo-400 to-cyan-400 text-slate-950 shadow-lg shadow-indigo-950/40 hover:from-indigo-300 hover:to-cyan-300 focus:ring-indigo-400',
+    indigo: 'bg-gradient-to-r from-blue-400 to-indigo-400 text-slate-950 shadow-lg shadow-indigo-950/40 hover:from-blue-300 hover:to-indigo-300 focus:ring-indigo-400',
   };
   return (
     <button type="button" className={`${base} ${sizes[size]} ${variants[variant]} ${className}`} {...props}>
@@ -496,13 +500,80 @@ function Btn({ variant = 'primary', size = 'md', className = '', children, ...pr
   );
 }
 
+function MobileActionMenu({ children, label = 'Actions' }) {
+  const [open, setOpen] = useState(false);
+  const menuId = useId();
+  const containerRef = useRef(null);
+  const menuPanelRef = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+
+    function handlePointerDown(event) {
+      if (!containerRef.current?.contains(event.target)) {
+        setOpen(false);
+      }
+    }
+
+    function handleEscape(event) {
+      if (event.key === 'Escape') {
+        setOpen(false);
+      }
+    }
+
+    const focusTimer = window.setTimeout(() => {
+      const firstAction = menuPanelRef.current?.querySelector('button');
+      if (firstAction instanceof HTMLElement) firstAction.focus();
+    }, 0);
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleEscape);
+    };
+  }, [open]);
+
+  return (
+    <details
+      ref={containerRef}
+      open={open}
+      className="group mt-3"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary
+        aria-controls={menuId}
+        aria-expanded={open}
+        aria-label={`${label} menu`}
+        className="flex cursor-pointer list-none items-center justify-between rounded-lg border border-slate-700/80 bg-slate-800/70 px-3 py-1.5 text-xs font-medium text-slate-200 transition-colors hover:bg-slate-700/80 [&::-webkit-details-marker]:hidden"
+      >
+        {label}
+        <span className="text-slate-400 transition-transform duration-150 group-open:rotate-180">▾</span>
+      </summary>
+      <div
+        id={menuId}
+        ref={menuPanelRef}
+        role="group"
+        aria-label={`${label} options`}
+        className="mt-2 flex flex-wrap gap-1.5 rounded-lg border border-slate-700/70 bg-slate-900/70 p-2"
+        onClickCapture={(event) => {
+          if (event.target.closest('button')) setOpen(false);
+        }}
+      >
+        {children}
+      </div>
+    </details>
+  );
+}
+
 function Toggle({ checked, onChange, label }) {
   return (
     <label className="flex cursor-pointer items-center gap-3">
       <div className="relative">
         <input type="checkbox" className="sr-only" checked={checked} onChange={onChange} />
-        <div className={`h-5 w-9 rounded-full transition-colors duration-200 ${checked ? 'bg-cyan-500' : 'bg-slate-700'}`} />
-        <div className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${checked ? 'translate-x-4' : 'translate-x-0'}`} />
+        <div className={`h-6 w-11 rounded-full border transition-colors duration-200 ${checked ? 'border-cyan-400/70 bg-cyan-500/40' : 'border-slate-600 bg-slate-700/80'}`} />
+        <div className={`absolute top-1 left-1 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
       </div>
       {label && <span className="text-sm text-slate-200">{label}</span>}
     </label>
@@ -523,7 +594,7 @@ function StatusDot({ status }) {
     connecting: 'Connecting',
   };
   return (
-    <div className="flex items-center gap-1.5">
+    <div role="status" aria-live="polite" aria-label={`Connection status: ${labels[status] ?? status}`} className="flex items-center gap-2 rounded-full border border-slate-700/70 bg-slate-900/70 px-2.5 py-1">
       <span className={`inline-block h-2 w-2 rounded-full shadow-sm ${colors[status] ?? colors.connecting} ${status === 'online' ? 'animate-pulse' : ''}`} />
       <span className="text-xs text-slate-400">{labels[status] ?? status}</span>
     </div>
@@ -1590,25 +1661,41 @@ export default function App() {
   // ── Render ──────────────────────────────────────────────────────────────────
 
   return (
-    <main className="min-h-screen bg-gradient-to-b from-slate-950 via-slate-950 to-slate-900 p-4 md:p-6 text-slate-100">
+    <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
       <div className="mx-auto max-w-7xl space-y-5">
 
         {/* Header */}
-        <header className="flex flex-col gap-3 rounded-2xl border border-slate-800/80 bg-slate-900/70 px-5 py-3 shadow-xl shadow-slate-950/50 backdrop-blur-sm md:flex-row md:items-center md:justify-between">
-          <div className="flex items-center gap-3">
-            <img src="/api/branding/logo" alt="Optimizarr" className="h-12 w-auto drop-shadow-md" />
-            <h1 className="sr-only text-2xl font-bold text-cyan-200">Optimizarr</h1>
+        <header className="relative overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-900/75 px-5 py-4 shadow-2xl shadow-slate-950/60 backdrop-blur-sm">
+          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-cyan-500/10 via-transparent to-sky-400/10" />
+          <div className="relative flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="min-w-0">
+              <div className="flex items-center gap-3">
+                <img src="/api/branding/logo" alt="Optimizarr" className="h-12 w-auto drop-shadow-md" />
+                <div className="hidden sm:block">
+                  <p className="text-lg font-semibold tracking-wide text-slate-100">Optimizarr Control Center</p>
+                  <p className="text-xs text-slate-400">Media optimization orchestration and monitoring</p>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <StatusDot status={connectionStatus} />
+              <span aria-label={`Queue items: ${queueCount}`} className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-300">
+                Queue {queueCount}
+              </span>
+              <span aria-label={`Active jobs: ${metrics?.active_jobs ?? 0}`} className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-300">
+                Active {metrics?.active_jobs ?? 0}
+              </span>
+            </div>
           </div>
-          <StatusDot status={connectionStatus} />
-          <nav className="flex gap-1 rounded-xl border border-slate-800 bg-slate-950/60 p-1">
+          <nav className="relative mt-3 flex gap-1 rounded-xl border border-slate-700/70 bg-slate-950/60 p-1">
             {Object.entries(PAGE_KEYS).map(([key, label]) => (
               <button
                 key={key}
                 type="button"
                 className={`rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${
                   activePage === key
-                    ? 'bg-cyan-500 text-slate-950 shadow-sm shadow-cyan-500/30'
-                    : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+                    ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950 shadow-sm shadow-cyan-500/30'
+                    : 'text-slate-400 hover:bg-slate-800/80 hover:text-slate-100'
                 }`}
                 onClick={() => navigate(key)}
               >
@@ -2124,14 +2211,34 @@ export default function App() {
           <section className="animate-fade-in space-y-5">
 
             {/* Queue / History tab card */}
-            <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-900/80 shadow-lg shadow-slate-950/40">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 px-5 py-3">
+            <div className="overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-900/75 shadow-2xl shadow-slate-950/45 backdrop-blur-sm">
+              <div className="border-b border-slate-700/70 px-5 py-3">
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold tracking-wide text-slate-200">Job Activity</p>
+                    <p className="text-xs text-slate-500">Track current queue operations and historical processing outcomes.</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {jobsView === 'queue' && (
+                      <span aria-label={`Queue status: ${queuePaused ? 'paused' : 'running'}`} className={`rounded-full border px-2.5 py-1 text-xs ${queuePaused ? 'border-amber-500/40 bg-amber-950/40 text-amber-300' : 'border-emerald-500/40 bg-emerald-950/40 text-emerald-300'}`}>
+                        {queuePaused ? 'Queue Paused' : 'Queue Running'}
+                      </span>
+                    )}
+                    <span aria-label={`Active queue items: ${filteredActiveJobs.length}`} className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-300">
+                      Active {filteredActiveJobs.length}
+                    </span>
+                    <span aria-label={`History items: ${filteredHistoryJobs.length}`} className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-300">
+                      History {filteredHistoryJobs.length}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-3">
                 {/* Tab switcher */}
-                <div className="flex gap-1 rounded-xl border border-slate-800 bg-slate-950/60 p-1">
+                <div className="flex gap-1 rounded-xl border border-slate-700/70 bg-slate-950/60 p-1">
                   <button
                     type="button"
                     onClick={() => setJobsView('queue')}
-                    className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'queue' ? 'bg-cyan-500 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
+                    className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'queue' ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
                   >
                     Queue
                     <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'queue' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredActiveJobs.length + downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length}</span>
@@ -2139,7 +2246,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setJobsView('history')}
-                    className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'history' ? 'bg-cyan-500 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
+                    className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'history' ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
                   >
                     History
                     <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'history' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredHistoryJobs.length + downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length}</span>
@@ -2148,23 +2255,23 @@ export default function App() {
                 {/* Action buttons for the active view */}
                 {jobsView === 'queue' && (
                   <div className="flex flex-wrap items-center gap-2">
-                    <input
+                    <TextInput
                       type="text"
                       placeholder="Search queue…"
                       value={queueSearch}
                       onChange={(e) => { setQueueSearch(e.target.value); setJobsPage(1); }}
-                      className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30 w-44"
+                      className="w-48 py-1.5 text-xs"
                     />
-                    <select
+                    <SelectInput
                       value={queueSort}
                       onChange={(e) => { void handleQueueSortChange(e.target.value); }}
-                      className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30"
+                      className="w-44 py-1.5 text-xs"
                     >
                       <option value="default">Date Added (Oldest)</option>
                       <option value="newest">Date Added (Newest)</option>
                       <option value="year_newest">Release Year (Newest)</option>
                       <option value="year_oldest">Release Year (Oldest)</option>
-                    </select>
+                    </SelectInput>
                     <Btn size="sm" variant="secondary" onClick={handleCancelAllQueued}>Cancel Queued</Btn>
                     <Btn size="sm" variant="secondary" onClick={handleClearQueue}>Clear Queue</Btn>
                     <Btn size="sm" variant="danger" onClick={handleAbortAllJobs}>Abort All</Btn>
@@ -2175,36 +2282,161 @@ export default function App() {
                 )}
                 {jobsView === 'history' && (
                   <div className="flex flex-wrap items-center gap-2">
-                    <input
+                    <TextInput
                       type="text"
                       placeholder="Search history…"
                       value={historySearch}
                       onChange={(e) => { setHistorySearch(e.target.value); setHistoryPage(1); }}
-                      className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30 w-44"
+                      className="w-48 py-1.5 text-xs"
                     />
-                    <select
+                    <SelectInput
                       value={historySort}
                       onChange={(e) => setHistorySort(e.target.value)}
-                      className="rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-1.5 text-xs text-slate-200 outline-none focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30"
+                      className="w-48 py-1.5 text-xs"
                     >
                       <option value="completed_desc">Completed (Newest)</option>
                       <option value="year_newest">Release Year (Newest)</option>
                       <option value="year_oldest">Release Year (Oldest)</option>
-                    </select>
+                    </SelectInput>
                     <Btn size="sm" variant="danger" onClick={handlePurgeHistory}>Clear History</Btn>
                   </div>
                 )}
               </div>
+              </div>
               {/* Queue tab content */}
               {jobsView === 'queue' && (
                 <>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-slate-800">
-                      <thead className="bg-slate-800/50">
+                  <div className="space-y-3 p-3 md:hidden">
+                    {pagedJobs.length === 0 && (
+                      <div className="rounded-xl border border-slate-700/70 bg-slate-900/60 px-4 py-10 text-center text-sm text-slate-500">
+                        {queueSearch ? 'No matching jobs.' : 'No jobs in queue.'}
+                      </div>
+                    )}
+                    {pagedJobs.map((item) => {
+                      if (item._itemType === 'download') {
+                        const dj = item;
+                        const { title, year } = extractTitleYear(dj.source_file_path);
+                        const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
+                        const elapsedStart = dj.download_started_at ?? dj.created_at;
+                        const elapsedSeconds = getElapsedSeconds(elapsedStart, nowMs);
+                        const elapsedLabel = formatElapsed(elapsedSeconds);
+                        const showEta = ['searching', 'downloading', 'importing'].includes(dj.status);
+                        const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
+                        return (
+                          <div key={`dl-mobile-${dj.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
+                            <div className="mb-2 flex items-center justify-between">
+                              <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Download</span>
+                              <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-400">ID {dj.id}</span>
+                            </div>
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={dj.source_file_path}>{title || 'Unknown Title'}</p>
+                              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'importing' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : dj.status === 'searching' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : dj.status === 'downloading' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : dj.status === 'stalled' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>
+                                {dj.status.replace(/_/g, ' ')}
+                              </span>
+                            </div>
+                            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                              <span>{year ?? '—'}</span>
+                              <span>{libName}</span>
+                            </div>
+                            <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                              {showEta && <span>ETA: {etaLabel}</span>}
+                              {dj.status !== 'pending' && <span>Elapsed: {elapsedLabel}</span>}
+                            </div>
+                            {dj.status === 'downloading' && (
+                              <div className="mt-2">
+                                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-700">
+                                  <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
+                                </div>
+                                <div className="mt-1 text-xs text-slate-500">{dj.progress_percent}%</div>
+                              </div>
+                            )}
+                            {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
+                            <MobileActionMenu>
+                              {['pending', 'searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
+                                <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Remove + Reset</Btn>
+                              )}
+                              {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
+                                <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
+                              )}
+                              <Btn size="sm" variant="secondary" onClick={() => handleDeleteDownloadJob(dj.id)}>Delete</Btn>
+                            </MobileActionMenu>
+                          </div>
+                        );
+                      }
+
+                      const job = item;
+                      const progress = progressFromJob(job);
+                      const isRunning = job.status === 'running';
+                      const eta = formatEta(job.eta_seconds);
+                      const { title, year } = extractTitleYear(job.source_path);
+                      const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
+                      const activeDj = downloadJobBySource[job.source_path];
+                      const djIsActive = activeDj && ['searching', 'downloading', 'importing'].includes(activeDj.status);
+                      const jobLibProfile = libraryProfiles[job.library_id];
+                      const jobDownloadEnabled = !!jobLibProfile?.download_enabled;
+                      return (
+                        <div key={`job-mobile-${job.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
+                          <div className="mb-2 flex items-center justify-between">
+                            <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Encode</span>
+                            <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-400">ID {job.id}</span>
+                          </div>
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={job.source_path}>{title || 'Unknown Title'}</p>
+                            <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium ${job.status === 'running' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : job.status === 'failed' ? 'border-red-500/40 bg-red-950/30 text-red-300' : job.status === 'paused' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{job.status}</span>
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                            <span>{year ?? '—'}</span>
+                            <span>{libName}</span>
+                          </div>
+                          <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                            <span>{formatResolution(job.source_resolution)} · {formatHdrIndicator(job.source_is_hdr)}</span>
+                            {job.encoder_used && <span>{job.encoder_used}{job.hwaccel_used ? ' (HW)' : ''}</span>}
+                            {isRunning && job.fps != null && <span>{job.fps.toFixed(1)} fps</span>}
+                            {isRunning && eta && <span>{eta}</span>}
+                          </div>
+                          {job.status === 'failed' && job.error_message && <p className="mt-2.5 text-xs text-red-400">{job.error_message}</p>}
+                          {djIsActive && activeDj.status === 'searching' && <p className="mt-2.5 text-xs text-sky-400">Searching…</p>}
+                          {djIsActive && activeDj.status === 'downloading' && <p className="mt-2.5 text-xs text-violet-400">Downloading {activeDj.progress_percent}%</p>}
+                          {djIsActive && activeDj.status === 'importing' && <p className="mt-2.5 text-xs text-violet-400">Importing…</p>}
+                          <div className="mt-2.5">
+                            <div className="h-1.5 w-full rounded-full bg-slate-700">
+                              <div className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-500" style={{ width: `${progress}%` }} />
+                            </div>
+                            <div className="mt-1 text-xs text-slate-500">{progress}%</div>
+                          </div>
+                          <MobileActionMenu>
+                            {job.status === 'running' && <Btn size="sm" variant="warning" onClick={() => handleJobAction('pause', job.id)}>Pause</Btn>}
+                            {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
+                            {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && !jobDownloadEnabled && <Btn size="sm" variant="success" onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>Start</Btn>}
+                            {job.status === 'interrupted' && <Btn size="sm" variant="primary" onClick={() => handleJobAction('requeue', job.id)}>Requeue</Btn>}
+                            {(ACTIVE_STATUSES.has(job.status) || (job.status === 'paused' && progress > 0)) && (
+                              <Btn size="sm" variant="secondary" onClick={() => handleJobAction('discard', job.id)}>
+                                {jobDownloadEnabled ? 'Search Again' : 'Restart'}
+                              </Btn>
+                            )}
+                            {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
+                              <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>
+                                Abort
+                              </Btn>
+                            )}
+                          </MobileActionMenu>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="hidden overflow-x-auto [scrollbar-gutter:stable] md:block">
+                    <table className="min-w-[1024px] divide-y divide-slate-800">
+                      <thead className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur-sm">
                         <tr>
-                          {['ID', 'Title', 'Year', 'Library', 'Status', 'Details', 'Encoder', 'Progress', 'Actions'].map((h) => (
-                            <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">{h}</th>
-                          ))}
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">ID</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Title</th>
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Year</th>
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Library</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Details</th>
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Encoder</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Progress</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60">
@@ -2233,16 +2465,16 @@ export default function App() {
                             const showEta = ['searching', 'downloading', 'importing'].includes(dj.status);
                             const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
                             return (
-                              <tr key={`dl-${dj.id}`} className="transition-colors duration-100 hover:bg-slate-800/30">
-                                <td className="px-4 py-3 text-xs text-slate-500">{dj.id}</td>
+                              <tr key={`dl-${dj.id}`} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
+                                <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{dj.id}</td>
                                 <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
-                                <td className="px-4 py-3 text-sm text-slate-400">{year ?? '—'}</td>
-                                <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
+                                <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
+                                <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
                                 <td className="px-4 py-3 text-sm">
                                   <div className="flex items-center gap-1.5">
                                     {dj.status === 'searching' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />}
                                     {dj.status === 'importing' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />}
-                                    <span className={`capitalize ${statusColor}`}>{dj.status.replace(/_/g, ' ')}</span>
+                                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${statusColor === 'text-violet-400' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : statusColor === 'text-sky-400' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : statusColor === 'text-cyan-400' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : statusColor === 'text-amber-400' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
                                   </div>
                                   {showEta && <p className="mt-0.5 text-xs text-slate-400">ETA: {etaLabel}</p>}
                                   {dj.status !== 'pending' && (
@@ -2252,14 +2484,14 @@ export default function App() {
                                   )}
                                   {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
                                 </td>
-                                <td className="max-w-[180px] truncate px-4 py-3 text-xs text-slate-400" title={dj.search_query}>
+                                <td className="hidden max-w-[180px] truncate px-4 py-3 text-xs text-slate-400 xl:table-cell" title={dj.search_query}>
                                   {dj.status === 'searching' && !dj.search_query ? <span className="italic text-slate-500">Building query…</span> : (dj.search_query ?? '—')}
                                 </td>
-                                <td className="px-4 py-3 text-xs text-slate-600">—</td>
+                                <td className="hidden px-4 py-3 text-xs text-slate-600 xl:table-cell">—</td>
                                 <td className="px-4 py-3">
                                   {dj.status === 'downloading' ? (
                                     <div>
-                                      <div className="h-1.5 w-32 overflow-hidden rounded-full bg-slate-700">
+                                      <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-700 md:w-32">
                                         <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
                                       </div>
                                       <div className="mt-1.5 text-xs text-slate-500">{dj.progress_percent}%</div>
@@ -2293,13 +2525,13 @@ export default function App() {
                           const jobLibProfile = libraryProfiles[job.library_id];
                           const jobDownloadEnabled = !!jobLibProfile?.download_enabled;
                           return (
-                            <tr key={job.id} className="transition-colors duration-100 hover:bg-slate-800/30">
-                              <td className="px-4 py-3 text-xs text-slate-500">{job.id}</td>
+                            <tr key={job.id} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
+                              <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{job.id}</td>
                               <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={job.source_path}>{title}</td>
-                              <td className="px-4 py-3 text-sm text-slate-400">{year ?? '—'}</td>
-                              <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
+                              <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
+                              <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
                               <td className="px-4 py-3 text-sm capitalize">
-                                <span className={job.status === 'running' ? 'text-cyan-300' : job.status === 'failed' ? 'text-red-400' : 'text-slate-300'}>{job.status}</span>
+                                <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${job.status === 'running' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : job.status === 'failed' ? 'border-red-500/40 bg-red-950/30 text-red-300' : job.status === 'paused' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{job.status}</span>
                                 {job.status === 'failed' && job.error_message && (
                                   <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
                                 )}
@@ -2319,12 +2551,12 @@ export default function App() {
                                   </p>
                                 )}
                               </td>
-                              <td className="px-4 py-3 text-xs text-slate-400">
+                              <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
                                 <span>{formatResolution(job.source_resolution)}</span>
                                 <span className="mx-1.5 text-slate-600">·</span>
                                 <span>{formatHdrIndicator(job.source_is_hdr)}</span>
                               </td>
-                              <td className="px-4 py-3 text-xs text-slate-400">
+                              <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
                                 {job.encoder_used ? (
                                   <>
                                     <span className={job.hwaccel_used ? 'font-medium text-cyan-400' : ''}>{job.encoder_used}</span>
@@ -2337,7 +2569,7 @@ export default function App() {
                                 )}
                               </td>
                               <td className="px-4 py-3">
-                                <div className="h-1.5 w-32 rounded-full bg-slate-700">
+                                <div className="h-1.5 w-24 rounded-full bg-slate-700 md:w-32">
                                   <div
                                     className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-500"
                                     style={{ width: `${progress}%` }}
@@ -2374,7 +2606,7 @@ export default function App() {
                     </table>
                   </div>
                   {totalJobPages > 1 && (
-                    <div className="flex items-center justify-between border-t border-slate-800 px-5 py-3 text-sm text-slate-400">
+                    <div className="flex items-center justify-between border-t border-slate-700/70 px-5 py-3 text-sm text-slate-400">
                       <p>Page {jobsPage} of {totalJobPages}</p>
                       <div className="flex items-center gap-1">
                         {Array.from({ length: totalJobPages }, (_, i) => i + 1).map((pageNum) => (
@@ -2382,7 +2614,7 @@ export default function App() {
                             key={pageNum}
                             type="button"
                             onClick={() => setJobsPage(pageNum)}
-                            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${jobsPage === pageNum ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${jobsPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
                           >
                             {pageNum}
                           </button>
@@ -2396,13 +2628,66 @@ export default function App() {
               {/* History tab content */}
               {jobsView === 'history' && (
                 <>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-slate-800">
-                      <thead className="bg-slate-800/50">
+                  <div className="space-y-3 p-3 md:hidden">
+                    {pagedHistoryJobs.length === 0 && (
+                      <div className="rounded-xl border border-slate-700/70 bg-slate-900/60 px-4 py-10 text-center text-sm text-slate-500">
+                        {historySearch ? 'No matching history.' : 'No completed jobs yet.'}
+                      </div>
+                    )}
+                    {pagedHistoryJobs.map((job) => {
+                      const { title, year } = extractTitleYear(job.source_path);
+                      const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
+                      const histJobDownloadEnabled = !!libraryProfiles[job.library_id]?.download_enabled;
+                      const completedDate = job.completed_at
+                        ? new Date(job.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZoneName: 'short' })
+                        : '—';
+                      return (
+                        <div key={`hist-mobile-${job.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
+                          <div className="mb-2 flex items-center justify-between">
+                            <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">History</span>
+                            <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-400">ID {job.id}</span>
+                          </div>
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={job.source_path}>{title || 'Unknown Title'}</p>
+                            <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium ${job.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : job.status === 'failed' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{job.status}</span>
+                          </div>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                            <span>{year ?? '—'}</span>
+                            <span>{libName}</span>
+                          </div>
+                          <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                            <span>{formatResolution(job.source_resolution)} · {formatHdrIndicator(job.source_is_hdr)}</span>
+                            {job.encoder_used && <span>{job.encoder_used}{job.hwaccel_used ? ' (HW)' : ''}</span>}
+                          </div>
+                          <p className="mt-2.5 text-xs text-slate-500">{completedDate}</p>
+                          {job.status === 'failed' && job.error_message && (
+                            <p className="mt-2.5 text-xs text-red-400">{job.error_message}</p>
+                          )}
+                          <MobileActionMenu>
+                            {['failed', 'cancelled'].includes(job.status) && (
+                              <Btn size="sm" variant="primary" onClick={() => handleJobAction('retry', job.id)}>
+                                {histJobDownloadEnabled ? 'Search Again' : 'Retry'}
+                              </Btn>
+                            )}
+                            <Btn size="sm" variant="secondary" onClick={() => handleJobAction('remove', job.id)}>Remove</Btn>
+                          </MobileActionMenu>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="hidden overflow-x-auto [scrollbar-gutter:stable] md:block">
+                    <table className="min-w-[1024px] divide-y divide-slate-800">
+                      <thead className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur-sm">
                         <tr>
-                          {['ID', 'Title', 'Year', 'Library', 'Status', 'Details', 'Encoder', 'Completed', 'Actions'].map((h) => (
-                            <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">{h}</th>
-                          ))}
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">ID</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Title</th>
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Year</th>
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Library</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Details</th>
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Encoder</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Completed</th>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60">
@@ -2420,29 +2705,24 @@ export default function App() {
                           const completedDate = job.completed_at
                             ? new Date(job.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZoneName: 'short' })
                             : '—';
-                          const statusColor = job.status === 'complete'
-                            ? 'text-emerald-400'
-                            : job.status === 'failed'
-                              ? 'text-red-400'
-                              : 'text-slate-400';
                           return (
-                            <tr key={job.id} className="transition-colors duration-100 hover:bg-slate-800/30">
-                              <td className="px-4 py-3 text-xs text-slate-500">{job.id}</td>
+                            <tr key={job.id} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
+                              <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{job.id}</td>
                               <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={job.source_path}>{title}</td>
-                              <td className="px-4 py-3 text-sm text-slate-400">{year ?? '—'}</td>
-                              <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
+                              <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
+                              <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
                               <td className="px-4 py-3 text-sm capitalize">
-                                <span className={statusColor}>{job.status}</span>
+                                <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${job.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : job.status === 'failed' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{job.status}</span>
                                 {job.status === 'failed' && job.error_message && (
                                   <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
                                 )}
                               </td>
-                              <td className="px-4 py-3 text-xs text-slate-400">
+                              <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
                                 <span>{formatResolution(job.source_resolution)}</span>
                                 <span className="mx-1.5 text-slate-600">·</span>
                                 <span>{formatHdrIndicator(job.source_is_hdr)}</span>
                               </td>
-                              <td className="px-4 py-3 text-xs text-slate-400">
+                              <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
                                 {job.encoder_used ? (
                                   <>
                                     <span className={job.hwaccel_used ? 'font-medium text-cyan-400' : ''}>{job.encoder_used}</span>
@@ -2472,7 +2752,7 @@ export default function App() {
                     </table>
                   </div>
                   {totalHistoryPages > 1 && (
-                    <div className="flex items-center justify-between border-t border-slate-800 px-5 py-3 text-sm text-slate-400">
+                    <div className="flex items-center justify-between border-t border-slate-700/70 px-5 py-3 text-sm text-slate-400">
                       <p>Page {historyPage} of {totalHistoryPages}</p>
                       <div className="flex items-center gap-1">
                         {Array.from({ length: totalHistoryPages }, (_, i) => i + 1).map((pageNum) => (
@@ -2480,7 +2760,7 @@ export default function App() {
                             key={pageNum}
                             type="button"
                             onClick={() => setHistoryPage(pageNum)}
-                            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${historyPage === pageNum ? 'bg-cyan-500 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${historyPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
                           >
                             {pageNum}
                           </button>
@@ -2490,15 +2770,51 @@ export default function App() {
                   )}
                   {/* Terminal download jobs in history */}
                   {downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length > 0 && (
-                    <div className="border-t border-slate-800">
+                    <div className="border-t border-slate-700/70">
                       <div className="px-5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Downloads</div>
-                      <div className="overflow-x-auto">
-                        <table className="min-w-full divide-y divide-slate-800">
-                          <thead className="bg-slate-800/50">
+                      <div className="space-y-3 px-3 pb-3 md:hidden">
+                        {downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).map((dj) => {
+                          const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
+                          const { title, year } = extractTitleYear(dj.source_file_path);
+                          const displayName = title ? `${title}${year ? ` (${year})` : ''}` : '—';
+                          const completedDate = dj.completed_at
+                            ? new Date(dj.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
+                            : '—';
+                          return (
+                            <div key={`dl-hist-mobile-${dj.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
+                              <div className="mb-2 flex items-center justify-between">
+                                <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Download</span>
+                                <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-400">ID {dj.id}</span>
+                              </div>
+                              <div className="flex items-start justify-between gap-2">
+                                <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={dj.source_file_path}>{displayName}</p>
+                                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'failed' || dj.status === 'timed_out' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
+                              </div>
+                              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                                <span>{libName}</span>
+                              </div>
+                              <p className="mt-2.5 text-xs text-slate-500">{completedDate}</p>
+                              {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
+                              <MobileActionMenu>
+                                {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
+                                  <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
+                                )}
+                                <Btn size="sm" variant="secondary" onClick={() => handleDeleteDownloadJob(dj.id)}>Delete</Btn>
+                              </MobileActionMenu>
+                            </div>
+                          );
+                        })}
+                      </div>
+                      <div className="hidden overflow-x-auto [scrollbar-gutter:stable] md:block">
+                        <table className="min-w-[860px] divide-y divide-slate-800">
+                          <thead className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur-sm">
                             <tr>
-                              {['ID', 'Title', 'Library', 'Status', 'Completed', 'Actions'].map((h) => (
-                                <th key={h} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">{h}</th>
-                              ))}
+                              <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">ID</th>
+                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Title</th>
+                              <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Library</th>
+                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
+                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Completed</th>
+                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-800/60">
@@ -2506,20 +2822,16 @@ export default function App() {
                               const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
                               const { title, year } = extractTitleYear(dj.source_file_path);
                               const displayName = title ? `${title}${year ? ` (${year})` : ''}` : '—';
-                              const statusColor =
-                                dj.status === 'complete' ? 'text-emerald-400' :
-                                dj.status === 'failed' || dj.status === 'timed_out' ? 'text-red-400' :
-                                'text-slate-400';
                               const completedDate = dj.completed_at
                                 ? new Date(dj.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
                                 : '—';
                               return (
-                                <tr key={dj.id} className="transition-colors duration-100 hover:bg-slate-800/30">
-                                  <td className="px-4 py-3 text-xs text-slate-500">{dj.id}</td>
+                                <tr key={dj.id} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
+                                  <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{dj.id}</td>
                                   <td className="max-w-[200px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{displayName}</td>
-                                  <td className="px-4 py-3 text-sm text-slate-400">{libName}</td>
+                                  <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
                                   <td className="px-4 py-3 text-sm">
-                                    <span className={`capitalize ${statusColor}`}>{dj.status.replace(/_/g, ' ')}</span>
+                                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${dj.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'failed' || dj.status === 'timed_out' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
                                     {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
                                   </td>
                                   <td className="px-4 py-3 text-xs text-slate-400">{completedDate}</td>
