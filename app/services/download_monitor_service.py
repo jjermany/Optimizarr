@@ -495,6 +495,100 @@ def _recover_sab_completed_for_waiting_queue_jobs(
     return adopted
 
 
+def _recover_sab_completed_for_existing_download_jobs(
+    db: Session,
+    qbt,
+    sab,
+    *,
+    context: str = 'recovery',
+) -> int:
+    """Import completed SAB history entries into existing unimported DownloadJobs."""
+    if not getattr(sab, 'enabled', False):
+        return 0
+
+    completed_items = download_client_service.get_sab_completed_history_items(sab)
+    if not completed_items:
+        return 0
+
+    candidate_rows = (
+        db.query(DownloadJob, Library, LibraryProfile)
+        .join(Library, DownloadJob.library_id == Library.id)
+        .join(LibraryProfile, LibraryProfile.library_id == Library.id)
+        .filter(
+            DownloadJob.imported_file_path.is_(None),
+            DownloadJob.status != DownloadJobStatus.complete.value,
+            DownloadJob.status != DownloadJobStatus.importing.value,
+            DownloadJob.status != DownloadJobStatus.pending.value,
+        )
+        .all()
+    )
+    if not candidate_rows:
+        return 0
+
+    imported = 0
+    for dj, library, profile in candidate_rows:
+        # Respect explicit qBit jobs.  Unknown client_type can still be adopted.
+        if dj.client_type and dj.client_type != 'sabnzbd':
+            continue
+
+        keys = _build_completed_root_match_keys(dj)
+        if not keys:
+            continue
+
+        matched_idx = None
+        matched_item = None
+        for idx, item in enumerate(completed_items):
+            name = str(item.get('name') or '')
+            name_key = _normalize_release_key(name)
+            if not name_key:
+                continue
+            if any(k and (k in name_key or name_key in k) for k in keys):
+                matched_idx = idx
+                matched_item = item
+                break
+        if matched_item is None:
+            continue
+
+        matched_name = str(matched_item.get('name') or '')
+        if not _release_title_matches_profile(matched_name, profile):
+            logger.info(
+                'SAB %s: download job %s matched completed history %r but failed profile check',
+                context,
+                dj.id,
+                matched_name,
+            )
+            continue
+
+        save_path = str(matched_item.get('save_path') or '').strip()
+        nzo_id = str(matched_item.get('nzo_id') or '').strip()
+        if not save_path or not nzo_id:
+            continue
+
+        dj.client_type = 'sabnzbd'
+        dj.download_hash = nzo_id
+        dj.release_name = matched_name
+        dj.status = DownloadJobStatus.downloading.value
+        dj.error_message = None
+        db.commit()
+        db.refresh(dj)
+
+        logger.info(
+            'SAB %s: importing existing download job %s from completed history %r',
+            context,
+            dj.id,
+            matched_name,
+        )
+        _import_file(db, dj, save_path, library, profile, qbt, sab)
+        imported += 1
+
+        if matched_idx is not None:
+            completed_items.pop(matched_idx)
+
+    if imported:
+        logger.info('SAB %s: imported %s completed history item(s) into existing download jobs', context, imported)
+    return imported
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Quality profile helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2041,6 +2135,7 @@ def run_download_startup_recovery(db: Session) -> dict:
         qbt_candidate_jobs,
         context='startup',
     )
+    imported += _recover_sab_completed_for_existing_download_jobs(db, qbt, sab, context='startup')
 
     linked_jobs += _link_completed_downloads_to_waiting_jobs(db)
 
@@ -2185,6 +2280,7 @@ def run_scan_recovery(db: Session) -> dict:
         if not candidate_jobs:
             imported = _recover_completed_root_for_waiting_queue_jobs(db, qbt, sab, qbt_completed_root)
             imported += _recover_sab_completed_for_waiting_queue_jobs(db, qbt, sab)
+            imported += _recover_sab_completed_for_existing_download_jobs(db, qbt, sab, context='scan')
             logger.debug('Scan recovery: no candidate download jobs; queue adoption imported=%s', imported)
             return {'imported': imported}
 
@@ -2212,6 +2308,8 @@ def run_scan_recovery(db: Session) -> dict:
             context='scan',
         )
         imported += _recover_completed_root_for_waiting_queue_jobs(db, qbt, sab, qbt_completed_root)
+        imported += _recover_sab_completed_for_waiting_queue_jobs(db, qbt, sab)
+        imported += _recover_sab_completed_for_existing_download_jobs(db, qbt, sab, context='scan')
         logger.info('Scan recovery complete: imported=%s', imported)
         return {'imported': imported}
     except Exception:
