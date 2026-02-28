@@ -210,6 +210,13 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
 
 
 def download_job_to_dict(dj: DownloadJob) -> dict:
+    def _iso_utc(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc).isoformat()
+        return value.astimezone(timezone.utc).isoformat()
+
     return {
         'id': dj.id,
         'library_id': dj.library_id,
@@ -225,9 +232,9 @@ def download_job_to_dict(dj: DownloadJob) -> dict:
         'imported_file_path': dj.imported_file_path,
         'error_message': dj.error_message,
         'encode_job_id': dj.encode_job_id,
-        'created_at': dj.created_at.isoformat() if dj.created_at else None,
-        'download_started_at': dj.download_started_at.isoformat() if dj.download_started_at else None,
-        'completed_at': dj.completed_at.isoformat() if dj.completed_at else None,
+        'created_at': _iso_utc(dj.created_at),
+        'download_started_at': _iso_utc(dj.download_started_at),
+        'completed_at': _iso_utc(dj.completed_at),
     }
 
 
