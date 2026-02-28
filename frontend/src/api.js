@@ -279,8 +279,12 @@ export function fetchDirs(path) {
   return request(`/fs/dirs${qs}`);
 }
 
-export function cancelDownloadJob(jobId) {
+export function removeAndResetDownloadJob(jobId) {
   return request(`/download-jobs/${jobId}/cancel`, { method: 'POST' });
+}
+
+export function cancelDownloadJob(jobId) {
+  return removeAndResetDownloadJob(jobId);
 }
 
 export function deleteDownloadJob(jobId) {

@@ -345,7 +345,7 @@ def test_preflight_job_applies_output_conflict_policy_rename(monkeypatch, tmp_pa
 
 
 
-def test_claim_next_queued_job_prioritizes_resume_progress(tmp_path):
+def test_claim_next_queued_job_honors_oldest_sort_without_resume_priority(tmp_path):
     queue.resume_queue()
 
     with SessionLocal() as db:
@@ -363,12 +363,12 @@ def test_claim_next_queued_job_prioritizes_resume_progress(tmp_path):
         settings = queue._get_settings(db)
         selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
 
-        assert selected_id == second.id
+        assert selected_id == first.id
 
 
 
 
-def test_claim_next_queued_job_honors_newest_sort_after_resume_priority(tmp_path):
+def test_claim_next_queued_job_honors_newest_sort_without_resume_priority(tmp_path):
     queue.resume_queue()
 
     with SessionLocal() as db:
@@ -463,6 +463,48 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_active_downloa
             status=DownloadJobStatus.downloading.value,
         )
         db.add(active_download)
+        db.commit()
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        db.refresh(job)
+
+        assert selected_id is None
+        assert job.status == 'queued'
+
+
+def test_claim_next_queued_job_skips_download_enabled_source_with_pending_download():
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        db.add(profile)
+        db.commit()
+
+        source_path = '/media/movies/title-pending.mkv'
+        job = Job(input_path=source_path, status='queued', library_id=library.id)
+        db.add(job)
+        db.commit()
+
+        pending_download = DownloadJob(
+            library_id=library.id,
+            source_file_path=source_path,
+            status=DownloadJobStatus.pending.value,
+        )
+        db.add(pending_download)
         db.commit()
 
         settings = queue._get_settings(db)

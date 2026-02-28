@@ -244,6 +244,24 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
         }
 
 
+def remove_qbt_torrent(s: QBittorrentSettings, torrent_hash: str, *, delete_files: bool = False) -> bool:
+    """Remove a torrent from qBittorrent. Returns True on success."""
+    try:
+        client = _qbt_session(s)
+        resp = client.post(
+            '/api/v2/torrents/delete',
+            data={
+                'hashes': str(torrent_hash or '').lower(),
+                'deleteFiles': 'true' if delete_files else 'false',
+            },
+        )
+        resp.raise_for_status()
+        return True
+    except Exception as exc:
+        logger.warning('qBittorrent: failed to remove torrent %s: %s', torrent_hash, exc)
+        return False
+
+
 def get_qbt_default_save_path(s: QBittorrentSettings) -> str | None:
     """Return qBittorrent's configured default completed-download directory."""
     try:
@@ -383,6 +401,18 @@ def delete_sab_history(s: SabnzbdSettings, nzo_id: str) -> None:
         logger.info('SABnzbd: deleted history entry %s', nzo_id)
     except Exception as exc:
         logger.warning('SABnzbd: failed to delete history entry %s: %s', nzo_id, exc)
+
+
+def remove_sab_job(s: SabnzbdSettings, nzo_id: str, *, delete_files: bool = False) -> bool:
+    """Remove an item from the SABnzbd queue and history. Returns True on success."""
+    try:
+        _sab_api(s, mode='queue', name='delete', value=nzo_id, del_files=1 if delete_files else 0)
+        # If the item already moved to history, this call safely no-ops.
+        _sab_api(s, mode='history', name='delete', value=nzo_id, del_files=1 if delete_files else 0)
+        return True
+    except Exception as exc:
+        logger.warning('SABnzbd: failed to remove NZO %s: %s', nzo_id, exc)
+        return False
 
 
 def test_sab_connection(s: SabnzbdSettings) -> dict:

@@ -9,7 +9,6 @@ import shutil
 from threading import Event, Lock, Thread
 import time
 
-from sqlalchemy import case
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -536,7 +535,8 @@ def _extract_year_from_path(path: str | None) -> int | None:
 
 
 def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> int | None:
-    sort_option = getattr(settings, 'queue_sort', QueueSortEnum.default) or QueueSortEnum.default
+    raw_sort_option = getattr(settings, 'queue_sort', QueueSortEnum.default) or QueueSortEnum.default
+    sort_option = str(getattr(raw_sort_option, 'value', raw_sort_option))
     base_query = (
         db.query(Job, Library, LibraryProfile)
         .outerjoin(Library, Job.library_id == Library.id)
@@ -545,6 +545,7 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
     )
 
     _ACTIVE_DOWNLOAD_STATUSES = (
+        DownloadJobStatus.pending.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.importing.value,
@@ -558,30 +559,23 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
     }
 
     if sort_option in {QueueSortEnum.default.value, QueueSortEnum.oldest.value, QueueSortEnum.newest.value}:
-        has_resume_expr = case((Job.resume_position_seconds > 0, 0), else_=1)
         if sort_option == QueueSortEnum.newest.value:
-            queued = base_query.order_by(has_resume_expr.asc(), Job.created_at.desc(), Job.id.desc()).all()
+            queued = base_query.order_by(Job.created_at.desc(), Job.id.desc()).all()
         else:
-            queued = base_query.order_by(has_resume_expr.asc(), Job.created_at.asc(), Job.id.asc()).all()
+            queued = base_query.order_by(Job.created_at.asc(), Job.id.asc()).all()
     else:
         queued = base_query.all()
 
         def sort_key(row: tuple[Job, Library | None, LibraryProfile | None]) -> tuple:
             job = row[0]
-            # Jobs with a saved resume position are always prioritised so they can
-            # continue from where they left off.  progress_percent is intentionally
-            # excluded here: it is a display metric and should not override the
-            # user-selected sort order for ordinary queued items.
-            has_resume = 0 if (job.resume_position_seconds or 0) > 0 else 1  # 0 = higher priority
-
             if sort_option == QueueSortEnum.year_newest.value:
                 year = _extract_year_from_path(job.source_path)
-                return (has_resume, -(year if year is not None else 0), -job.id)
+                return (-(year if year is not None else 0), -job.id)
             if sort_option == QueueSortEnum.year_oldest.value:
                 year = _extract_year_from_path(job.source_path)
-                return (has_resume, (year if year is not None else 9999), job.id)
+                return ((year if year is not None else 9999), job.id)
 
-            return (has_resume, job.created_at.timestamp() if job.created_at else 0, job.id)
+            return (job.created_at.timestamp() if job.created_at else 0, job.id)
 
         queued.sort(key=sort_key)
 

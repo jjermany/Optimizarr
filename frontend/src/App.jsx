@@ -5,7 +5,7 @@ import {
   cancelAllQueued,
   cancelJob,
   clearQueue,
-  cancelDownloadJob,
+  removeAndResetDownloadJob,
   deleteDownloadJob,
   deleteAllDownloadJobs,
   discardJobProgress,
@@ -1514,13 +1514,13 @@ export default function App() {
 
   async function handleCancelDownloadJob(jobId) {
     try {
-      await cancelDownloadJob(jobId);
+      await removeAndResetDownloadJob(jobId);
       const updated = await fetchDownloadJobs();
       setDownloadJobs((updated ?? []).map(normalizeDownloadJob));
       await refreshAll();
-      pushToast('Download job reset to pending.', 'success');
+      pushToast('Download removed from client and reset to pending.', 'success');
     } catch (err) {
-      pushToast(err.message || 'Could not reset download job.', 'error');
+      pushToast(err.message || 'Could not remove/reset download job.', 'error');
     }
   }
 
@@ -2269,7 +2269,7 @@ export default function App() {
                                 <td className="px-4 py-3">
                                   <div className="flex flex-wrap gap-1.5">
                                     {['pending', 'searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
-                                      <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Reset</Btn>
+                                      <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Remove + Reset</Btn>
                                     )}
                                     {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
                                       <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>

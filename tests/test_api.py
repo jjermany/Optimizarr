@@ -442,6 +442,54 @@ def test_cancel_download_job_resets_job_to_pending():
         assert db_job.error_message is None
 
 
+def test_cancel_download_job_removes_active_qbit_torrent_when_enabled(monkeypatch):
+    from app.core.database import SessionLocal
+    from app.models.download_job import DownloadJob, DownloadJobStatus
+    from app.models.library import Library, LibraryProfile
+    from app.models.qbittorrent_settings import QBittorrentSettings
+
+    removed_hashes = []
+    monkeypatch.setattr(routes.download_client_service, 'remove_qbt_torrent', lambda _s, torrent_hash, **_kwargs: removed_hashes.append(torrent_hash) or True)
+
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.query(DownloadJob).delete()
+            db.query(LibraryProfile).delete()
+            db.query(Library).delete()
+            db.query(QBittorrentSettings).delete()
+            db.commit()
+
+            qbt = QBittorrentSettings(id=1, enabled=True, host='http://qbit', port=8080, username='u', password='p')
+            db.add(qbt)
+
+            library = Library(name='Download Library', path='/media/downloads', enabled=True)
+            db.add(library)
+            db.commit()
+            db.refresh(library)
+
+            profile = LibraryProfile(library_id=library.id)
+            db.add(profile)
+            db.commit()
+
+            dj = DownloadJob(
+                library_id=library.id,
+                source_file_path='/media/download-remove.mkv',
+                status=DownloadJobStatus.downloading.value,
+                download_hash='abc123',
+                client_type='qbittorrent',
+                progress_percent=10,
+            )
+            db.add(dj)
+            db.commit()
+            db.refresh(dj)
+            job_id = dj.id
+
+        response = client.post(f'/download-jobs/{job_id}/cancel')
+
+    assert response.status_code == 200
+    assert removed_hashes == ['abc123']
+
+
 def test_scan_uses_enabled_libraries(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()

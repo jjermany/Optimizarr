@@ -1429,6 +1429,17 @@ def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     if dj.status in terminal:
         raise HTTPException(status_code=409, detail='Download job is already in a terminal state')
 
+    # If the job is currently tracked in an external download client, remove it
+    # there first so reset really stops the in-progress transfer.
+    if dj.download_hash and dj.client_type == 'qbittorrent':
+        qbt = download_client_service.get_or_create_qbt_settings(db)
+        if qbt.enabled and not download_client_service.remove_qbt_torrent(qbt, dj.download_hash, delete_files=False):
+            raise HTTPException(status_code=502, detail='Failed to remove torrent from qBittorrent')
+    elif dj.download_hash and dj.client_type == 'sabnzbd':
+        sab = download_client_service.get_or_create_sab_settings(db)
+        if sab.enabled and not download_client_service.remove_sab_job(sab, dj.download_hash, delete_files=False):
+            raise HTTPException(status_code=502, detail='Failed to remove item from SABnzbd')
+
     dj.status = DownloadJobStatus.pending.value
     dj.error_message = None
     dj.search_query = None
