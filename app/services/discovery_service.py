@@ -359,13 +359,6 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         # currently being encoded.
         if job_exists_for_source(db, source_path, library_id=library.id):
             return None
-        # In download-enabled mode, enqueue the download job as soon as the
-        # source is eligible and no conflicting rows exist. This avoids silent
-        # drops when ffprobe/metadata checks fail for unusual source files.
-        if can_attempt_download(db):
-            _cancel_queued_encode_for_source(db, source_path, library.id)
-            create_download_job(db, source_path, library, profile)
-            return None
     else:
         # Encoding-only mode: skip the (expensive) ffprobe if a job already exists.
         if job_exists_for_source(db, source_path, library_id=library.id):

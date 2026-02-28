@@ -227,7 +227,7 @@ def test_scan_library_can_requeue_source_after_abort_all(monkeypatch, tmp_path):
         assert second_jobs[0]['source_path'] == str(source_file)
 
 
-def test_queue_file_if_eligible_download_mode_queues_before_probe(monkeypatch, tmp_path):
+def test_queue_file_if_eligible_download_mode_does_not_queue_when_probe_fails(monkeypatch, tmp_path):
     media_file = tmp_path / 'Doctor Strange (2016).mkv'
     media_file.write_text('content')
 
@@ -251,10 +251,49 @@ def test_queue_file_if_eligible_download_mode_queues_before_probe(monkeypatch, t
         monkeypatch.setattr(download_monitor_service, 'download_job_exists_for_source', lambda _db, _path: False)
         monkeypatch.setattr(download_monitor_service, 'create_download_job', lambda _db, source_path, *_args: created.append(source_path))
 
-        # Would have skipped previously; now download-mode should queue before probe.
+        # Probe failure should still block queueing in download-enabled mode.
         monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _path: None)
         monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
 
         result = discovery_service._queue_file_if_eligible(db, media_file, library, profile)
         assert result is None
-        assert created == [str(media_file)]
+        assert created == []
+
+
+def test_download_mode_still_respects_resolution_and_hdr_filters(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'movies'
+    library_path.mkdir()
+
+    source_file = library_path / 'Doctor Strange (2016).mkv'
+    source_file.write_text('content')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _path: 1080)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
+    monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
+
+    created_downloads = []
+    monkeypatch.setattr(
+        download_monitor_service,
+        'create_download_job',
+        lambda _db, source_path, *_args: created_downloads.append(source_path),
+    )
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'Movies', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        profile_response = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'download_enabled': True, 'hdr_only': True, 'minimum_source_resolution': 2160},
+        )
+        assert profile_response.status_code == 200
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+        assert scan_response.json()['created_jobs'] == []
+
+    assert created_downloads == []
