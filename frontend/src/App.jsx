@@ -381,6 +381,10 @@ function normalizeDownloadJob(job) {
   if (!job || typeof job !== 'object') return job;
   const normalized = { ...job };
   normalized.status = String(job.status ?? '').toLowerCase();
+  if (job.id != null) {
+    const asNumber = Number(job.id);
+    normalized.id = Number.isFinite(asNumber) ? asNumber : job.id;
+  }
   if (job.library_id != null) {
     const asNumber = Number(job.library_id);
     normalized.library_id = Number.isFinite(asNumber) ? asNumber : job.library_id;
@@ -858,6 +862,7 @@ export default function App() {
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const wsRef = useRef();
+  const downloadReconcileInFlightRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef();
   const fallbackTimerRef = useRef();
@@ -1316,6 +1321,28 @@ export default function App() {
     const timer = setInterval(refreshAll, FALLBACK_POLL_MS);
     return () => clearInterval(timer);
   }, [fallbackPollingEnabled, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
+
+  useEffect(() => {
+    if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
+    const activeDownloadCount = downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length;
+    if (activeDownloadCount <= 1) return undefined;
+    if (downloadReconcileInFlightRef.current) return undefined;
+
+    const timer = setTimeout(async () => {
+      if (downloadReconcileInFlightRef.current) return;
+      downloadReconcileInFlightRef.current = true;
+      try {
+        const updated = await fetchDownloadJobs();
+        setDownloadJobs((updated ?? []).map(normalizeDownloadJob));
+      } catch {
+        // Keep websocket-driven state; best-effort self-heal.
+      } finally {
+        downloadReconcileInFlightRef.current = false;
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [downloadJobs, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
   // When jobs or downloads are actively processing, poll every 5 s so status changes
   // (e.g. queued → running) are visible quickly even if a WebSocket update
