@@ -319,17 +319,22 @@ export function estimateDownloadEtaSeconds(downloadJob, nowMs = Date.now()) {
   }
 
   const progress = Math.min(100, reportedProgress);
-  if (progress >= 100) return 0;
+  if (progress >= 100) return null;
 
   return Math.max(0, Math.round(elapsedSeconds * ((100 - progress) / progress)));
 }
 
 export function getDownloadEtaSeconds(downloadJob, nowMs = Date.now()) {
+  const status = String(downloadJob?.status ?? '').toLowerCase();
+  const isComplete = status === 'complete';
   const reportedEta = Number(downloadJob?.eta_seconds);
   if (Number.isFinite(reportedEta) && reportedEta >= 0) {
-    return Math.round(reportedEta);
+    if (reportedEta > 0) return Math.round(reportedEta);
+    if (reportedEta === 0 && isComplete) return 0;
   }
-  return estimateDownloadEtaSeconds(downloadJob, nowMs);
+  const estimated = estimateDownloadEtaSeconds(downloadJob, nowMs);
+  if (estimated === 0 && !isComplete) return null;
+  return estimated;
 }
 
 function formatElapsed(seconds) {
@@ -1283,15 +1288,16 @@ export default function App() {
     return () => clearInterval(timer);
   }, [fallbackPollingEnabled, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
-  // When jobs are actively processing, poll every 5 s so status changes
+  // When jobs or downloads are actively processing, poll every 5 s so status changes
   // (e.g. queued → running) are visible quickly even if a WebSocket update
   // is missed or the connection is still establishing.
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
-    if (activeJobs.length === 0) return undefined;
+    const hasActiveDownloads = downloadJobs.some((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase()));
+    if (activeJobs.length === 0 && !hasActiveDownloads) return undefined;
     const timer = setInterval(refreshAll, 5000);
     return () => clearInterval(timer);
-  }, [activeJobs.length, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
+  }, [activeJobs.length, downloadJobs, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
@@ -2405,7 +2411,7 @@ export default function App() {
                     </FormField>
 
                     {/* Minimum source resolution */}
-                    <FormField label="Minimum Source Resolution" hint="Only queue sources at or above this height. Ignored when HDR Only is enabled." error={profileErrors.minimum_source_resolution} span2>
+                    <FormField label="Minimum Source Resolution" hint="Only queue sources at or above this height. With HDR Only enabled, this is the minimum HDR height (set 2160 for 4K HDR only)." error={profileErrors.minimum_source_resolution} span2>
                       <SelectInput
                         value={[2160, 1440, 1080].includes(profileDraft.minimum_source_resolution) ? String(profileDraft.minimum_source_resolution) : 'custom'}
                         onChange={(e) => {

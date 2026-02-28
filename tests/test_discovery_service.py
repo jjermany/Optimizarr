@@ -36,7 +36,7 @@ def test_scan_library_respects_hdr_only_profile(monkeypatch, tmp_path):
         assert scan_response.json()['created_jobs'] == []
 
 
-def test_scan_library_hdr_only_ignores_resolution_filters(monkeypatch, tmp_path):
+def test_scan_library_hdr_only_respects_minimum_source_resolution(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()
     library_path = media_root / 'hdr'
@@ -63,8 +63,7 @@ def test_scan_library_hdr_only_ignores_resolution_filters(monkeypatch, tmp_path)
         scan_response = client.post(f'/libraries/{library_id}/scan')
         assert scan_response.status_code == 200
         created_jobs = scan_response.json()['created_jobs']
-        assert len(created_jobs) == 1
-        assert created_jobs[0]['source_path'] == str(source_file)
+        assert created_jobs == []
 
 
 def test_scan_library_queues_4k_when_hdr_not_required(monkeypatch, tmp_path):
@@ -93,6 +92,78 @@ def test_scan_library_queues_4k_when_hdr_not_required(monkeypatch, tmp_path):
         created_jobs = scan_response.json()['created_jobs']
         assert len(created_jobs) == 1
         assert created_jobs[0]['source_path'] == str(source_file)
+
+
+def test_scan_library_hdr_only_accepts_near_4k_when_labeled_2160(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'hdr-near-4k'
+    library_path.mkdir()
+
+    source_file = library_path / 'Movie.Title.2024.2160p.HDR10-GROUP.mkv'
+    source_file.write_text('content')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _: 2080)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: True)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'Near4K', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        profile_response = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'hdr_only': True, 'target_resolution': 1080, 'minimum_source_resolution': 2160},
+        )
+        assert profile_response.status_code == 200
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+        created_jobs = scan_response.json()['created_jobs']
+        assert len(created_jobs) == 1
+        assert created_jobs[0]['source_path'] == str(source_file)
+
+
+def test_scan_library_hdr_only_skips_when_target_sdr_sibling_exists(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'hdr-with-sdr'
+    library_path.mkdir()
+
+    hdr_file = library_path / 'Movie.Title.2024.2160p.HDR10-GROUP.mkv'
+    hdr_file.write_text('hdr')
+    sdr_target = library_path / 'Movie.Title.2024.1080p.BluRay-GROUP.mkv'
+    sdr_target.write_text('sdr')
+
+    def fake_probe(path: str) -> int:
+        if path.endswith('2160p.HDR10-GROUP.mkv'):
+            return 2080
+        if path.endswith('1080p.BluRay-GROUP.mkv'):
+            return 1080
+        return 0
+
+    def fake_hdr(path: str) -> bool:
+        return path.endswith('2160p.HDR10-GROUP.mkv')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', fake_probe)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', fake_hdr)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'HdrWithSdr', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        profile_response = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'hdr_only': True, 'target_resolution': 1080, 'minimum_source_resolution': 2160},
+        )
+        assert profile_response.status_code == 200
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+        assert scan_response.json()['created_jobs'] == []
 
 
 def test_scan_library_respects_minimum_source_and_target_resolution(monkeypatch, tmp_path):

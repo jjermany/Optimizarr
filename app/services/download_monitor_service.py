@@ -40,6 +40,9 @@ _download_queue_stop_reason: str = ''
 # Track which DownloadJob IDs have had their qBittorrent tag confirmed.
 # In-memory only; entries are re-added after restart on the first progress check.
 _tagged_job_ids: set[int] = set()
+# Track which DownloadJob IDs have had their SABnzbd category confirmed.
+# In-memory only; entries are retried on restart/progress checks as needed.
+_categorized_sab_job_ids: set[int] = set()
 
 
 def is_download_queue_stopped() -> bool:
@@ -67,7 +70,7 @@ def _stop_download_queue(reason: str) -> None:
 
 
 # Adaptive poll intervals
-_POLL_DOWNLOADING_SECONDS = 3   # fast polling while files are transferring
+_POLL_DOWNLOADING_SECONDS = 1   # fast polling while files are transferring
 _POLL_SEARCHING_SECONDS = 10    # moderate polling while waiting for Prowlarr
 _POLL_IDLE_SECONDS = 30         # slow polling when nothing is active
 _IDLE_RECOVERY_INTERVAL_SECONDS = 30
@@ -764,17 +767,21 @@ def _select_best_release(
     indexer_by_id: dict[int, dict] | None = None,
 ) -> dict | None:
     """
-    Select the best SDR release at the target resolution, respecting the
-    configured quality profile filter and which download clients are enabled.
+    Select the best release at the target resolution, respecting the
+    configured quality profile filter, tone-map/HDR policy, and enabled client.
 
-    HDR releases are always rejected.  If a specific quality profile is set
-    only releases whose title contains a matching keyword are accepted.
+    If tone_map_hdr is enabled, HDR releases are rejected.
+    If hdr_only is enabled, non-HDR releases are rejected.
+    If a specific quality profile is set only releases whose title contains
+    a matching keyword are accepted.
     Torrent releases require qBittorrent to be enabled; usenet releases
     require SABnzbd to be enabled.
     """
     quality_val = _quality_profile_value(profile)
     indexer_by_id = indexer_by_id or {}
-    sdr_candidates: list[dict] = []
+    candidates: list[dict] = []
+    tone_map_hdr = bool(getattr(profile, 'tone_map_hdr', False))
+    hdr_only = bool(getattr(profile, 'hdr_only', False))
 
     for r in releases:
         title = r.get('title', '')
@@ -785,8 +792,10 @@ def _select_best_release(
         if not _release_matches_target_resolution(r, profile.target_resolution):
             continue
 
-        # HDR filter — never accept HDR downloads
-        if _is_hdr_release(title_lower):
+        is_hdr = _is_hdr_release(title_lower)
+        if tone_map_hdr and is_hdr:
+            continue
+        if hdr_only and not is_hdr:
             continue
 
         # Quality source filter
@@ -813,7 +822,7 @@ def _select_best_release(
         except (TypeError, ValueError):
             indexer_priority = 10_000_000
 
-        sdr_candidates.append(
+        candidates.append(
             {
                 **r,
                 '_quality_class': quality_class,
@@ -823,13 +832,13 @@ def _select_best_release(
             }
         )
 
-    if sdr_candidates:
+    if candidates:
         # Tie-break: prefer exact profile class matches before seed/size ranking.
         if quality_val != DownloadQualityProfileEnum.any.value:
-            exact_matches = [r for r in sdr_candidates if r.get('_quality_class') == quality_val]
+            exact_matches = [r for r in candidates if r.get('_quality_class') == quality_val]
             if exact_matches:
                 return _rank_candidates(exact_matches)[0]
-        return _rank_candidates(sdr_candidates)[0]
+        return _rank_candidates(candidates)[0]
 
     return None  # no matching release found; caller falls back to encoding
 
@@ -1183,7 +1192,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
                 db.commit()
                 db.refresh(dj)
                 logger.info('Download job %s: recovered SABnzbd NZO id immediately after grab: %s', dj.id, recovered)
-                download_client_service.set_sab_category(sab, recovered, category='optimizarr')
+                if download_client_service.set_sab_category(sab, recovered, category='optimizarr'):
+                    _categorized_sab_job_ids.add(dj.id)
 
         _publish_download_job(dj)
         return
@@ -1211,7 +1221,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         if download_client_service.tag_qbt_torrent(qbt, normalised_hash):
             _tagged_job_ids.add(dj.id)
     elif client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
-        download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr')
+        if download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr'):
+            _categorized_sab_job_ids.add(dj.id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1322,7 +1333,8 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                 db.commit()
                 db.refresh(dj)
                 logger.info('Download job %s: recovered SABnzbd NZO id %s', dj.id, recovered_nzo)
-                download_client_service.set_sab_category(sab, recovered_nzo, category='optimizarr')
+                if download_client_service.set_sab_category(sab, recovered_nzo, category='optimizarr'):
+                    _categorized_sab_job_ids.add(dj.id)
             else:
                 logger.debug(
                     'Download job %s: SABnzbd NZO id not found yet for release %r; waiting',
@@ -1340,6 +1352,9 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     if dj.id not in _tagged_job_ids and client_type == 'qbittorrent' and qbt.enabled and dj.download_hash:
         if download_client_service.tag_qbt_torrent(qbt, dj.download_hash, max_attempts=3):
             _tagged_job_ids.add(dj.id)
+    if dj.id not in _categorized_sab_job_ids and client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
+        if download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr'):
+            _categorized_sab_job_ids.add(dj.id)
 
     status = download_client_service.get_download_status(client_type, qbt, sab, dj.download_hash or '')
 
@@ -1781,11 +1796,19 @@ def _release_title_matches_profile(title: str, profile: LibraryProfile) -> bool:
         return False
 
     release = {'title': title}
-    if not _release_matches_target_resolution(release, profile.target_resolution):
-        return False
-
-    if _is_hdr_release(title.lower()):
-        return False
+    title_lower = title.lower()
+    tone_map_hdr = bool(getattr(profile, 'tone_map_hdr', False))
+    if profile.hdr_only:
+        if not _is_hdr_release(title_lower):
+            return False
+        minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
+        if not _release_matches_target_resolution(release, minimum_source_resolution):
+            return False
+    else:
+        if not _release_matches_target_resolution(release, profile.target_resolution):
+            return False
+        if tone_map_hdr and _is_hdr_release(title_lower):
+            return False
 
     quality_val = _quality_profile_value(profile)
     if quality_val == DownloadQualityProfileEnum.any.value:

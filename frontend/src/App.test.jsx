@@ -40,11 +40,11 @@ describe('estimateDownloadEtaSeconds', () => {
     expect(estimateDownloadEtaSeconds({ progress_percent: 0, created_at: createdAt }, nowMs)).toBeNull();
   });
 
-  it('returns zero when progress is complete', () => {
+  it('returns null when progress is complete but status is not terminal', () => {
     const nowMs = Date.UTC(2026, 0, 1, 0, 10, 0);
     const createdAt = new Date(nowMs - 120_000).toISOString();
 
-    expect(estimateDownloadEtaSeconds({ progress_percent: 100, created_at: createdAt }, nowMs)).toBe(0);
+    expect(estimateDownloadEtaSeconds({ progress_percent: 100, created_at: createdAt }, nowMs)).toBeNull();
   });
 
   it('returns null when created_at is missing', () => {
@@ -65,5 +65,19 @@ describe('getDownloadEtaSeconds', () => {
     const createdAt = new Date(nowMs - 300_000).toISOString();
 
     expect(getDownloadEtaSeconds({ progress_percent: 25, created_at: createdAt }, nowMs)).toBe(900);
+  });
+
+  it('does not report done for non-terminal downloads with eta_seconds=0', () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 10, 0);
+    const createdAt = new Date(nowMs - 300_000).toISOString();
+
+    expect(getDownloadEtaSeconds({ status: 'downloading', eta_seconds: 0, progress_percent: 100, created_at: createdAt }, nowMs)).toBeNull();
+  });
+
+  it('reports done for complete downloads with eta_seconds=0', () => {
+    const nowMs = Date.UTC(2026, 0, 1, 0, 10, 0);
+    const createdAt = new Date(nowMs - 300_000).toISOString();
+
+    expect(getDownloadEtaSeconds({ status: 'complete', eta_seconds: 0, progress_percent: 100, created_at: createdAt }, nowMs)).toBe(0);
   });
 });

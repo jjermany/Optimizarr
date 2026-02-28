@@ -364,6 +364,45 @@ def _sab_api(s: SabnzbdSettings, **params) -> dict:
     return resp.json()
 
 
+def _parse_sab_eta_seconds(value: object) -> int | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text == '-':
+        return None
+    if ':' in text:
+        parts = text.split(':')
+        try:
+            nums = [int(float(part.strip())) for part in parts]
+        except ValueError:
+            return None
+        if len(nums) == 3:
+            return max(0, (nums[0] * 3600) + (nums[1] * 60) + nums[2])
+        if len(nums) == 2:
+            return max(0, (nums[0] * 60) + nums[1])
+        return None
+    try:
+        parsed = int(float(text))
+    except ValueError:
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _sab_call_succeeded(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    if payload.get('error'):
+        return False
+    status = payload.get('status')
+    if isinstance(status, bool):
+        return status
+    if status is None:
+        # Some SAB endpoints return data without a "status" key.
+        return True
+    status_text = str(status).strip().lower()
+    return status_text in {'true', 'ok', 'success', '1'}
+
+
 def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
     """Returns progress, eta, speed, completion, and save_path for an NZO."""
     try:
@@ -378,6 +417,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     pct = 0
                 status = slot.get('status', '')
                 is_stalled = status in ('Stalled', 'Failed')
+                eta_seconds = _parse_sab_eta_seconds(slot.get('timeleft')) or _parse_sab_eta_seconds(queue_data.get('queue', {}).get('timeleft'))
                 speed_raw = slot.get('mb') or slot.get('mbps') or queue_data.get('queue', {}).get('kbpersec')
                 speed_bps: int | None = None
                 if speed_raw is not None:
@@ -393,7 +433,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                         speed_bps = None
                 return {
                     'progress_percent': pct,
-                    'eta_seconds': None,
+                    'eta_seconds': eta_seconds,
                     'download_speed_bps': speed_bps,
                     'is_complete': False,
                     'is_stalled': is_stalled,
@@ -516,15 +556,18 @@ def set_sab_category(s: SabnzbdSettings, nzo_id: str, category: str = 'optimizar
         return False
 
     attempts = (
+        {'mode': 'change_cat', 'value': nzo, 'value2': cat},
+        {'mode': 'queue', 'name': 'change_cat', 'value': nzo, 'value2': cat},
         {'mode': 'change_opts', 'value': nzo, 'name': 'cat', 'value2': cat},
         {'mode': 'change_opts', 'value': nzo, 'name': 'category', 'value2': cat},
         {'mode': 'queue', 'name': 'change_opts', 'value': nzo, 'cat': cat},
     )
     for params in attempts:
         try:
-            _sab_api(s, **params)
-            logger.info('SABnzbd: set category=%r for NZO %s', cat, nzo)
-            return True
+            payload = _sab_api(s, **params)
+            if _sab_call_succeeded(payload):
+                logger.info('SABnzbd: set category=%r for NZO %s', cat, nzo)
+                return True
         except Exception:
             continue
     logger.warning('SABnzbd: failed setting category=%r for NZO %s', cat, nzo)

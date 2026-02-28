@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 import logging
 from pathlib import Path
+import re
 import threading
 import time
 
@@ -28,6 +29,7 @@ except ImportError:  # pragma: no cover - dependency-driven behavior
 logger = logging.getLogger(__name__)
 MEDIA_SUFFIXES = {'.mkv', '.mp4'}
 STABILITY_WINDOW_SECONDS = 60
+_NEAR_4K_HEIGHT_FLOOR = 2000
 
 
 @dataclass
@@ -316,6 +318,84 @@ def _cancel_queued_encode_for_source(db: Session, source_path: str, library_id: 
         db.commit()
 
 
+def _release_matches_target_resolution_label(path: Path, target_resolution: int) -> bool:
+    stem_lower = path.stem.lower()
+    target = int(target_resolution)
+    if f'{target}p' in stem_lower:
+        return True
+    if target == 2160 and '4k' in stem_lower:
+        return True
+    if re.search(rf'\b\d{{3,4}}x{target}\b', stem_lower):
+        return True
+    if re.search(rf'\b{target}i\b', stem_lower):
+        return True
+    return False
+
+
+def _meets_minimum_source_resolution(media_file: Path, source_resolution: int | None, minimum_source_resolution: int) -> bool:
+    """Accept strict min resolution, plus near-4K/labelled-4K variants for UHD libraries."""
+    if source_resolution is not None and source_resolution >= minimum_source_resolution:
+        return True
+
+    if int(minimum_source_resolution) >= 2160:
+        # Real-world UHD releases can report slightly below 2160 after crop/matte.
+        if source_resolution is not None and source_resolution >= _NEAR_4K_HEIGHT_FLOOR:
+            return True
+        if _release_matches_target_resolution_label(media_file, 2160):
+            return True
+
+    return False
+
+
+def _candidate_title_prefix(path: Path) -> str:
+    stem = path.stem
+    # Prefer content before metadata blocks like [...] or {...}
+    for marker in ('[', '{'):
+        idx = stem.find(marker)
+        if idx > 0:
+            return stem[:idx].rstrip(' ._-')
+    # Otherwise trim from year onward if available.
+    spaced = re.sub(r'[._-]+', ' ', stem).strip()
+    year_match = re.search(r'\b(19|20)\d{2}\b', spaced)
+    if year_match and year_match.start() > 0:
+        return re.sub(r'[\s()\[\]{}._-]+$', '', spaced[:year_match.start()]).strip()
+    return stem
+
+
+def _normalized_title_key(text: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(text or '').lower())
+
+
+def _is_same_release_family(source_file: Path, candidate: Path) -> bool:
+    source_prefix = _normalized_title_key(_candidate_title_prefix(source_file))
+    candidate_prefix = _normalized_title_key(_candidate_title_prefix(candidate))
+    if not source_prefix or not candidate_prefix:
+        return False
+    return source_prefix in candidate_prefix or candidate_prefix in source_prefix
+
+
+def _has_existing_target_sdr_sibling(media_file: Path, profile: LibraryProfile) -> bool:
+    """Return True when a sibling file already satisfies the target SDR output."""
+    target_resolution = int(getattr(profile, 'target_resolution', 1080) or 1080)
+    for sibling in media_file.parent.iterdir():
+        if sibling == media_file or not sibling.is_file() or sibling.suffix.lower() not in MEDIA_SUFFIXES:
+            continue
+        if not _is_same_release_family(media_file, sibling):
+            continue
+
+        sibling_height = probe_video_height(str(sibling))
+        matches_target = (
+            sibling_height is not None and abs(int(sibling_height) - target_resolution) <= 32
+        ) or _release_matches_target_resolution_label(sibling, target_resolution)
+        if not matches_target:
+            continue
+
+        if is_hdr_video(str(sibling)):
+            continue
+        return True
+    return False
+
+
 def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, profile: LibraryProfile):
     if media_file.stem.endswith(profile.output_suffix):
         return None
@@ -371,12 +451,17 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
     if profile.hdr_only:
         if not source_is_hdr:
             return None
+        minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
+        if not _meets_minimum_source_resolution(media_file, source_resolution, minimum_source_resolution):
+            return None
+        if _has_existing_target_sdr_sibling(media_file, profile):
+            return None
     else:
         if source_resolution is None:
             return None
 
         minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
-        if source_resolution < minimum_source_resolution:
+        if not _meets_minimum_source_resolution(media_file, source_resolution, minimum_source_resolution):
             return None
 
         if source_resolution <= profile.target_resolution:

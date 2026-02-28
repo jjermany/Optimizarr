@@ -19,8 +19,18 @@ from app.services.download_monitor_service import (
 
 
 
-def _profile(quality: DownloadQualityProfileEnum):
-    return SimpleNamespace(target_resolution=1080, download_quality_profile=quality.value)
+def _profile(
+    quality: DownloadQualityProfileEnum,
+    *,
+    tone_map_hdr: bool = False,
+    hdr_only: bool = False,
+):
+    return SimpleNamespace(
+        target_resolution=1080,
+        download_quality_profile=quality.value,
+        tone_map_hdr=tone_map_hdr,
+        hdr_only=hdr_only,
+    )
 
 
 
@@ -191,6 +201,60 @@ def test_select_best_release_accepts_1920x1080_resolution_format():
 
     assert selected is not None
     assert selected['title'] == 'Movie.2024.1920x1080.WEB-DL.x265-GROUP'
+
+
+def test_select_best_release_tone_map_enabled_rejects_hdr():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.HDR10.x265-HDR',
+            'seeders': 500,
+            'size': 1500,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-SDR',
+            'seeders': 10,
+            'size': 1200,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl, tone_map_hdr=True),
+        qbt_enabled=True,
+        sab_enabled=True,
+    )
+
+    assert selected is not None
+    assert 'HDR' not in selected['title']
+
+
+def test_select_best_release_tone_map_disabled_allows_hdr():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.HDR10.x265-HDR',
+            'seeders': 500,
+            'size': 1500,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-SDR',
+            'seeders': 10,
+            'size': 1200,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl, tone_map_hdr=False),
+        qbt_enabled=True,
+        sab_enabled=True,
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.HDR10.x265-HDR'
 
 
 def test_download_job_exists_for_source_treats_pending_as_active_non_terminal():
