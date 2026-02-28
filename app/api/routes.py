@@ -1636,6 +1636,7 @@ def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
         DownloadJobStatus.pending.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.downloading.value,
+        DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
         DownloadJobStatus.waiting_encode.value,

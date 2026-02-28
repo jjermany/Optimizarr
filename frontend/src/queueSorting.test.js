@@ -112,4 +112,20 @@ describe('buildUnifiedQueueItems', () => {
       'download-16',
     ]);
   });
+
+  it('hides queued encode placeholder rows for extra dedupe source paths', () => {
+    const source = '/media/Transient.Queue.Placeholder.2026.mkv';
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 210, status: 'queued', source_path: source },
+      ],
+      downloadItems: [],
+      sortOption: 'default',
+      extractTitleYear,
+      pinActiveFirst: true,
+      dedupeSourcePaths: [source],
+    });
+
+    expect(items).toEqual([]);
+  });
 });

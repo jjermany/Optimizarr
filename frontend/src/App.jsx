@@ -156,6 +156,7 @@ const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']
 // Download-job status buckets
 const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode']);
 const TERMINAL_DL_STATUSES = new Set(['complete', 'failed', 'timed_out', 'fallback_queued']);
+const QUEUE_DEDUPE_DL_STATUSES = new Set([...ACTIVE_DL_STATUSES, 'complete', 'fallback_queued']);
 
 function isActiveEncodeStatus(status) {
   return ACTIVE_STATUSES.has(status?.toLowerCase());
@@ -858,13 +859,6 @@ export default function App() {
   const intentionallyClosedRef = useRef(false);
   const toastTimersRef = useRef({});
 
-  const queueCount = useMemo(
-    () =>
-      jobs.filter((job) => QUEUED_STATUSES.has(job.status?.toLowerCase())).length +
-      downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length,
-    [jobs, downloadJobs],
-  );
-
   // Build a lookup map: library id → library name
   const libraryById = useMemo(
     () => Object.fromEntries(libraries.map((lib) => [lib.id, lib])),
@@ -929,12 +923,27 @@ export default function App() {
     [sortedHistoryJobs, historySearch, libraryById],
   );
 
+  const activeDlQueueItems = useMemo(
+    () => downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())),
+    [downloadJobs],
+  );
+
+  const queueDedupeSourcePaths = useMemo(() => {
+    const paths = new Set();
+    for (const dj of downloadJobs) {
+      const status = String(dj.status ?? '').toLowerCase();
+      if (!QUEUE_DEDUPE_DL_STATUSES.has(status)) continue;
+      const sourcePath = String(dj.source_file_path ?? '').trim();
+      if (sourcePath) paths.add(sourcePath);
+    }
+    return paths;
+  }, [downloadJobs]);
+
   // Active download jobs filtered by search, tagged as 'download' type for unified queue
   const filteredDlQueueItems = useMemo(() => {
     const dlSearch = queueSearch.toLowerCase();
-    return downloadJobs
+    return activeDlQueueItems
       .filter((dj) => {
-        if (!ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())) return false;
         if (!dlSearch) return true;
         const { title, year } = extractTitleYear(dj.source_file_path);
         const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '') : '';
@@ -945,9 +954,20 @@ export default function App() {
           || dj.source_file_path?.toLowerCase().includes(dlSearch)
           || String(dj.id).includes(dlSearch)
         );
-      })
-      .map((dj) => ({ ...dj, _itemType: 'download' }));
-  }, [downloadJobs, queueSearch, libraryById]);
+      });
+  }, [activeDlQueueItems, queueSearch, libraryById]);
+
+  const unifiedAllQueueItems = useMemo(
+    () => buildUnifiedQueueItems({
+      encodeItems: activeJobs,
+      downloadItems: activeDlQueueItems,
+      sortOption: queueSort,
+      extractTitleYear,
+      pinActiveFirst: true,
+      dedupeSourcePaths: queueDedupeSourcePaths,
+    }),
+    [activeJobs, activeDlQueueItems, queueSort, queueDedupeSourcePaths],
+  );
 
   // Unified queue: encoding jobs + active download jobs using one comparator path
   const unifiedQueueItems = useMemo(
@@ -957,9 +977,12 @@ export default function App() {
       sortOption: queueSort,
       extractTitleYear,
       pinActiveFirst: true,
+      dedupeSourcePaths: queueDedupeSourcePaths,
     }),
-    [filteredActiveJobs, filteredDlQueueItems, queueSort],
+    [filteredActiveJobs, filteredDlQueueItems, queueSort, queueDedupeSourcePaths],
   );
+
+  const queueCount = unifiedAllQueueItems.length;
 
   // All queue items in a single list: active jobs sort to the top, rest follow.
   const paginatedQueueItems = useMemo(() => unifiedQueueItems, [unifiedQueueItems]);
@@ -2707,7 +2730,7 @@ export default function App() {
                     className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'queue' ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
                   >
                     Queue
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'queue' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredActiveJobs.length + downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'queue' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{queueCount}</span>
                   </button>
                   <button
                     type="button"
