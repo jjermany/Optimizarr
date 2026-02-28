@@ -309,6 +309,34 @@ def test_select_best_release_parses_string_boolean_flags():
     assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-SDR'
 
 
+def test_select_best_release_resolves_conflicting_hdr_policy_by_prioritizing_tonemap_filter():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.HDR10.x265-HDR',
+            'seeders': 500,
+            'size': 1400,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-SDR',
+            'seeders': 50,
+            'size': 1500,
+            'protocol': 'torrent',
+        },
+    ]
+    profile = SimpleNamespace(
+        target_resolution=1080,
+        download_quality_profile='web_dl',
+        tone_map_hdr=True,
+        hdr_only=True,
+    )
+
+    selected = _select_best_release(releases, profile, qbt_enabled=True, sab_enabled=True)
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-SDR'
+
+
 def test_download_job_exists_for_source_treats_pending_as_active_non_terminal():
     source_path = '/media/download-pending.mkv'
     with SessionLocal() as db:

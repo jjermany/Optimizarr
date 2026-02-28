@@ -701,6 +701,25 @@ def _coerce_bool(value: object) -> bool:
     return bool(value)
 
 
+def _normalize_hdr_download_policy(
+    *,
+    hdr_only: bool,
+    tone_map_hdr: bool,
+    context: str,
+) -> tuple[bool, bool]:
+    # For download selection, tone_map_hdr means "prefer an already-SDR source"
+    # so we should exclude HDR grabs. If hdr_only is also true, keep queue-side
+    # hdr_only semantics elsewhere but prioritize tone_map_hdr for downloads.
+    if hdr_only and tone_map_hdr:
+        logger.warning(
+            'Conflicting HDR download policy in %s (hdr_only=true + tone_map_hdr=true); '
+            'prioritizing tone_map_hdr for download selection (hdr_only ignored here)',
+            context,
+        )
+        return False, True
+    return hdr_only, tone_map_hdr
+
+
 def _release_matches_target_resolution(release: dict, target_resolution: int) -> bool:
     title_lower = str(release.get('title', '') or '').lower()
     target = int(target_resolution)
@@ -814,6 +833,11 @@ def _select_best_release(
     candidates: list[dict] = []
     tone_map_hdr = _coerce_bool(getattr(profile, 'tone_map_hdr', False))
     hdr_only = _coerce_bool(getattr(profile, 'hdr_only', False))
+    hdr_only, tone_map_hdr = _normalize_hdr_download_policy(
+        hdr_only=hdr_only,
+        tone_map_hdr=tone_map_hdr,
+        context='_select_best_release',
+    )
     filtered_by_resolution = 0
     filtered_by_tonemap_hdr = 0
     filtered_by_hdr_only = 0
@@ -1885,8 +1909,14 @@ def _release_title_matches_profile(title: str, profile: LibraryProfile) -> bool:
 
     release = {'title': title}
     title_lower = title.lower()
-    tone_map_hdr = bool(getattr(profile, 'tone_map_hdr', False))
-    if profile.hdr_only:
+    tone_map_hdr = _coerce_bool(getattr(profile, 'tone_map_hdr', False))
+    hdr_only = _coerce_bool(getattr(profile, 'hdr_only', False))
+    hdr_only, tone_map_hdr = _normalize_hdr_download_policy(
+        hdr_only=hdr_only,
+        tone_map_hdr=tone_map_hdr,
+        context='_release_title_matches_profile',
+    )
+    if hdr_only:
         if not _is_hdr_release(title_lower):
             return False
         minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
