@@ -16,6 +16,7 @@ class DownloadJobStatus(str, Enum):
     complete = 'complete'
     failed = 'failed'
     timed_out = 'timed_out'
+    waiting_encode = 'waiting_encode'
     fallback_queued = 'fallback_queued'
 
 

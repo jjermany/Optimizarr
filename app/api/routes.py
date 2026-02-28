@@ -1638,6 +1638,7 @@ def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
+        DownloadJobStatus.waiting_encode.value,
     }
     removed_download_job_ids = [
         row[0] for row in db.query(DownloadJob.id).filter(DownloadJob.status.in_(active_download_statuses)).all()

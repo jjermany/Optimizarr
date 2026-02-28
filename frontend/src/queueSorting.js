@@ -1,5 +1,6 @@
 const ENCODE_ACTIVE_STATUSES = new Set(['starting', 'running', 'preflight']);
 const DOWNLOAD_ACTIVE_STATUSES = new Set(['downloading', 'importing']);
+const DOWNLOAD_WAITING_ENCODE_STATUSES = new Set(['waiting_encode']);
 
 function queueItemPath(item) {
   return item._itemType === 'download' ? item.source_file_path : item.source_path;
@@ -19,7 +20,8 @@ function compareById(left, right, direction = 'asc') {
 function queuePinRank(item) {
   if (item._itemType === 'encode' && ENCODE_ACTIVE_STATUSES.has(item.status?.toLowerCase())) return 0;
   if (item._itemType === 'download' && DOWNLOAD_ACTIVE_STATUSES.has(item.status)) return 1;
-  return 2;
+  if (item._itemType === 'download' && DOWNLOAD_WAITING_ENCODE_STATUSES.has(item.status)) return 2;
+  return 3;
 }
 
 export function compareQueueItemsBySortOption(left, right, sortOption, extractTitleYear) {
@@ -75,6 +77,13 @@ export function buildUnifiedQueueItems({
     if (pinActiveFirst) {
       const pinRankDelta = queuePinRank(left) - queuePinRank(right);
       if (pinRankDelta !== 0) return pinRankDelta;
+      // waiting_encode rows stay pinned below active rows and are FIFO.
+      if (queuePinRank(left) === 2 && queuePinRank(right) === 2) {
+        const leftTs = Date.parse(left.created_at || '') || 0;
+        const rightTs = Date.parse(right.created_at || '') || 0;
+        if (leftTs !== rightTs) return leftTs - rightTs;
+        return left.id - right.id;
+      }
     }
 
     return compareQueueItemsBySortOption(left, right, sortOption, extractTitleYear);

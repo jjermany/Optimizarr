@@ -559,6 +559,61 @@ def test_claim_next_queued_job_routes_to_download_and_removes_placeholder(monkey
         assert remaining_placeholder is None
 
 
+def test_claim_next_queued_job_starts_fallback_encode_without_rerouting(monkeypatch):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        db.add(profile)
+        db.commit()
+
+        source_path = '/media/movies/title-fallback.mkv'
+        encode_job = Job(input_path=source_path, status='queued', library_id=library.id)
+        db.add(encode_job)
+        db.commit()
+        db.refresh(encode_job)
+
+        failed_download = DownloadJob(
+            library_id=library.id,
+            source_file_path=source_path,
+            status=DownloadJobStatus.failed.value,
+            encode_job_id=encode_job.id,
+            client_type='sabnzbd',
+            error_message='Usenet retries exhausted',
+        )
+        db.add(failed_download)
+        db.commit()
+
+        created_downloads = []
+        monkeypatch.setattr('app.services.download_monitor_service.can_attempt_download', lambda _db: True)
+        monkeypatch.setattr('app.services.download_monitor_service.download_job_exists_for_source', lambda _db, _path: False)
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.create_download_job',
+            lambda _db, source, *_args: created_downloads.append(source),
+        )
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        db.refresh(encode_job)
+
+        assert selected_id == encode_job.id
+        assert encode_job.status == 'starting'
+        assert created_downloads == []
+
+
 def test_process_job_ignores_late_progress_after_pause(monkeypatch):
     queue.resume_queue()
     queue.stop_event.clear()

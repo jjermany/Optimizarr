@@ -158,7 +158,7 @@ const QUEUED_STATUSES = new Set(['pending', 'queued', 'created']);
 const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']);
 
 // Download-job status buckets
-const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'downloading', 'stalled', 'importing']);
+const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'downloading', 'stalled', 'importing', 'waiting_encode']);
 const TERMINAL_DL_STATUSES = new Set(['complete', 'failed', 'timed_out', 'fallback_queued']);
 
 function isActiveEncodeStatus(status) {
@@ -2788,7 +2788,7 @@ export default function App() {
                             </div>
                             <div className="flex items-start justify-between gap-2">
                               <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={dj.source_file_path}>{title || 'Unknown Title'}</p>
-                              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'importing' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : dj.status === 'searching' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : dj.status === 'downloading' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : dj.status === 'stalled' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>
+                              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'importing' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : dj.status === 'searching' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : dj.status === 'downloading' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : dj.status === 'stalled' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'waiting_encode' ? 'border-fuchsia-500/40 bg-fuchsia-950/30 text-fuchsia-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>
                                 {statusLabel}
                               </span>
                             </div>
@@ -2814,7 +2814,7 @@ export default function App() {
                             )}
                             {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
                             <MobileActionMenu>
-                              {['searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
+                              {['searching', 'downloading', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
                                 <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Remove + Reset</Btn>
                               )}
                               {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
@@ -2936,6 +2936,7 @@ export default function App() {
                               dj.status === 'importing' ? 'text-violet-400' :
                               dj.status === 'searching' ? 'text-sky-400' :
                               dj.status === 'stalled' ? 'text-amber-400' :
+                              dj.status === 'waiting_encode' ? 'text-fuchsia-400' :
                               'text-slate-400';
                             const elapsedStart = dj.download_started_at ?? dj.created_at;
                             const elapsedSeconds = getElapsedSeconds(elapsedStart, nowMs);
@@ -2957,7 +2958,7 @@ export default function App() {
                                   <div className="flex items-center gap-1.5">
                                     {dj.status === 'searching' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />}
                                     {dj.status === 'importing' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />}
-                                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${statusColor === 'text-violet-400' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : statusColor === 'text-sky-400' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : statusColor === 'text-cyan-400' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : statusColor === 'text-amber-400' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{statusLabel}</span>
+                                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${statusColor === 'text-violet-400' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : statusColor === 'text-sky-400' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : statusColor === 'text-cyan-400' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : statusColor === 'text-amber-400' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : statusColor === 'text-fuchsia-400' ? 'border-fuchsia-500/40 bg-fuchsia-950/30 text-fuchsia-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{statusLabel}</span>
                                   </div>
                                   {showEta && <p className="mt-0.5 text-xs text-slate-400">ETA: {etaLabel}</p>}
                                   {speedLabel && <p className="mt-0.5 text-xs text-slate-400">Speed: {speedLabel}</p>}
@@ -2987,7 +2988,7 @@ export default function App() {
                                 </td>
                                 <td className="px-4 py-3">
                                   <div className="flex flex-wrap gap-1.5">
-                                    {['searching', 'downloading', 'stalled', 'importing'].includes(dj.status) && (
+                                    {['searching', 'downloading', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
                                       <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Remove + Reset</Btn>
                                     )}
                                     {['failed', 'timed_out', 'stalled'].includes(dj.status) && (

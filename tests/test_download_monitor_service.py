@@ -1555,6 +1555,59 @@ def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatc
         assert fallback_calls == [True]
 
 
+def test_check_download_progress_stalled_exhausted_usenet_retries_switches_to_torrent_search(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Usenet.Switch.To.Torrent.mkv',
+            release_name='Usenet.Switch.To.Torrent.2025.1080p.WEB-DL',
+            indexer_id=21,
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=5,
+            max_retries=5,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'is_complete': False,
+            'is_stalled': True,
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.searching.value
+        assert dj.retry_count == 0
+        assert 'switching to torrent search' in (dj.error_message or '')
+        failed_keys = set(json.loads(dj.failed_release_keys or '[]'))
+        assert 'protocol:usenet' in failed_keys
+        assert fallback_calls == []
+
+
 def test_check_download_progress_sab_hashless_waits_for_nzo_recovery(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
@@ -1705,6 +1758,74 @@ def test_do_search_skips_previously_failed_release_keys(monkeypatch):
         db.refresh(dj)
 
         assert grabbed == ['good-guid']
+        assert dj.status == DownloadJobStatus.downloading.value
+
+
+def test_do_search_excludes_usenet_when_protocol_marker_present(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Protocol.Exclusion.Test.mkv',
+            status=DownloadJobStatus.searching.value,
+            failed_release_keys=json.dumps(['protocol:usenet']),
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(prowlarr_service, 'search', lambda *_args, **_kw: [
+            {
+                'title': 'Protocol.Exclusion.Test.2025.1080p.WEB-DL-USENET',
+                'seeders': 0,
+                'size': 1100,
+                'protocol': 'usenet',
+                'guid': 'usenet-guid',
+                'indexerId': 1,
+            },
+            {
+                'title': 'Protocol.Exclusion.Test.2025.1080p.WEB-DL-TORRENT',
+                'seeders': 2,
+                'size': 1300,
+                'protocol': 'torrent',
+                'guid': 'torrent-guid',
+                'indexerId': 2,
+            },
+        ])
+        monkeypatch.setattr(
+            prowlarr_service,
+            'get_indexers',
+            lambda *_args, **_kw: [
+                {'id': 1, 'name': 'UsenetIndexer', 'priority': 1},
+                {'id': 2, 'name': 'TorrentIndexer', 'priority': 20},
+            ],
+        )
+
+        grabbed = []
+        monkeypatch.setattr(
+            prowlarr_service,
+            'grab',
+            lambda *_args, **_kwargs: (grabbed.append(_args[1]) or {'downloadId': 'TORRENT_HASH_123'}),
+        )
+        monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kwargs: True)
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+        db.refresh(dj)
+
+        assert grabbed == ['torrent-guid']
+        assert dj.client_type == 'qbittorrent'
         assert dj.status == DownloadJobStatus.downloading.value
 
 

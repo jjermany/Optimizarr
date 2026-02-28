@@ -613,7 +613,33 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
             # library and the download route is available, create the download
             # job now and keep the encode job queued as a placeholder.
             if can_attempt_download(db):
-                if not download_job_exists_for_source(db, job.source_path):
+                terminal_download_row = (
+                    db.query(DownloadJob.id, DownloadJob.status)
+                    .filter(
+                        DownloadJob.source_file_path == job.source_path,
+                        DownloadJob.encode_job_id == job.id,
+                        DownloadJob.status.in_([
+                            DownloadJobStatus.failed.value,
+                            DownloadJobStatus.timed_out.value,
+                            DownloadJobStatus.waiting_encode.value,
+                            DownloadJobStatus.fallback_queued.value,
+                        ]),
+                    )
+                    .order_by(DownloadJob.id.desc())
+                    .first()
+                )
+                if terminal_download_row is not None:
+                    terminal_dj_id, terminal_dj_status = terminal_download_row
+                    logger.info(
+                        'Queue routing bypass: queued encode job %s is linked to terminal download job %s (%s); '
+                        'starting encode without re-routing',
+                        job.id,
+                        terminal_dj_id,
+                        terminal_dj_status,
+                    )
+                    # This queued encode row is the intended fallback path.
+                    # Do not re-create a download job for the same source.
+                elif not download_job_exists_for_source(db, job.source_path):
                     create_download_job(db, job.source_path, library, profile)
                     logger.info(
                         'Queue routing: created download job for queued encode job %s source=%r',
@@ -626,7 +652,9 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
                     db.delete(job)
                     db.commit()
                     broker.publish_system_event('job_removed', job_id=placeholder_job_id)
-                continue
+                    continue
+                else:
+                    continue
 
         job.status = 'starting'
         db.commit()

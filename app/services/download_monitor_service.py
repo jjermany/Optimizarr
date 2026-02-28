@@ -182,6 +182,7 @@ def download_job_exists_for_source(db: Session, source_path: str) -> bool:
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
+        DownloadJobStatus.waiting_encode.value,
         DownloadJobStatus.complete.value,
     }
     rows = (
@@ -1073,6 +1074,19 @@ def _release_selection_key_from_release(release: dict) -> str:
     return f'title:{title}:idx:{indexer_id}:proto:{protocol}'
 
 
+def _protocol_exclusion_key(protocol: str) -> str:
+    return f'protocol:{str(protocol or "").strip().lower()}'
+
+
+def _load_excluded_protocols(dj: DownloadJob) -> set[str]:
+    keys = _load_failed_release_keys(dj)
+    excluded: set[str] = set()
+    for key in keys:
+        if key.startswith('protocol:'):
+            excluded.add(key.split(':', 1)[1].strip().lower())
+    return {item for item in excluded if item}
+
+
 def _release_selection_key_from_job(dj: DownloadJob) -> str:
     if dj.selected_release_key:
         return str(dj.selected_release_key).strip()
@@ -1143,6 +1157,41 @@ def _retry_failed_download(
         _wake_event.set()
         logger.warning('Download job %s: %s (auto-retry %s/%s)', dj.id, reason, retry_next, max_retries)
         return True
+
+    if str(dj.client_type or '').lower() == 'sabnzbd':
+        qbt = download_client_service.get_or_create_qbt_settings(db)
+        excluded_protocols = _load_excluded_protocols(dj)
+        if qbt.enabled and 'usenet' not in excluded_protocols:
+            keys = _load_failed_release_keys(dj)
+            keys.add(_protocol_exclusion_key('usenet'))
+            _store_failed_release_keys(dj, keys)
+            dj.retry_count = 0
+            dj.max_retries = max_retries
+            dj.status = DownloadJobStatus.searching.value
+            dj.error_message = f'{reason}; usenet retries exhausted, switching to torrent search'
+            dj.release_name = None
+            dj.indexer_id = None
+            dj.indexer_name = None
+            dj.selected_release_key = None
+            dj.download_hash = None
+            dj.client_type = None
+            dj.progress_percent = 0
+            dj.eta_seconds = None
+            dj.download_speed_bps = None
+            dj.download_started_at = None
+            dj.completed_at = None
+            db.commit()
+            db.refresh(dj)
+            _publish_download_job(dj)
+            _wake_event.set()
+            logger.warning(
+                'Download job %s: %s; usenet retries exhausted (%s/%s), switching to torrents',
+                dj.id,
+                reason,
+                retry_next - 1,
+                max_retries,
+            )
+            return True
 
     logger.warning('Download job %s: %s; retries exhausted (%s/%s)', dj.id, reason, retry_next - 1, max_retries)
     _mark_failed(db, dj, f'{reason}; retries exhausted after {max_retries} attempts')
@@ -1346,6 +1395,21 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
             'Download job %s: excluded %d previously failed release(s); remaining=%d',
             dj.id,
             max(0, pre_filter_count - len(releases)),
+            len(releases),
+        )
+    excluded_protocols = _load_excluded_protocols(dj)
+    if excluded_protocols:
+        pre_protocol_filter_count = len(releases)
+        releases = [
+            release
+            for release in releases
+            if str(release.get('protocol') or '').strip().lower() not in excluded_protocols
+        ]
+        logger.info(
+            'Download job %s: excluded protocol(s) %s; removed=%d remaining=%d',
+            dj.id,
+            sorted(excluded_protocols),
+            max(0, pre_protocol_filter_count - len(releases)),
             len(releases),
         )
     pre_title_filter_count = len(releases)
@@ -2160,8 +2224,10 @@ def _fallback_to_encode(db: Session, dj: DownloadJob, library: Library, profile:
         )
         if dj.encode_job_id is None:
             dj.encode_job_id = encode_job.id
-        if dj.status not in (DownloadJobStatus.timed_out.value, DownloadJobStatus.failed.value, DownloadJobStatus.stalled.value):
-            dj.status = DownloadJobStatus.fallback_queued.value
+        dj.status = DownloadJobStatus.waiting_encode.value
+        dj.eta_seconds = None
+        dj.download_speed_bps = None
+        dj.completed_at = None
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj)

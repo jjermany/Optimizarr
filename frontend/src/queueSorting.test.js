@@ -69,6 +69,31 @@ describe('buildUnifiedQueueItems', () => {
     ]);
   });
 
+  it('pins waiting_encode downloads below active pinned rows in FIFO order', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 20, status: 'running', source_path: '/media/Active.Encode.2020.mkv' },
+        { id: 19, status: 'queued', source_path: '/media/Queued.Encode.2021.mkv' },
+      ],
+      downloadItems: [
+        { id: 31, status: 'downloading', source_file_path: '/downloads/Active.Download.2024.mkv', created_at: '2026-03-01T10:00:00Z' },
+        { id: 30, status: 'waiting_encode', source_file_path: '/downloads/Wait.Encode.Older.2022.mkv', created_at: '2026-03-01T09:00:00Z' },
+        { id: 32, status: 'waiting_encode', source_file_path: '/downloads/Wait.Encode.Newer.2023.mkv', created_at: '2026-03-01T11:00:00Z' },
+      ],
+      sortOption: 'newest',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
+      'encode-20',
+      'download-31',
+      'download-30',
+      'download-32',
+      'encode-19',
+    ]);
+  });
+
   it('hides queued encode placeholder rows when an active download row exists for the same source', () => {
     const source = '/media/Clown.in.a.Cornfield.2025.mkv';
     const items = buildUnifiedQueueItems({
