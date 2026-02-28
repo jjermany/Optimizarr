@@ -584,19 +584,10 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         best.get('title'),
         str(best.get('protocol', '') or '').lower() or 'unknown',
     )
-    release_protocol = str(best.get('protocol', '') or '')
-    download_client_id = prowlarr_service.resolve_download_client_id(prowlarr, release_protocol)
-    if download_client_id is None:
-        logger.warning(
-            'Download job %s: no Prowlarr download client configured for protocol=%r; '
-            'using Prowlarr default download client',
-            dj.id, release_protocol,
-        )
     grab_result = prowlarr_service.grab(
         prowlarr,
         best.get('guid', ''),
         best.get('indexerId', 0),
-        download_client_id=download_client_id,
     )
 
     if grab_result is None:

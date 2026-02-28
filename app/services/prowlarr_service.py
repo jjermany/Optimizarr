@@ -121,24 +121,6 @@ def get_download_clients(settings: ProwlarrSettings) -> list[dict]:
         return []
 
 
-def resolve_download_client_id(settings: ProwlarrSettings, protocol: str) -> int | None:
-    """Resolve a Prowlarr download client ID by release protocol."""
-    proto = (protocol or '').strip().lower()
-    if not proto:
-        return None
-
-    candidates = get_download_clients(settings)
-    for client in candidates:
-        if not bool(client.get('enable', True)):
-            continue
-        client_protocol = str(client.get('protocol') or '').lower()
-        if client_protocol == proto:
-            client_id = client.get('id')
-            if isinstance(client_id, int):
-                return client_id
-    return None
-
-
 def grab(
     settings: ProwlarrSettings,
     guid: str,

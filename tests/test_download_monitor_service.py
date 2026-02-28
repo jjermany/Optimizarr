@@ -828,7 +828,7 @@ def test_check_download_progress_marks_missing_client_item_stalled_without_fallb
         assert fallback_calls == []
 
 
-def test_do_search_routes_grab_to_protocol_specific_download_client(monkeypatch):
+def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
     from app.services import prowlarr_service
     from app.services.download_monitor_service import _do_search
 
@@ -860,8 +860,6 @@ def test_do_search_routes_grab_to_protocol_specific_download_client(monkeypatch)
             'guid': 'guid-1',
             'indexerId': 1,
         }])
-        monkeypatch.setattr(prowlarr_service, 'resolve_download_client_id', lambda *_args, **_kw: 42)
-
         grab_calls = []
 
         def _fake_grab(_settings, guid, indexer_id, download_client_id=None):
@@ -873,5 +871,5 @@ def test_do_search_routes_grab_to_protocol_specific_download_client(monkeypatch)
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
 
-        assert grab_calls and grab_calls[0]['download_client_id'] == 42
+        assert grab_calls and grab_calls[0]['download_client_id'] is None
         assert dj.client_type == 'sabnzbd'
