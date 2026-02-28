@@ -7,7 +7,7 @@ from pathlib import Path
 DEFAULT_LOG_DIR = '/config/logs'
 DEFAULT_LOG_LEVEL = 'INFO'
 DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
-DEFAULT_LOG_BACKUP_COUNT = 14
+DEFAULT_LOG_BACKUP_COUNT = 10
 
 
 def _parse_positive_int_env(name: str, default: int) -> int:
