@@ -12,6 +12,7 @@ from app.models.settings import Settings
 
 RECOVERABLE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
 ACTIVE_WORKSPACE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
+LEGACY_QUEUED_STATUSES = {'pending', 'created'}
 
 
 def _apply_partial_resume_if_available(job: Job, workspace: Path, partial_duration: float | None) -> bool:
@@ -143,6 +144,22 @@ def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
                 shutil.rmtree(workspace, ignore_errors=True)
                 cleaned_workspaces += 1
 
+    legacy_queued_jobs = db.query(Job).filter(Job.status.in_(LEGACY_QUEUED_STATUSES)).all()
+    for job in legacy_queued_jobs:
+        job.status = 'queued'
+        job.progress_percent = 0
+        job.retry_count = 0
+        job.cancel_requested = False
+        job.fps = None
+        job.eta_seconds = None
+        job.output_path = None
+        job.error_message = None
+        job.completed_at = None
+        requeued_jobs += 1
+
+    # SessionLocal is configured with autoflush=False, so flush status changes
+    # before querying queued rows for partial-resume attachment.
+    db.flush()
 
     queued_jobs = db.query(Job).filter(Job.status == 'queued').all()
     for job in queued_jobs:

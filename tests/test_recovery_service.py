@@ -181,6 +181,66 @@ def test_startup_recovery_adds_resume_position_for_queued_partials(monkeypatch, 
         assert job.resume_position_seconds == 88.8
         assert job.progress_percent == 33
 
+
+def test_startup_recovery_normalizes_legacy_pending_and_created_to_queued(tmp_path):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        _configure_settings(db, tmp_path / 'workspaces', requeue=True)
+
+        pending_job = Job(input_path='/media/legacy-pending.mkv', status='pending', progress_percent=91, retry_count=4)
+        created_job = Job(input_path='/media/legacy-created.mkv', status='created', progress_percent=8, retry_count=1)
+        db.add_all([pending_job, created_job])
+        db.commit()
+        db.refresh(pending_job)
+        db.refresh(created_job)
+
+        summary = recovery_service.run_startup_recovery(db)
+        db.refresh(pending_job)
+        db.refresh(created_job)
+
+        assert summary['recovered_jobs'] == 0
+        assert summary['requeued_jobs'] == 2
+        assert pending_job.status == 'queued'
+        assert created_job.status == 'queued'
+        assert pending_job.progress_percent == 0
+        assert created_job.progress_percent == 0
+        assert pending_job.retry_count == 0
+        assert created_job.retry_count == 0
+        assert pending_job.cancel_requested is False
+        assert created_job.cancel_requested is False
+
+
+def test_startup_recovery_normalized_legacy_pending_keeps_resume_capability(monkeypatch, tmp_path):
+    workspace_root = tmp_path / 'workspaces'
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        _configure_settings(db, workspace_root, requeue=True)
+
+        job = Job(input_path='/media/legacy-pending-partial.mkv', status='pending', progress_percent=71)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = workspace_root / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / 'output.partial.mkv').write_text('partial')
+
+        monkeypatch.setattr(recovery_service, '_probe_partial_duration', lambda *_: 66.6)
+
+        summary = recovery_service.run_startup_recovery(db)
+        db.refresh(job)
+
+        assert summary['recovered_jobs'] == 0
+        assert summary['requeued_jobs'] == 2
+        assert job.status == 'queued'
+        assert job.resume_position_seconds == 66.6
+        assert workspace.exists()
+
 # ---------------------------------------------------------------------------
 # run_workspace_cleanup edge cases
 # ---------------------------------------------------------------------------

@@ -2707,12 +2707,6 @@ export default function App() {
                         {queuePaused ? 'Queue Paused' : 'Queue Running'}
                       </span>
                     )}
-                    <span aria-label={`Active queue items: ${filteredActiveJobs.length}`} className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-300">
-                      Active {filteredActiveJobs.length}
-                    </span>
-                    <span aria-label={`History items: ${filteredHistoryJobs.length}`} className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-300">
-                      History {filteredHistoryJobs.length}
-                    </span>
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-3">

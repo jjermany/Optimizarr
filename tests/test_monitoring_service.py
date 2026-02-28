@@ -4,6 +4,7 @@ from io import StringIO
 from types import SimpleNamespace
 
 from app.core.database import SessionLocal
+from app.models.download_job import DownloadJob
 from app.models.job import Job
 from app.services import monitoring_service
 
@@ -267,16 +268,25 @@ def test_get_system_metrics_includes_cpu_ram_and_active_jobs(monkeypatch):
     monkeypatch.setattr(monitoring_service.psutil, 'virtual_memory', lambda: SimpleNamespace(percent=78.0))
 
     with SessionLocal() as db:
-        baseline_active = db.query(Job).filter(~Job.status.in_(monitoring_service.TERMINAL_STATUSES)).count()
+        baseline_encode = db.query(Job).filter(Job.status.in_(monitoring_service.ACTIVE_ENCODE_STATUSES)).count()
+        baseline_download = db.query(DownloadJob).filter(
+            DownloadJob.status.in_(monitoring_service.ACTIVE_DOWNLOAD_STATUSES),
+        ).count()
         queued = Job(input_path='/media/active.mkv', status='queued')
+        running = Job(input_path='/media/processing.mkv', status='running')
         done = Job(input_path='/media/done.mkv', status='complete')
-        db.add_all([queued, done])
+        downloading = DownloadJob(source_file_path='/downloads/a.mkv', status='downloading')
+        pending_download = DownloadJob(source_file_path='/downloads/b.mkv', status='pending')
+        db.add_all([queued, running, done, downloading, pending_download])
         db.commit()
 
         metrics = monitoring_service.get_system_metrics(db)
 
         db.delete(queued)
+        db.delete(running)
         db.delete(done)
+        db.delete(downloading)
+        db.delete(pending_download)
         db.commit()
 
     assert metrics == {
@@ -284,5 +294,5 @@ def test_get_system_metrics_includes_cpu_ram_and_active_jobs(monkeypatch):
         'gpu_render_percent': 34.0,
         'cpu_percent': 56.0,
         'ram_percent': 78.0,
-        'active_jobs': baseline_active + 1,
+        'active_jobs': baseline_encode + baseline_download + 2,
     }

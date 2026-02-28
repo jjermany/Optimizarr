@@ -11,9 +11,17 @@ from typing import Any
 import psutil
 from sqlalchemy.orm import Session
 
+from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 
 TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
+ACTIVE_ENCODE_STATUSES = {'starting', 'running', 'preflight'}
+ACTIVE_DOWNLOAD_STATUSES = {
+    DownloadJobStatus.searching.value,
+    DownloadJobStatus.downloading.value,
+    DownloadJobStatus.moving.value,
+    DownloadJobStatus.importing.value,
+}
 
 
 def _safe_float(value: Any) -> float:
@@ -454,7 +462,9 @@ def get_gpu_metrics() -> dict[str, float]:
 
 def get_system_metrics(db: Session) -> dict[str, float | int]:
     gpu_metrics = get_gpu_metrics()
-    active_jobs = db.query(Job).filter(~Job.status.in_(TERMINAL_STATUSES)).count()
+    active_encode_jobs = db.query(Job).filter(Job.status.in_(ACTIVE_ENCODE_STATUSES)).count()
+    active_download_jobs = db.query(DownloadJob).filter(DownloadJob.status.in_(ACTIVE_DOWNLOAD_STATUSES)).count()
+    active_jobs = active_encode_jobs + active_download_jobs
 
     return {
         **gpu_metrics,
