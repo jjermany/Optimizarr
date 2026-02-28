@@ -259,6 +259,56 @@ def test_select_best_release_tone_map_disabled_allows_hdr():
     assert selected['title'] == 'Movie.2024.1080p.WEB-DL.HDR10.x265-HDR'
 
 
+def test_select_best_release_accepts_legacy_webdl_quality_value():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-GROUP',
+            'seeders': 100,
+            'size': 1500,
+            'protocol': 'torrent',
+        }
+    ]
+    legacy_profile = SimpleNamespace(
+        target_resolution=1080,
+        download_quality_profile='webdl',
+        tone_map_hdr=False,
+        hdr_only=False,
+    )
+
+    selected = _select_best_release(releases, legacy_profile, qbt_enabled=True, sab_enabled=True)
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-GROUP'
+
+
+def test_select_best_release_parses_string_boolean_flags():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.HDR10.x265-HDR',
+            'seeders': 50,
+            'size': 1600,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-SDR',
+            'seeders': 80,
+            'size': 1500,
+            'protocol': 'torrent',
+        },
+    ]
+    profile = SimpleNamespace(
+        target_resolution=1080,
+        download_quality_profile='any',
+        tone_map_hdr='true',
+        hdr_only='false',
+    )
+
+    selected = _select_best_release(releases, profile, qbt_enabled=True, sab_enabled=True)
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-SDR'
+
+
 def test_download_job_exists_for_source_treats_pending_as_active_non_terminal():
     source_path = '/media/download-pending.mkv'
     with SessionLocal() as db:

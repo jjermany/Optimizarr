@@ -666,7 +666,39 @@ def _quality_profile_value(profile: LibraryProfile) -> str:
     raw = getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any)
     if isinstance(raw, DownloadQualityProfileEnum):
         return raw.value
-    return str(raw or DownloadQualityProfileEnum.any.value)
+    text = str(raw or DownloadQualityProfileEnum.any.value).strip().lower()
+    aliases = {
+        'webdl': DownloadQualityProfileEnum.web_dl.value,
+        'web-dl': DownloadQualityProfileEnum.web_dl.value,
+        'web dl': DownloadQualityProfileEnum.web_dl.value,
+        'any': DownloadQualityProfileEnum.any.value,
+        'remux': DownloadQualityProfileEnum.remux.value,
+        'webrip': DownloadQualityProfileEnum.webrip.value,
+        'bluray': DownloadQualityProfileEnum.bluray.value,
+        'hdtv': DownloadQualityProfileEnum.hdtv.value,
+    }
+    normalized = aliases.get(text, text)
+    if normalized not in {item.value for item in DownloadQualityProfileEnum}:
+        logger.warning(
+            'Unknown download_quality_profile=%r; defaulting to %r',
+            raw,
+            DownloadQualityProfileEnum.any.value,
+        )
+        return DownloadQualityProfileEnum.any.value
+    return normalized
+
+
+def _coerce_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value or '').strip().lower()
+    if text in {'1', 'true', 'yes', 'on'}:
+        return True
+    if text in {'0', 'false', 'no', 'off', ''}:
+        return False
+    return bool(value)
 
 
 def _release_matches_target_resolution(release: dict, target_resolution: int) -> bool:
@@ -780,8 +812,13 @@ def _select_best_release(
     quality_val = _quality_profile_value(profile)
     indexer_by_id = indexer_by_id or {}
     candidates: list[dict] = []
-    tone_map_hdr = bool(getattr(profile, 'tone_map_hdr', False))
-    hdr_only = bool(getattr(profile, 'hdr_only', False))
+    tone_map_hdr = _coerce_bool(getattr(profile, 'tone_map_hdr', False))
+    hdr_only = _coerce_bool(getattr(profile, 'hdr_only', False))
+    filtered_by_resolution = 0
+    filtered_by_tonemap_hdr = 0
+    filtered_by_hdr_only = 0
+    filtered_by_quality = 0
+    filtered_by_client = 0
 
     for r in releases:
         title = r.get('title', '')
@@ -790,23 +827,29 @@ def _select_best_release(
 
         # Resolution filter
         if not _release_matches_target_resolution(r, profile.target_resolution):
+            filtered_by_resolution += 1
             continue
 
         is_hdr = _is_hdr_release(title_lower)
         if tone_map_hdr and is_hdr:
+            filtered_by_tonemap_hdr += 1
             continue
         if hdr_only and not is_hdr:
+            filtered_by_hdr_only += 1
             continue
 
         # Quality source filter
         if quality_val != DownloadQualityProfileEnum.any.value and quality_class != quality_val:
+            filtered_by_quality += 1
             continue
 
         # Protocol / client availability filter
         protocol = r.get('protocol', '').lower()
         if protocol == 'torrent' and not qbt_enabled:
+            filtered_by_client += 1
             continue
         if protocol == 'usenet' and not sab_enabled:
+            filtered_by_client += 1
             continue
 
         indexer_id_raw = r.get('indexerId')
@@ -840,6 +883,24 @@ def _select_best_release(
                 return _rank_candidates(exact_matches)[0]
         return _rank_candidates(candidates)[0]
 
+    logger.info(
+        'Download filtering produced no candidates: total=%d filtered_resolution=%d '
+        'filtered_tone_map_hdr=%d filtered_hdr_only=%d filtered_quality=%d '
+        'filtered_client=%d profile={target_resolution=%s quality=%s hdr_only=%s tone_map_hdr=%s} '
+        'clients={qbt=%s sab=%s}',
+        len(releases),
+        filtered_by_resolution,
+        filtered_by_tonemap_hdr,
+        filtered_by_hdr_only,
+        filtered_by_quality,
+        filtered_by_client,
+        getattr(profile, 'target_resolution', None),
+        quality_val,
+        hdr_only,
+        tone_map_hdr,
+        qbt_enabled,
+        sab_enabled,
+    )
     return None  # no matching release found; caller falls back to encoding
 
 
