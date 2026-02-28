@@ -418,19 +418,34 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                 status = slot.get('status', '')
                 is_stalled = status in ('Stalled', 'Failed')
                 eta_seconds = _parse_sab_eta_seconds(slot.get('timeleft')) or _parse_sab_eta_seconds(queue_data.get('queue', {}).get('timeleft'))
-                speed_raw = slot.get('mb') or slot.get('mbps') or queue_data.get('queue', {}).get('kbpersec')
                 speed_bps: int | None = None
-                if speed_raw is not None:
-                    speed_text = str(speed_raw).strip().lower().replace(',', '.')
+                # Prefer explicit speed metrics. "mb" is a size field, not speed.
+                queue_info = queue_data.get('queue', {})
+                speed_sources: list[tuple[object, str]] = []
+                if slot.get('mbps') is not None:
+                    speed_sources.append((slot.get('mbps'), 'mbps'))
+                if slot.get('kbpersec') is not None:
+                    speed_sources.append((slot.get('kbpersec'), 'kbps'))
+                if queue_info.get('mbps') is not None:
+                    speed_sources.append((queue_info.get('mbps'), 'mbps'))
+                if queue_info.get('kbpersec') is not None:
+                    speed_sources.append((queue_info.get('kbpersec'), 'kbps'))
+
+                for raw_value, unit_hint in speed_sources:
+                    speed_text = str(raw_value).strip().lower().replace(',', '.')
                     try:
                         if speed_text.endswith('mb/s'):
                             speed_bps = int(float(speed_text.replace('mb/s', '').strip()) * 1024 * 1024)
                         elif speed_text.endswith('kb/s'):
                             speed_bps = int(float(speed_text.replace('kb/s', '').strip()) * 1024)
+                        elif unit_hint == 'mbps':
+                            speed_bps = int(float(speed_text) * 1024 * 1024)
                         else:
                             speed_bps = int(float(speed_text) * 1024)
                     except ValueError:
                         speed_bps = None
+                    if speed_bps is not None:
+                        break
                 return {
                     'progress_percent': pct,
                     'eta_seconds': eta_seconds,

@@ -43,6 +43,7 @@ _tagged_job_ids: set[int] = set()
 # Track which DownloadJob IDs have had their SABnzbd category confirmed.
 # In-memory only; entries are retried on restart/progress checks as needed.
 _categorized_sab_job_ids: set[int] = set()
+_DEFAULT_DOWNLOAD_MAX_RETRIES = 5
 
 
 def is_download_queue_stopped() -> bool:
@@ -222,6 +223,8 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
         library_id=library.id,
         source_file_path=source_path,
         status=DownloadJobStatus.pending.value,
+        retry_count=0,
+        max_retries=_DEFAULT_DOWNLOAD_MAX_RETRIES,
     )
     db.add(dj)
     db.commit()
@@ -249,6 +252,10 @@ def download_job_to_dict(dj: DownloadJob) -> dict:
         'release_name': dj.release_name,
         'indexer_id': dj.indexer_id,
         'indexer_name': dj.indexer_name,
+        'selected_release_key': dj.selected_release_key,
+        'failed_release_keys': dj.failed_release_keys,
+        'retry_count': dj.retry_count,
+        'max_retries': dj.max_retries,
         'download_hash': dj.download_hash,
         'client_type': dj.client_type,
         'status': dj.status,
@@ -991,6 +998,99 @@ def _extract_title_tokens(source_path: str) -> list[str]:
     return tokens[:8]
 
 
+def _release_selection_key_from_release(release: dict) -> str:
+    guid = str(release.get('guid') or '').strip()
+    if guid:
+        return f'guid:{guid}'
+    title = _normalize_release_key(str(release.get('title') or ''))
+    if not title:
+        return ''
+    idx_raw = release.get('indexerId')
+    try:
+        indexer_id = int(idx_raw) if idx_raw is not None else 0
+    except (TypeError, ValueError):
+        indexer_id = 0
+    protocol = str(release.get('protocol') or '').strip().lower()
+    return f'title:{title}:idx:{indexer_id}:proto:{protocol}'
+
+
+def _release_selection_key_from_job(dj: DownloadJob) -> str:
+    if dj.selected_release_key:
+        return str(dj.selected_release_key).strip()
+    title = _normalize_release_key(dj.release_name)
+    if not title:
+        return ''
+    indexer_id = int(dj.indexer_id or 0)
+    protocol = str(dj.client_type or '').strip().lower()
+    return f'title:{title}:idx:{indexer_id}:proto:{protocol}'
+
+
+def _load_failed_release_keys(dj: DownloadJob) -> set[str]:
+    raw = str(dj.failed_release_keys or '').strip()
+    if not raw:
+        return set()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(payload, list):
+        return set()
+    return {str(item).strip() for item in payload if str(item).strip()}
+
+
+def _store_failed_release_keys(dj: DownloadJob, keys: set[str]) -> None:
+    if not keys:
+        dj.failed_release_keys = None
+        return
+    dj.failed_release_keys = json.dumps(sorted(keys))
+
+
+def _retry_failed_download(
+    db: Session,
+    dj: DownloadJob,
+    library: Library,
+    profile: LibraryProfile,
+    *,
+    reason: str,
+    failed_release_key: str = '',
+) -> bool:
+    max_retries = int(getattr(dj, 'max_retries', _DEFAULT_DOWNLOAD_MAX_RETRIES) or _DEFAULT_DOWNLOAD_MAX_RETRIES)
+    retry_next = int(getattr(dj, 'retry_count', 0) or 0) + 1
+
+    if failed_release_key:
+        keys = _load_failed_release_keys(dj)
+        keys.add(failed_release_key)
+        _store_failed_release_keys(dj, keys)
+
+    if retry_next <= max_retries:
+        dj.retry_count = retry_next
+        dj.max_retries = max_retries
+        dj.status = DownloadJobStatus.searching.value
+        dj.error_message = f'{reason}; retrying {retry_next}/{max_retries}'
+        dj.release_name = None
+        dj.indexer_id = None
+        dj.indexer_name = None
+        dj.selected_release_key = None
+        dj.download_hash = None
+        dj.client_type = None
+        dj.progress_percent = 0
+        dj.eta_seconds = None
+        dj.download_speed_bps = None
+        dj.download_started_at = None
+        dj.completed_at = None
+        db.commit()
+        db.refresh(dj)
+        _publish_download_job(dj)
+        _wake_event.set()
+        logger.warning('Download job %s: %s (auto-retry %s/%s)', dj.id, reason, retry_next, max_retries)
+        return True
+
+    logger.warning('Download job %s: %s; retries exhausted (%s/%s)', dj.id, reason, retry_next - 1, max_retries)
+    _mark_failed(db, dj, f'{reason}; retries exhausted after {max_retries} attempts')
+    _fallback_to_encode(db, dj, library, profile)
+    return False
+
+
 def _is_optimizarr_tagged(torrent: dict) -> bool:
     tags_value = str(torrent.get('tags') or '')
     tags = {part.strip().lower() for part in tags_value.split(',') if part.strip()}
@@ -1175,6 +1275,20 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         len(releases),
         dict(protocol_counts),
     )
+    failed_release_keys = _load_failed_release_keys(dj)
+    if failed_release_keys:
+        pre_filter_count = len(releases)
+        releases = [
+            release
+            for release in releases
+            if _release_selection_key_from_release(release) not in failed_release_keys
+        ]
+        logger.info(
+            'Download job %s: excluded %d previously failed release(s); remaining=%d',
+            dj.id,
+            max(0, pre_filter_count - len(releases)),
+            len(releases),
+        )
 
     best = _select_best_release(
         releases,
@@ -1212,8 +1326,14 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     )
 
     if grab_result is None:
-        _mark_failed(db, dj, 'Prowlarr grab failed')
-        _fallback_to_encode(db, dj, library, profile)
+        _retry_failed_download(
+            db,
+            dj,
+            library,
+            profile,
+            reason='Prowlarr grab failed',
+            failed_release_key=_release_selection_key_from_release(best),
+        )
         return
 
     download_hash = (
@@ -1236,6 +1356,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         dj.indexer_id = None
     dj.indexer_name = str(best.get('_indexer_name') or best.get('indexer') or '').strip() or None
     dj.release_name = release_title
+    dj.selected_release_key = _release_selection_key_from_release(best)
 
     if not download_hash:
         # Prowlarr grab succeeded but returned no client download id/hash.
@@ -1252,6 +1373,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         dj.download_hash = None
         dj.client_type = client_type
         dj.status = DownloadJobStatus.downloading.value
+        dj.error_message = None
         dj.download_started_at = datetime.utcnow()
         dj.progress_percent = 0
         dj.eta_seconds = None
@@ -1291,6 +1413,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     dj.download_hash = normalised_hash
     dj.client_type = client_type
     dj.status = DownloadJobStatus.downloading.value
+    dj.error_message = None
     dj.download_started_at = datetime.utcnow()
     dj.progress_percent = 0
     dj.eta_seconds = None
@@ -1477,19 +1600,17 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                 'not_found': False,
             }
 
-    # If the tracked item was removed from the download client, skip it for now
-    # so the pipeline can move to the next pending item. This is retryable.
+    # If the tracked item was removed/not found in the client, retry by
+    # searching for another release instead of immediately falling back.
     if status.get('not_found'):
-        logger.warning('Download job %s: item not found in %s; skipping for now', dj.id, client_type)
-        dj.status = DownloadJobStatus.stalled.value
-        dj.error_message = f'Removed from {client_type}; skipped for now'
-        dj.eta_seconds = None
-        dj.download_speed_bps = None
-        dj.completed_at = datetime.utcnow()
-        db.commit()
-        db.refresh(dj)
-        _publish_download_job(dj)
-        _wake_event.set()
+        _retry_failed_download(
+            db,
+            dj,
+            library,
+            profile,
+            reason=f'Removed from {client_type}',
+            failed_release_key=_release_selection_key_from_job(dj),
+        )
         return
     progress = status.get('progress_percent', 0)
     eta_seconds = status.get('eta_seconds')
@@ -1524,14 +1645,14 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         return
 
     if status.get('is_stalled'):
-        logger.warning('Download job %s is stalled', dj.id)
-        dj.status = DownloadJobStatus.stalled.value
-        dj.eta_seconds = None
-        dj.download_speed_bps = None
-        db.commit()
-        db.refresh(dj)
-        _publish_download_job(dj)
-        _fallback_to_encode(db, dj, library, profile)
+        _retry_failed_download(
+            db,
+            dj,
+            library,
+            profile,
+            reason=f'Download stalled in {client_type}',
+            failed_release_key=_release_selection_key_from_job(dj),
+        )
         return
 
     # Timeout check: only applied when the download is not yet complete or stalled.
@@ -1543,16 +1664,14 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     timeout_reference = dj.download_started_at or dj.created_at
     elapsed = datetime.utcnow() - timeout_reference
     if elapsed > timedelta(minutes=timeout_minutes):
-        logger.warning('Download job %s timed out after %s minutes', dj.id, timeout_minutes)
-        dj.status = DownloadJobStatus.timed_out.value
-        dj.error_message = f'Download timed out after {timeout_minutes} minutes'
-        dj.eta_seconds = None
-        dj.download_speed_bps = None
-        dj.completed_at = datetime.utcnow()
-        db.commit()
-        db.refresh(dj)
-        _publish_download_job(dj)
-        _fallback_to_encode(db, dj, library, profile)
+        _retry_failed_download(
+            db,
+            dj,
+            library,
+            profile,
+            reason=f'Download timed out after {timeout_minutes} minutes',
+            failed_release_key=_release_selection_key_from_job(dj),
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1940,6 +2059,7 @@ def _reset_download_job_to_searching(db: Session, dj: DownloadJob) -> None:
     dj.status = DownloadJobStatus.searching.value
     dj.indexer_id = None
     dj.indexer_name = None
+    dj.selected_release_key = None
     dj.download_hash = None
     dj.client_type = None
     dj.progress_percent = 0

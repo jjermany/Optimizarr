@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1405,7 +1406,7 @@ def test_scan_recovery_skips_active_downloading_jobs(monkeypatch):
         assert not import_called
 
 
-def test_check_download_progress_marks_missing_client_item_stalled_without_fallback(monkeypatch):
+def test_check_download_progress_missing_client_item_retries_without_fallback(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -1447,9 +1448,111 @@ def test_check_download_progress_marks_missing_client_item_stalled_without_fallb
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
 
-        assert dj.status == DownloadJobStatus.stalled.value
+        assert dj.status == DownloadJobStatus.searching.value
         assert 'removed from qbittorrent' in (dj.error_message or '').lower()
+        assert 'retrying 1/5' in (dj.error_message or '').lower()
         assert fallback_calls == []
+
+
+def test_check_download_progress_stalled_retries_search_before_fallback(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Stalled.Retry.Item.mkv',
+            release_name='Stalled.Retry.Item.2025.1080p.WEB-DL',
+            indexer_id=42,
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            max_retries=5,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'is_complete': False,
+            'is_stalled': True,
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.searching.value
+        assert dj.retry_count == 1
+        assert 'retrying 1/5' in (dj.error_message or '')
+        assert fallback_calls == []
+        failed_keys = json.loads(dj.failed_release_keys or '[]')
+        assert failed_keys
+
+
+def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Stalled.Exhausted.Item.mkv',
+            release_name='Stalled.Exhausted.Item.2025.1080p.WEB-DL',
+            indexer_id=77,
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=5,
+            max_retries=5,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'is_complete': False,
+            'is_stalled': True,
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.failed.value
+        assert 'retries exhausted' in (dj.error_message or '')
+        assert fallback_calls == [True]
 
 
 def test_check_download_progress_sab_hashless_waits_for_nzo_recovery(monkeypatch):
@@ -1543,6 +1646,66 @@ def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
         assert dj.indexer_id == 1
         assert dj.indexer_name == 'TestIndexer'
         assert sab_category_calls and sab_category_calls[0]['category'] == 'optimizarr'
+
+
+def test_do_search_skips_previously_failed_release_keys(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Skip.Failed.Release.mkv',
+            status=DownloadJobStatus.searching.value,
+            failed_release_keys=json.dumps(['guid:bad-guid']),
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(prowlarr_service, 'search', lambda *_args, **_kw: [
+            {
+                'title': 'Skip.Failed.Release.2025.1080p.WEB-DL-BAD',
+                'seeders': 500,
+                'size': 1100,
+                'protocol': 'usenet',
+                'guid': 'bad-guid',
+                'indexerId': 1,
+            },
+            {
+                'title': 'Skip.Failed.Release.2025.1080p.WEB-DL-GOOD',
+                'seeders': 10,
+                'size': 1200,
+                'protocol': 'usenet',
+                'guid': 'good-guid',
+                'indexerId': 1,
+            },
+        ])
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
+
+        grabbed = []
+        monkeypatch.setattr(
+            prowlarr_service,
+            'grab',
+            lambda *_args, **_kwargs: (grabbed.append(_args[1]) or {'downloadId': 'NZO_OK'}),
+        )
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+        db.refresh(dj)
+
+        assert grabbed == ['good-guid']
+        assert dj.status == DownloadJobStatus.downloading.value
 
 
 def test_import_file_sab_removes_source_video_from_completed_directory(monkeypatch, tmp_path):

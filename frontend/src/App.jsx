@@ -297,6 +297,14 @@ function formatDownloadSpeed(bytesPerSecond) {
   return `${Math.round(speed)} B/s`;
 }
 
+function formatDownloadRetry(job) {
+  const retryCount = Number(job?.retry_count);
+  const maxRetries = Number(job?.max_retries);
+  if (!Number.isFinite(retryCount) || !Number.isFinite(maxRetries)) return null;
+  if (retryCount <= 0 || maxRetries <= 0) return null;
+  return `Retry ${Math.min(retryCount, maxRetries)}/${maxRetries}`;
+}
+
 function formatDownloadClient(clientType) {
   if (clientType === 'qbittorrent') return 'qBittorrent';
   if (clientType === 'sabnzbd') return 'SABnzbd';
@@ -2768,8 +2776,10 @@ export default function App() {
                         const showEta = ['searching', 'downloading', 'importing'].includes(dj.status);
                         const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
                         const speedLabel = formatDownloadSpeed(dj.download_speed_bps);
+                        const retryLabel = formatDownloadRetry(dj);
                         const clientLabel = formatDownloadClient(dj.client_type);
                         const indexerLabel = dj.indexer_name || (dj.indexer_id != null ? `Indexer #${dj.indexer_id}` : null);
+                        const statusLabel = dj.status === 'searching' && retryLabel ? 'retrying' : dj.status.replace(/_/g, ' ');
                         return (
                           <div key={`dl-mobile-${dj.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
                             <div className="mb-2 flex items-center justify-between">
@@ -2779,7 +2789,7 @@ export default function App() {
                             <div className="flex items-start justify-between gap-2">
                               <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={dj.source_file_path}>{title || 'Unknown Title'}</p>
                               <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'importing' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : dj.status === 'searching' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : dj.status === 'downloading' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : dj.status === 'stalled' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>
-                                {dj.status.replace(/_/g, ' ')}
+                                {statusLabel}
                               </span>
                             </div>
                             <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
@@ -2790,6 +2800,7 @@ export default function App() {
                               {showEta && <span>ETA: {etaLabel}</span>}
                               {dj.status !== 'pending' && <span>Elapsed: {elapsedLabel}</span>}
                               {speedLabel && <span>Speed: {speedLabel}</span>}
+                              {retryLabel && <span>{retryLabel}</span>}
                               {clientLabel && <span>Client: {clientLabel}</span>}
                               {indexerLabel && <span>Indexer: {indexerLabel}</span>}
                             </div>
@@ -2932,8 +2943,10 @@ export default function App() {
                             const showEta = ['searching', 'downloading', 'importing'].includes(dj.status);
                             const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
                             const speedLabel = formatDownloadSpeed(dj.download_speed_bps);
+                            const retryLabel = formatDownloadRetry(dj);
                             const clientLabel = formatDownloadClient(dj.client_type);
                             const indexerLabel = dj.indexer_name || (dj.indexer_id != null ? `Indexer #${dj.indexer_id}` : null);
+                            const statusLabel = dj.status === 'searching' && retryLabel ? 'retrying' : dj.status.replace(/_/g, ' ');
                             return (
                               <tr key={`dl-${dj.id}`} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
                                 <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{dj.id}</td>
@@ -2944,10 +2957,11 @@ export default function App() {
                                   <div className="flex items-center gap-1.5">
                                     {dj.status === 'searching' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />}
                                     {dj.status === 'importing' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />}
-                                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${statusColor === 'text-violet-400' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : statusColor === 'text-sky-400' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : statusColor === 'text-cyan-400' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : statusColor === 'text-amber-400' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
+                                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${statusColor === 'text-violet-400' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : statusColor === 'text-sky-400' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : statusColor === 'text-cyan-400' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : statusColor === 'text-amber-400' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{statusLabel}</span>
                                   </div>
                                   {showEta && <p className="mt-0.5 text-xs text-slate-400">ETA: {etaLabel}</p>}
                                   {speedLabel && <p className="mt-0.5 text-xs text-slate-400">Speed: {speedLabel}</p>}
+                                  {retryLabel && <p className="mt-0.5 text-xs text-amber-300">{retryLabel}</p>}
                                   {clientLabel && <p className="mt-0.5 text-xs text-slate-500">Client: {clientLabel}</p>}
                                   {indexerLabel && <p className="mt-0.5 text-xs text-slate-500">Indexer: {indexerLabel}</p>}
                                   {dj.status !== 'pending' && (

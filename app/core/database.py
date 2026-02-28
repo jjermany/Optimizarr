@@ -257,6 +257,30 @@ def init_db() -> None:
         _add_column_if_missing(
             connection,
             'download_jobs',
+            'selected_release_key',
+            'selected_release_key TEXT',
+        )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
+            'failed_release_keys',
+            'failed_release_keys TEXT',
+        )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
+            'retry_count',
+            'retry_count INTEGER NOT NULL DEFAULT 0',
+        )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
+            'max_retries',
+            'max_retries INTEGER NOT NULL DEFAULT 5',
+        )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
             'download_started_at',
             'download_started_at DATETIME',
         )

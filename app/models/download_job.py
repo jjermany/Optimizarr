@@ -29,6 +29,10 @@ class DownloadJob(Base):
     release_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     indexer_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     indexer_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    selected_release_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failed_release_keys: Mapped[str | None] = mapped_column(Text, nullable=True)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    max_retries: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     download_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
     client_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'qbittorrent' or 'sabnzbd'
     status: Mapped[str] = mapped_column(String(32), default='pending', nullable=False)
