@@ -201,7 +201,14 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
         client = _qbt_session(s)
         info = _qbt_torrent_info(client, torrent_hash)
         if info is None:
-            return {'progress_percent': 0, 'eta_seconds': None, 'is_complete': False, 'is_stalled': False, 'save_path': None}
+            return {
+                'progress_percent': 0,
+                'eta_seconds': None,
+                'is_complete': False,
+                'is_stalled': False,
+                'save_path': None,
+                'not_found': True,
+            }
 
         state = info.get('state', '')
         progress = int(info.get('progress', 0) * 100)
@@ -223,10 +230,18 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
             'is_complete': is_complete,
             'is_stalled': is_stalled,
             'save_path': save_path,
+            'not_found': False,
         }
     except Exception as exc:
         logger.warning('qBittorrent status check failed for %s: %s', torrent_hash, exc)
-        return {'progress_percent': 0, 'eta_seconds': None, 'is_complete': False, 'is_stalled': False, 'save_path': None}
+        return {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'is_complete': False,
+            'is_stalled': False,
+            'save_path': None,
+            'not_found': False,
+        }
 
 
 def get_qbt_default_save_path(s: QBittorrentSettings) -> str | None:
@@ -316,7 +331,14 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     pct = 0
                 status = slot.get('status', '')
                 is_stalled = status in ('Stalled', 'Failed')
-                return {'progress_percent': pct, 'eta_seconds': None, 'is_complete': False, 'is_stalled': is_stalled, 'save_path': None}
+                return {
+                    'progress_percent': pct,
+                    'eta_seconds': None,
+                    'is_complete': False,
+                    'is_stalled': is_stalled,
+                    'save_path': None,
+                    'not_found': False,
+                }
 
         # Check history for completed entry
         history_data = _sab_api(s, mode='history', limit=100)
@@ -331,12 +353,27 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     'is_complete': is_complete,
                     'is_stalled': status == 'Failed',
                     'save_path': save_path,
+                    'not_found': False,
                 }
 
-        return {'progress_percent': 0, 'eta_seconds': None, 'is_complete': False, 'is_stalled': False, 'save_path': None}
+        return {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'is_complete': False,
+            'is_stalled': False,
+            'save_path': None,
+            'not_found': True,
+        }
     except Exception as exc:
         logger.warning('SABnzbd status check failed for %s: %s', nzo_id, exc)
-        return {'progress_percent': 0, 'eta_seconds': None, 'is_complete': False, 'is_stalled': False, 'save_path': None}
+        return {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'is_complete': False,
+            'is_stalled': False,
+            'save_path': None,
+            'not_found': False,
+        }
 
 
 def delete_sab_history(s: SabnzbdSettings, nzo_id: str) -> None:
@@ -367,7 +404,14 @@ def get_download_status(client_type: str, qbt: QBittorrentSettings | None, sab: 
     if client_type == 'sabnzbd' and sab is not None:
         return get_sab_status(sab, download_hash)
     logger.error('get_download_status: unknown client_type=%r or missing settings', client_type)
-    return {'progress_percent': 0, 'eta_seconds': None, 'is_complete': False, 'is_stalled': False, 'save_path': None}
+    return {
+        'progress_percent': 0,
+        'eta_seconds': None,
+        'is_complete': False,
+        'is_stalled': False,
+        'save_path': None,
+        'not_found': False,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

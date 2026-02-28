@@ -392,6 +392,7 @@ class DownloadJobResponse(BaseModel):
     error_message: str | None = None
     encode_job_id: int | None = None
     created_at: str | None = None
+    download_started_at: str | None = None
     completed_at: str | None = None
 
     @classmethod
@@ -403,6 +404,7 @@ class DownloadJobResponse(BaseModel):
             source_file_path=dj.source_file_path,
             search_query=dj.search_query,
             download_hash=dj.download_hash,
+            client_type=dj.client_type,
             status=dj.status,
             progress_percent=dj.progress_percent,
             eta_seconds=dj.eta_seconds,
@@ -411,6 +413,7 @@ class DownloadJobResponse(BaseModel):
             error_message=dj.error_message,
             encode_job_id=dj.encode_job_id,
             created_at=dj.created_at.replace(tzinfo=timezone.utc).isoformat() if dj.created_at else None,
+            download_started_at=dj.download_started_at.replace(tzinfo=timezone.utc).isoformat() if dj.download_started_at else None,
             completed_at=dj.completed_at.replace(tzinfo=timezone.utc).isoformat() if dj.completed_at else None,
         )
 

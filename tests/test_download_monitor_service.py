@@ -722,3 +722,99 @@ def test_scan_recovery_skips_active_downloading_jobs(monkeypatch):
         assert summary['imported'] == 0
         assert dj.status == DownloadJobStatus.downloading.value
         assert not import_called
+
+
+def test_check_download_progress_marks_missing_client_item_stalled_without_fallback(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Missing.Client.Item.mkv',
+            release_name='Missing.Client.Item.2025.1080p.WEB-DL',
+            download_hash='missinghash',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'is_complete': False,
+            'is_stalled': False,
+            'save_path': None,
+            'not_found': True,
+        })
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [])
+
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.stalled.value
+        assert 'removed from qbittorrent' in (dj.error_message or '').lower()
+        assert fallback_calls == []
+
+
+def test_do_search_routes_grab_to_protocol_specific_download_client(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Route.Client.By.Protocol.mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(prowlarr_service, 'search', lambda *_args, **_kw: [{
+            'title': 'Route.Client.By.Protocol.2025.1080p.WEB-DL',
+            'seeders': 10,
+            'size': 1000,
+            'protocol': 'usenet',
+            'guid': 'guid-1',
+            'indexerId': 1,
+        }])
+        monkeypatch.setattr(prowlarr_service, 'resolve_download_client_id', lambda *_args, **_kw: 42)
+
+        grab_calls = []
+
+        def _fake_grab(_settings, guid, indexer_id, download_client_id=None):
+            grab_calls.append({'guid': guid, 'indexer_id': indexer_id, 'download_client_id': download_client_id})
+            return {'downloadId': 'NZO12345'}
+
+        monkeypatch.setattr(prowlarr_service, 'grab', _fake_grab)
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+        db.refresh(dj)
+
+        assert grab_calls and grab_calls[0]['download_client_id'] == 42
+        assert dj.client_type == 'sabnzbd'

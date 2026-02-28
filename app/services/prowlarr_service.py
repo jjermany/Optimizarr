@@ -92,14 +92,56 @@ def search(settings: ProwlarrSettings, query: str, categories: list[int] | None 
         return None
 
 
-def grab(settings: ProwlarrSettings, guid: str, indexer_id: int) -> dict | None:
+def get_download_clients(settings: ProwlarrSettings) -> list[dict]:
+    """Return configured Prowlarr download clients."""
+    try:
+        url = f"{settings.host.rstrip('/')}/api/v1/downloadclient"
+        resp = httpx.get(
+            url,
+            headers={'X-Api-Key': settings.api_key},
+            timeout=_DEFAULT_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, list) else []
+    except Exception as exc:
+        logger.warning('Prowlarr download clients query failed: %s', exc)
+        return []
+
+
+def resolve_download_client_id(settings: ProwlarrSettings, protocol: str) -> int | None:
+    """Resolve a Prowlarr download client ID by release protocol."""
+    proto = (protocol or '').strip().lower()
+    if not proto:
+        return None
+
+    candidates = get_download_clients(settings)
+    for client in candidates:
+        if not bool(client.get('enable', True)):
+            continue
+        client_protocol = str(client.get('protocol') or '').lower()
+        if client_protocol == proto:
+            client_id = client.get('id')
+            if isinstance(client_id, int):
+                return client_id
+    return None
+
+
+def grab(
+    settings: ProwlarrSettings,
+    guid: str,
+    indexer_id: int,
+    download_client_id: int | None = None,
+) -> dict | None:
     """
     Send a release to the configured download client via Prowlarr's grab endpoint.
     Returns the response dict (may contain downloadId/hash) or None on failure.
     """
     try:
         url = f"{settings.host.rstrip('/')}/api/v1/search"
-        payload = {'guid': guid, 'indexerId': indexer_id}
+        payload: dict[str, int | str] = {'guid': guid, 'indexerId': indexer_id}
+        if isinstance(download_client_id, int):
+            payload['downloadClientId'] = download_client_id
         resp = httpx.post(
             url,
             json=payload,

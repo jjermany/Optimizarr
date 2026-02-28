@@ -561,7 +561,20 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         return
 
     logger.info('Download job %s: grabbing release %r', dj.id, best.get('title'))
-    grab_result = prowlarr_service.grab(prowlarr, best.get('guid', ''), best.get('indexerId', 0))
+    release_protocol = str(best.get('protocol', '') or '')
+    download_client_id = prowlarr_service.resolve_download_client_id(prowlarr, release_protocol)
+    if download_client_id is None:
+        logger.warning(
+            'Download job %s: no Prowlarr download client configured for protocol=%r; '
+            'using Prowlarr default download client',
+            dj.id, release_protocol,
+        )
+    grab_result = prowlarr_service.grab(
+        prowlarr,
+        best.get('guid', ''),
+        best.get('indexerId', 0),
+        download_client_id=download_client_id,
+    )
 
     if grab_result is None:
         _mark_failed(db, dj, 'Prowlarr grab failed')
@@ -750,7 +763,22 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                 'is_complete': replacement.get('state', '') in download_client_service._QBT_COMPLETE_STATES,
                 'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
                 'save_path': replacement.get('content_path') or replacement.get('save_path'),
+                'not_found': False,
             }
+
+    # If the tracked item was removed from the download client, skip it for now
+    # so the pipeline can move to the next pending item. This is retryable.
+    if status.get('not_found'):
+        logger.warning('Download job %s: item not found in %s; skipping for now', dj.id, client_type)
+        dj.status = DownloadJobStatus.stalled.value
+        dj.error_message = f'Removed from {client_type}; skipped for now'
+        dj.eta_seconds = None
+        dj.completed_at = datetime.utcnow()
+        db.commit()
+        db.refresh(dj)
+        _publish_download_job(dj)
+        _wake_event.set()
+        return
     progress = status.get('progress_percent', 0)
     eta_seconds = status.get('eta_seconds')
     eta_seconds = int(eta_seconds) if isinstance(eta_seconds, (int, float)) and eta_seconds >= 0 else None

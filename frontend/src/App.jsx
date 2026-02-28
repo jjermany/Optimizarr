@@ -186,7 +186,8 @@ export function mergeJobsWithUpdate(previousJobs, nextJob) {
 
 function libraryEncodeQueueCount(library, jobs) {
   return jobs.filter((job) => {
-    if (!QUEUED_STATUSES.has(job.status?.toLowerCase())) return false;
+    const status = job.status?.toLowerCase();
+    if (!status || TERMINAL_STATUSES.has(status)) return false;
     // Prefer library_id match (accurate); fall back to path prefix for legacy data
     if (job.library_id != null) return job.library_id === library.id;
     return job.source_path === library.path || job.source_path?.startsWith(`${library.path}/`);
@@ -195,7 +196,8 @@ function libraryEncodeQueueCount(library, jobs) {
 
 function libraryDownloadQueueCount(library, downloadJobs) {
   return downloadJobs.filter((job) => {
-    if (!ACTIVE_DL_STATUSES.has(job.status)) return false;
+    const status = String(job.status ?? '').toLowerCase();
+    if (!ACTIVE_DL_STATUSES.has(status)) return false;
     return job.library_id === library.id;
   }).length;
 }
@@ -286,7 +288,7 @@ export function getElapsedSeconds(createdAt, nowMs = Date.now()) {
 }
 
 export function estimateDownloadEtaSeconds(downloadJob, nowMs = Date.now()) {
-  const elapsedSeconds = getElapsedSeconds(downloadJob.created_at, nowMs);
+  const elapsedSeconds = getElapsedSeconds(downloadJob.download_started_at ?? downloadJob.created_at, nowMs);
   const reportedProgress = Number(downloadJob.progress_percent);
 
   if (elapsedSeconds == null || !Number.isFinite(reportedProgress) || reportedProgress <= 0) {
@@ -316,6 +318,17 @@ function formatElapsed(seconds) {
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+function normalizeDownloadJob(job) {
+  if (!job || typeof job !== 'object') return job;
+  const normalized = { ...job };
+  normalized.status = String(job.status ?? '').toLowerCase();
+  if (job.library_id != null) {
+    const asNumber = Number(job.library_id);
+    normalized.library_id = Number.isFinite(asNumber) ? asNumber : job.library_id;
+  }
+  return normalized;
 }
 
 function extractTitleYear(filePath) {
@@ -679,6 +692,7 @@ export default function App() {
   });
   const [jobsView, setJobsView] = useState(() => (jobsUiPrefs.jobsView === 'history' ? 'history' : 'queue'));
   const [nowHour, setNowHour] = useState(() => new Date().getHours());
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const wsRef = useRef();
   const reconnectAttemptsRef = useRef(0);
@@ -690,7 +704,7 @@ export default function App() {
   const queueCount = useMemo(
     () =>
       jobs.filter((job) => QUEUED_STATUSES.has(job.status?.toLowerCase())).length +
-      downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(dj.status)).length,
+      downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length,
     [jobs, downloadJobs],
   );
 
@@ -763,7 +777,7 @@ export default function App() {
     const dlSearch = queueSearch.toLowerCase();
     return downloadJobs
       .filter((dj) => {
-        if (!ACTIVE_DL_STATUSES.has(dj.status)) return false;
+        if (!ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())) return false;
         if (!dlSearch) return true;
         const { title, year } = extractTitleYear(dj.source_file_path);
         const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '') : '';
@@ -888,7 +902,7 @@ export default function App() {
       if (nextProwlarrSettings) setProwlarrSettings(nextProwlarrSettings);
       if (nextQbtSettings) setQbtSettings(nextQbtSettings);
       if (nextSabSettings) setSabSettings(nextSabSettings);
-      setDownloadJobs(nextDownloadJobs ?? []);
+      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
       const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
       setAvailableEncodersByCodec(encoderMap);
       setQueuePaused(nextQueueStatus?.status === 'paused');
@@ -1040,6 +1054,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const timer = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     intentionallyClosedRef.current = false;
 
     function clearTimers() {
@@ -1082,13 +1101,14 @@ export default function App() {
           if (payload.type === 'job_update') { mergeJobUpdate(payload.data); return; }
           if (payload.type === 'download_job_update') {
             setDownloadJobs((prev) => {
+              const next = normalizeDownloadJob(payload.data);
               const idx = prev.findIndex((dj) => dj.id === payload.data?.id);
               if (idx >= 0) {
                 const updated = [...prev];
-                updated[idx] = { ...updated[idx], ...payload.data };
+                updated[idx] = { ...updated[idx], ...next };
                 return updated;
               }
-              return [...prev, payload.data];
+              return [...prev, next];
             });
             return;
           }
@@ -1184,7 +1204,7 @@ export default function App() {
       const result = await purgeHistory();
       // Remove terminal download jobs from local state immediately — the server
       // endpoint now clears both encode history and terminal download jobs.
-      setDownloadJobs((prev) => prev.filter((dj) => !TERMINAL_DL_STATUSES.has(dj.status)));
+      setDownloadJobs((prev) => prev.filter((dj) => !TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())));
       pushToast(`Purged ${result.removed_job_ids.length} history item(s).`, 'success');
       await refreshAll();
     } catch (actionError) {
@@ -1496,7 +1516,7 @@ export default function App() {
     try {
       await cancelDownloadJob(jobId);
       const updated = await fetchDownloadJobs();
-      setDownloadJobs(updated ?? []);
+      setDownloadJobs((updated ?? []).map(normalizeDownloadJob));
       await refreshAll();
       pushToast('Download job reset to pending.', 'success');
     } catch (err) {
@@ -1508,7 +1528,7 @@ export default function App() {
     try {
       await retryDownloadJob(jobId);
       const updated = await fetchDownloadJobs();
-      setDownloadJobs(updated ?? []);
+      setDownloadJobs((updated ?? []).map(normalizeDownloadJob));
       pushToast('Download job re-queued for search.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not retry download job.', 'error');
@@ -1519,7 +1539,7 @@ export default function App() {
     try {
       await deleteDownloadJob(jobId);
       const updated = await fetchDownloadJobs();
-      setDownloadJobs(updated ?? []);
+      setDownloadJobs((updated ?? []).map(normalizeDownloadJob));
       pushToast('Download job removed.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not remove download job.', 'error');
@@ -2114,7 +2134,7 @@ export default function App() {
                     className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'queue' ? 'bg-cyan-500 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
                   >
                     Queue
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'queue' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredActiveJobs.length + downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(dj.status)).length}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'queue' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredActiveJobs.length + downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length}</span>
                   </button>
                   <button
                     type="button"
@@ -2122,7 +2142,7 @@ export default function App() {
                     className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'history' ? 'bg-cyan-500 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
                   >
                     History
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'history' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredHistoryJobs.length + downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(dj.status)).length}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'history' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredHistoryJobs.length + downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length}</span>
                   </button>
                 </div>
                 {/* Action buttons for the active view */}
@@ -2207,10 +2227,11 @@ export default function App() {
                               dj.status === 'searching' ? 'text-sky-400' :
                               dj.status === 'stalled' ? 'text-amber-400' :
                               'text-slate-400';
-                            const elapsedSeconds = getElapsedSeconds(dj.created_at);
+                            const elapsedStart = dj.download_started_at ?? dj.created_at;
+                            const elapsedSeconds = getElapsedSeconds(elapsedStart, nowMs);
                             const elapsedLabel = formatElapsed(elapsedSeconds);
                             const showEta = ['searching', 'downloading', 'importing'].includes(dj.status);
-                            const etaLabel = formatEta(getDownloadEtaSeconds(dj)) ?? '—';
+                            const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
                             return (
                               <tr key={`dl-${dj.id}`} className="transition-colors duration-100 hover:bg-slate-800/30">
                                 <td className="px-4 py-3 text-xs text-slate-500">{dj.id}</td>
@@ -2468,7 +2489,7 @@ export default function App() {
                     </div>
                   )}
                   {/* Terminal download jobs in history */}
-                  {downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(dj.status)).length > 0 && (
+                  {downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length > 0 && (
                     <div className="border-t border-slate-800">
                       <div className="px-5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Downloads</div>
                       <div className="overflow-x-auto">
@@ -2481,7 +2502,7 @@ export default function App() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-800/60">
-                            {downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(dj.status)).map((dj) => {
+                            {downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).map((dj) => {
                               const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
                               const fileName = dj.source_file_path ? dj.source_file_path.split('/').pop() : '—';
                               const statusColor =
