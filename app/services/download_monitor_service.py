@@ -244,11 +244,14 @@ def download_job_to_dict(dj: DownloadJob) -> dict:
         'source_file_path': dj.source_file_path,
         'search_query': dj.search_query,
         'release_name': dj.release_name,
+        'indexer_id': dj.indexer_id,
+        'indexer_name': dj.indexer_name,
         'download_hash': dj.download_hash,
         'client_type': dj.client_type,
         'status': dj.status,
         'progress_percent': dj.progress_percent,
         'eta_seconds': dj.eta_seconds,
+        'download_speed_bps': dj.download_speed_bps,
         'downloaded_file_path': dj.downloaded_file_path,
         'imported_file_path': dj.imported_file_path,
         'error_message': dj.error_message,
@@ -540,8 +543,18 @@ def _is_hdr_release(title_lower: str) -> bool:
 
 
 def _rank_candidates(releases: list[dict]) -> list[dict]:
-    """Sort releases by seeders descending, then size ascending."""
-    return sorted(releases, key=lambda r: (-r.get('seeders', 0), r.get('size', 0)))
+    """
+    Sort releases by Prowlarr indexer priority (lower wins), then seeders
+    descending, then size ascending.
+    """
+    return sorted(
+        releases,
+        key=lambda r: (
+            int(r.get('_indexer_priority', 10_000_000)),
+            -int(r.get('seeders', 0) or 0),
+            int(r.get('size', 0) or 0),
+        ),
+    )
 
 
 def _select_best_release(
@@ -549,6 +562,7 @@ def _select_best_release(
     profile: LibraryProfile,
     qbt_enabled: bool,
     sab_enabled: bool,
+    indexer_by_id: dict[int, dict] | None = None,
 ) -> dict | None:
     """
     Select the best SDR release at the target resolution, respecting the
@@ -560,6 +574,7 @@ def _select_best_release(
     require SABnzbd to be enabled.
     """
     quality_val = _quality_profile_value(profile)
+    indexer_by_id = indexer_by_id or {}
     sdr_candidates: list[dict] = []
 
     for r in releases:
@@ -586,7 +601,28 @@ def _select_best_release(
         if protocol == 'usenet' and not sab_enabled:
             continue
 
-        sdr_candidates.append({**r, '_quality_class': quality_class})
+        indexer_id_raw = r.get('indexerId')
+        try:
+            indexer_id = int(indexer_id_raw) if indexer_id_raw is not None else None
+        except (TypeError, ValueError):
+            indexer_id = None
+        indexer_meta = indexer_by_id.get(indexer_id, {}) if indexer_id is not None else {}
+        indexer_name = str(r.get('indexer') or indexer_meta.get('name') or '').strip()
+        priority_raw = indexer_meta.get('priority')
+        try:
+            indexer_priority = int(priority_raw)
+        except (TypeError, ValueError):
+            indexer_priority = 10_000_000
+
+        sdr_candidates.append(
+            {
+                **r,
+                '_quality_class': quality_class,
+                '_indexer_id': indexer_id,
+                '_indexer_name': indexer_name,
+                '_indexer_priority': indexer_priority,
+            }
+        )
 
     if sdr_candidates:
         # Tie-break: prefer exact profile class matches before seed/size ranking.
@@ -813,6 +849,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     profile = library.profile
     query = _build_search_query(dj.source_file_path, profile)
     dj.search_query = query
+    dj.indexer_id = None
+    dj.indexer_name = None
     db.commit()
 
     logger.info('Download job %s searching Prowlarr for %r', dj.id, query)
@@ -823,6 +861,17 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     if releases is None:
         logger.warning('Download job %s: Prowlarr search failed (connection error); will retry', dj.id)
         return
+    indexers = prowlarr_service.get_indexers(prowlarr)
+    indexer_by_id: dict[int, dict] = {}
+    for idx in indexers:
+        if not isinstance(idx, dict):
+            continue
+        idx_id_raw = idx.get('id')
+        try:
+            idx_id = int(idx_id_raw)
+        except (TypeError, ValueError):
+            continue
+        indexer_by_id[idx_id] = idx
     protocol_counts = Counter(
         str(release.get('protocol', '') or '').strip().lower() or 'unknown'
         for release in releases
@@ -834,7 +883,13 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         dict(protocol_counts),
     )
 
-    best = _select_best_release(releases, profile, qbt_enabled=qbt.enabled, sab_enabled=sab.enabled)
+    best = _select_best_release(
+        releases,
+        profile,
+        qbt_enabled=qbt.enabled,
+        sab_enabled=sab.enabled,
+        indexer_by_id=indexer_by_id,
+    )
 
     if best is None:
         logger.info('Download job %s: no matching release found, falling back to encode', dj.id)
@@ -881,6 +936,12 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     # hash recovery can find the torrent in qBit by exact name instead of
     # relying on imprecise timestamp filtering.
     release_title = best.get('title', '') or ''
+    indexer_id_raw = best.get('indexerId')
+    try:
+        dj.indexer_id = int(indexer_id_raw) if indexer_id_raw is not None else None
+    except (TypeError, ValueError):
+        dj.indexer_id = None
+    dj.indexer_name = str(best.get('_indexer_name') or best.get('indexer') or '').strip() or None
     dj.release_name = release_title
 
     if not download_hash:
@@ -901,6 +962,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         dj.download_started_at = datetime.utcnow()
         dj.progress_percent = 0
         dj.eta_seconds = None
+        dj.download_speed_bps = None
         db.commit()
         db.refresh(dj)
 
@@ -930,6 +992,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     dj.download_started_at = datetime.utcnow()
     dj.progress_percent = 0
     dj.eta_seconds = None
+    dj.download_speed_bps = None
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
@@ -1076,6 +1139,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             status = {
                 'progress_percent': int((replacement.get('progress', 0) or 0) * 100),
                 'eta_seconds': replacement.get('eta'),
+                'download_speed_bps': replacement.get('dlspeed'),
                 'is_complete': replacement.get('state', '') in download_client_service._QBT_COMPLETE_STATES,
                 'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
                 'save_path': replacement.get('content_path') or replacement.get('save_path'),
@@ -1089,6 +1153,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         dj.status = DownloadJobStatus.stalled.value
         dj.error_message = f'Removed from {client_type}; skipped for now'
         dj.eta_seconds = None
+        dj.download_speed_bps = None
         dj.completed_at = datetime.utcnow()
         db.commit()
         db.refresh(dj)
@@ -1098,10 +1163,13 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     progress = status.get('progress_percent', 0)
     eta_seconds = status.get('eta_seconds')
     eta_seconds = int(eta_seconds) if isinstance(eta_seconds, (int, float)) and eta_seconds >= 0 else None
+    speed_bps = status.get('download_speed_bps')
+    speed_bps = int(speed_bps) if isinstance(speed_bps, (int, float)) and speed_bps >= 0 else None
 
-    if progress != dj.progress_percent or eta_seconds != dj.eta_seconds:
+    if progress != dj.progress_percent or eta_seconds != dj.eta_seconds or speed_bps != dj.download_speed_bps:
         dj.progress_percent = progress
         dj.eta_seconds = eta_seconds
+        dj.download_speed_bps = speed_bps
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj)
@@ -1111,6 +1179,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     if status.get('is_complete'):
         if dj.eta_seconds != 0:
             dj.eta_seconds = 0
+            dj.download_speed_bps = 0
             db.commit()
             db.refresh(dj)
             _publish_download_job(dj)
@@ -1127,6 +1196,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         logger.warning('Download job %s is stalled', dj.id)
         dj.status = DownloadJobStatus.stalled.value
         dj.eta_seconds = None
+        dj.download_speed_bps = None
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj)
@@ -1146,6 +1216,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         dj.status = DownloadJobStatus.timed_out.value
         dj.error_message = f'Download timed out after {timeout_minutes} minutes'
         dj.eta_seconds = None
+        dj.download_speed_bps = None
         dj.completed_at = datetime.utcnow()
         db.commit()
         db.refresh(dj)
@@ -1168,6 +1239,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     """
     dj.status = DownloadJobStatus.importing.value
     dj.eta_seconds = None
+    dj.download_speed_bps = None
     db.commit()
     _publish_download_job(dj)
 
@@ -1201,6 +1273,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             dj.status = DownloadJobStatus.complete.value
             dj.imported_file_path = str(dest)
             dj.eta_seconds = None
+            dj.download_speed_bps = None
             dj.completed_at = datetime.utcnow()
             db.commit()
             db.refresh(dj)
@@ -1269,6 +1342,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
 
     dj.status = DownloadJobStatus.complete.value
     dj.eta_seconds = None
+    dj.download_speed_bps = None
     dj.completed_at = datetime.utcnow()
     db.commit()
     db.refresh(dj)
@@ -1492,10 +1566,13 @@ def _release_title_matches_profile(title: str, profile: LibraryProfile) -> bool:
 
 def _reset_download_job_to_searching(db: Session, dj: DownloadJob) -> None:
     dj.status = DownloadJobStatus.searching.value
+    dj.indexer_id = None
+    dj.indexer_name = None
     dj.download_hash = None
     dj.client_type = None
     dj.progress_percent = 0
     dj.eta_seconds = None
+    dj.download_speed_bps = None
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
@@ -1542,6 +1619,7 @@ def _mark_failed(db: Session, dj: DownloadJob, reason: str) -> None:
     dj.status = DownloadJobStatus.failed.value
     dj.error_message = reason
     dj.eta_seconds = None
+    dj.download_speed_bps = None
     dj.completed_at = datetime.utcnow()
     db.commit()
     db.refresh(dj)

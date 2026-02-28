@@ -245,6 +245,18 @@ def init_db() -> None:
         _add_column_if_missing(
             connection,
             'download_jobs',
+            'indexer_id',
+            'indexer_id INTEGER',
+        )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
+            'indexer_name',
+            'indexer_name VARCHAR(255)',
+        )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
             'download_started_at',
             'download_started_at DATETIME',
         )
@@ -253,4 +265,10 @@ def init_db() -> None:
             'download_jobs',
             'eta_seconds',
             'eta_seconds INTEGER',
+        )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
+            'download_speed_bps',
+            'download_speed_bps INTEGER',
         )

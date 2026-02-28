@@ -92,6 +92,74 @@ def test_select_best_release_any_allows_all_quality_classes():
     assert selected['title'] == 'Movie.2024.1080p.WEBRip.x265-HIGHSEED'
 
 
+def test_select_best_release_prefers_higher_priority_indexer_over_more_seeders():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-HIGHSEED',
+            'seeders': 800,
+            'size': 1400,
+            'protocol': 'torrent',
+            'indexerId': 100,
+        },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-HIGHPRIORITY',
+            'seeders': 50,
+            'size': 1500,
+            'protocol': 'torrent',
+            'indexerId': 200,
+        },
+    ]
+    indexer_by_id = {
+        100: {'id': 100, 'name': 'LowPriorityIndexer', 'priority': 25},
+        200: {'id': 200, 'name': 'TopPriorityIndexer', 'priority': 1},
+    }
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl),
+        qbt_enabled=True,
+        sab_enabled=True,
+        indexer_by_id=indexer_by_id,
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-HIGHPRIORITY'
+
+
+def test_select_best_release_can_choose_usenet_when_priority_is_higher():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-TORRENT',
+            'seeders': 500,
+            'size': 1300,
+            'protocol': 'torrent',
+            'indexerId': 10,
+        },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-USENET',
+            'seeders': 0,
+            'size': 1500,
+            'protocol': 'usenet',
+            'indexerId': 20,
+        },
+    ]
+    indexer_by_id = {
+        10: {'id': 10, 'name': 'TorrentIndexer', 'priority': 30},
+        20: {'id': 20, 'name': 'UsenetIndexer', 'priority': 1},
+    }
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl),
+        qbt_enabled=True,
+        sab_enabled=True,
+        indexer_by_id=indexer_by_id,
+    )
+
+    assert selected is not None
+    assert selected['protocol'] == 'usenet'
+
+
 def test_select_best_release_uses_structured_quality_when_title_is_ambiguous():
     releases = [
         {
@@ -908,6 +976,7 @@ def test_check_search_job_stays_searching_on_prowlarr_error(monkeypatch):
 
         # Simulate a connection failure — search returns None
         monkeypatch.setattr(prowlarr_service, 'search', lambda *_args, **_kw: None)
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [])
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
@@ -1170,6 +1239,7 @@ def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
             'guid': 'guid-1',
             'indexerId': 1,
         }])
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
         grab_calls = []
 
         def _fake_grab(_settings, guid, indexer_id, download_client_id=None):
@@ -1183,3 +1253,5 @@ def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
 
         assert grab_calls and grab_calls[0]['download_client_id'] is None
         assert dj.client_type == 'sabnzbd'
+        assert dj.indexer_id == 1
+        assert dj.indexer_name == 'TestIndexer'

@@ -288,6 +288,21 @@ function formatEta(etaSeconds) {
   return `${s}s`;
 }
 
+function formatDownloadSpeed(bytesPerSecond) {
+  const speed = Number(bytesPerSecond);
+  if (!Number.isFinite(speed) || speed <= 0) return null;
+  if (speed >= 1024 * 1024 * 1024) return `${(speed / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
+  if (speed >= 1024 * 1024) return `${(speed / (1024 * 1024)).toFixed(2)} MB/s`;
+  if (speed >= 1024) return `${(speed / 1024).toFixed(1)} KB/s`;
+  return `${Math.round(speed)} B/s`;
+}
+
+function formatDownloadClient(clientType) {
+  if (clientType === 'qbittorrent') return 'qBittorrent';
+  if (clientType === 'sabnzbd') return 'SABnzbd';
+  return null;
+}
+
 export function getElapsedSeconds(createdAt, nowMs = Date.now()) {
   if (!createdAt) return null;
   const createdAtMs = Date.parse(createdAt);
@@ -2746,6 +2761,9 @@ export default function App() {
                         const elapsedLabel = formatElapsed(elapsedSeconds);
                         const showEta = ['searching', 'downloading', 'importing'].includes(dj.status);
                         const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
+                        const speedLabel = formatDownloadSpeed(dj.download_speed_bps);
+                        const clientLabel = formatDownloadClient(dj.client_type);
+                        const indexerLabel = dj.indexer_name || (dj.indexer_id != null ? `Indexer #${dj.indexer_id}` : null);
                         return (
                           <div key={`dl-mobile-${dj.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
                             <div className="mb-2 flex items-center justify-between">
@@ -2765,6 +2783,9 @@ export default function App() {
                             <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
                               {showEta && <span>ETA: {etaLabel}</span>}
                               {dj.status !== 'pending' && <span>Elapsed: {elapsedLabel}</span>}
+                              {speedLabel && <span>Speed: {speedLabel}</span>}
+                              {clientLabel && <span>Client: {clientLabel}</span>}
+                              {indexerLabel && <span>Indexer: {indexerLabel}</span>}
                             </div>
                             {dj.status === 'downloading' && (
                               <div className="mt-2">
@@ -2829,7 +2850,14 @@ export default function App() {
                           {job.status === 'failed' && job.error_message && <p className="mt-2.5 text-xs text-red-400">{job.error_message}</p>}
                           {queueWaitingForRoute && <p className="mt-2.5 text-xs text-sky-400">Auto-routing: download first, encode fallback.</p>}
                           {djIsActive && activeDj.status === 'searching' && <p className="mt-2.5 text-xs text-sky-400">Searching…</p>}
-                          {djIsActive && activeDj.status === 'downloading' && <p className="mt-2.5 text-xs text-violet-400">Downloading {activeDj.progress_percent}%</p>}
+                          {djIsActive && activeDj.status === 'downloading' && (
+                            <p className="mt-2.5 text-xs text-violet-400">
+                              Downloading {activeDj.progress_percent}%
+                              {formatDownloadSpeed(activeDj.download_speed_bps) ? ` • ${formatDownloadSpeed(activeDj.download_speed_bps)}` : ''}
+                              {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
+                              {activeDj.indexer_name ? ` • ${activeDj.indexer_name}` : ''}
+                            </p>
+                          )}
                           {djIsActive && activeDj.status === 'importing' && <p className="mt-2.5 text-xs text-violet-400">Importing…</p>}
                           <div className="mt-2.5">
                             <div className="h-1.5 w-full rounded-full bg-slate-700">
@@ -2897,6 +2925,9 @@ export default function App() {
                             const elapsedLabel = formatElapsed(elapsedSeconds);
                             const showEta = ['searching', 'downloading', 'importing'].includes(dj.status);
                             const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
+                            const speedLabel = formatDownloadSpeed(dj.download_speed_bps);
+                            const clientLabel = formatDownloadClient(dj.client_type);
+                            const indexerLabel = dj.indexer_name || (dj.indexer_id != null ? `Indexer #${dj.indexer_id}` : null);
                             return (
                               <tr key={`dl-${dj.id}`} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
                                 <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{dj.id}</td>
@@ -2910,6 +2941,9 @@ export default function App() {
                                     <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${statusColor === 'text-violet-400' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : statusColor === 'text-sky-400' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : statusColor === 'text-cyan-400' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : statusColor === 'text-amber-400' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
                                   </div>
                                   {showEta && <p className="mt-0.5 text-xs text-slate-400">ETA: {etaLabel}</p>}
+                                  {speedLabel && <p className="mt-0.5 text-xs text-slate-400">Speed: {speedLabel}</p>}
+                                  {clientLabel && <p className="mt-0.5 text-xs text-slate-500">Client: {clientLabel}</p>}
+                                  {indexerLabel && <p className="mt-0.5 text-xs text-slate-500">Indexer: {indexerLabel}</p>}
                                   {dj.status !== 'pending' && (
                                     <p className="mt-0.5 text-xs text-slate-500" title={elapsedSeconds == null ? 'Missing created_at timestamp' : `${elapsedSeconds}s elapsed`}>
                                       Elapsed: {elapsedLabel}
@@ -2985,7 +3019,12 @@ export default function App() {
                                   </p>
                                 )}
                                 {djIsActive && activeDj.status === 'downloading' && (
-                                  <p className="mt-0.5 text-xs text-violet-400">↓ Downloading {activeDj.progress_percent}%</p>
+                                  <p className="mt-0.5 text-xs text-violet-400">
+                                    ↓ Downloading {activeDj.progress_percent}%
+                                    {formatDownloadSpeed(activeDj.download_speed_bps) ? ` • ${formatDownloadSpeed(activeDj.download_speed_bps)}` : ''}
+                                    {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
+                                    {activeDj.indexer_name ? ` • ${activeDj.indexer_name}` : ''}
+                                  </p>
                                 )}
                                 {djIsActive && activeDj.status === 'importing' && (
                                   <p className="mt-0.5 flex items-center gap-1 text-xs text-violet-400">

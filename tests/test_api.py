@@ -545,9 +545,12 @@ def test_cancel_download_job_resets_job_to_pending():
                 status=DownloadJobStatus.downloading.value,
                 search_query='Movie 2024 1080p',
                 release_name='Movie.2024.1080p.WEB-DL-GROUP',
+                indexer_id=12,
+                indexer_name='SomeIndexer',
                 download_hash='abc123',
                 client_type='qbittorrent',
                 progress_percent=73,
+                download_speed_bps=5_000_000,
                 downloaded_file_path='/downloads/movie.mkv',
                 imported_file_path='/imports/movie.mkv',
                 error_message='temporary',
@@ -565,7 +568,12 @@ def test_cancel_download_job_resets_job_to_pending():
     assert payload['status'] == DownloadJobStatus.pending.value
     assert payload['progress_percent'] == 0
     assert payload['error_message'] is None
+    assert payload['release_name'] is None
+    assert payload['indexer_id'] is None
+    assert payload['indexer_name'] is None
     assert payload['download_hash'] is None
+    assert payload['client_type'] is None
+    assert payload['download_speed_bps'] is None
     assert payload['encode_job_id'] is None
     assert payload['completed_at'] is None
 

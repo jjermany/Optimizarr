@@ -206,7 +206,7 @@ def get_all_qbt_torrents(s: QBittorrentSettings) -> list[dict]:
 
 
 def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
-    """Returns progress_percent, eta_seconds, is_complete, is_stalled, save_path."""
+    """Returns progress, eta, speed, completion, and save_path for a torrent."""
     try:
         client = _qbt_session(s)
         info = _qbt_torrent_info(client, torrent_hash)
@@ -214,6 +214,7 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
             return {
                 'progress_percent': 0,
                 'eta_seconds': None,
+                'download_speed_bps': None,
                 'is_complete': False,
                 'is_stalled': False,
                 'save_path': None,
@@ -230,6 +231,13 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
             eta_seconds = None
         if eta_seconds is not None and eta_seconds < 0:
             eta_seconds = None
+        dl_speed = info.get('dlspeed')
+        try:
+            download_speed_bps = int(float(dl_speed))
+        except (TypeError, ValueError):
+            download_speed_bps = None
+        if download_speed_bps is not None and download_speed_bps < 0:
+            download_speed_bps = None
         is_complete = state in _QBT_COMPLETE_STATES
         is_stalled = state in ('stalledDL', 'missingFiles', 'error', 'stoppedDL')
         # content_path is the actual file/folder; fall back to save_path (directory)
@@ -237,6 +245,7 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
         return {
             'progress_percent': progress,
             'eta_seconds': eta_seconds,
+            'download_speed_bps': download_speed_bps,
             'is_complete': is_complete,
             'is_stalled': is_stalled,
             'save_path': save_path,
@@ -247,6 +256,7 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
         return {
             'progress_percent': 0,
             'eta_seconds': None,
+            'download_speed_bps': None,
             'is_complete': False,
             'is_stalled': False,
             'save_path': None,
@@ -354,7 +364,7 @@ def _sab_api(s: SabnzbdSettings, **params) -> dict:
 
 
 def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
-    """Returns progress_percent, eta_seconds, is_complete, is_stalled, save_path."""
+    """Returns progress, eta, speed, completion, and save_path for an NZO."""
     try:
         # Check active queue first
         queue_data = _sab_api(s, mode='queue')
@@ -367,9 +377,23 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     pct = 0
                 status = slot.get('status', '')
                 is_stalled = status in ('Stalled', 'Failed')
+                speed_raw = slot.get('mb') or slot.get('mbps') or queue_data.get('queue', {}).get('kbpersec')
+                speed_bps: int | None = None
+                if speed_raw is not None:
+                    speed_text = str(speed_raw).strip().lower().replace(',', '.')
+                    try:
+                        if speed_text.endswith('mb/s'):
+                            speed_bps = int(float(speed_text.replace('mb/s', '').strip()) * 1024 * 1024)
+                        elif speed_text.endswith('kb/s'):
+                            speed_bps = int(float(speed_text.replace('kb/s', '').strip()) * 1024)
+                        else:
+                            speed_bps = int(float(speed_text) * 1024)
+                    except ValueError:
+                        speed_bps = None
                 return {
                     'progress_percent': pct,
                     'eta_seconds': None,
+                    'download_speed_bps': speed_bps,
                     'is_complete': False,
                     'is_stalled': is_stalled,
                     'save_path': None,
@@ -386,6 +410,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                 return {
                     'progress_percent': 100 if is_complete else 0,
                     'eta_seconds': 0 if is_complete else None,
+                    'download_speed_bps': 0 if is_complete else None,
                     'is_complete': is_complete,
                     'is_stalled': status == 'Failed',
                     'save_path': save_path,
@@ -395,6 +420,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
         return {
             'progress_percent': 0,
             'eta_seconds': None,
+            'download_speed_bps': None,
             'is_complete': False,
             'is_stalled': False,
             'save_path': None,
@@ -405,6 +431,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
         return {
             'progress_percent': 0,
             'eta_seconds': None,
+            'download_speed_bps': None,
             'is_complete': False,
             'is_stalled': False,
             'save_path': None,
@@ -455,6 +482,7 @@ def get_download_status(client_type: str, qbt: QBittorrentSettings | None, sab: 
     return {
         'progress_percent': 0,
         'eta_seconds': None,
+        'download_speed_bps': None,
         'is_complete': False,
         'is_stalled': False,
         'save_path': None,

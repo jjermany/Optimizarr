@@ -121,6 +121,24 @@ def get_download_clients(settings: ProwlarrSettings) -> list[dict]:
         return []
 
 
+def get_indexers(settings: ProwlarrSettings) -> list[dict]:
+    """Return configured Prowlarr indexers (includes priority metadata)."""
+    try:
+        api_key = secrets_store.decrypt_secret(settings.api_key)
+        url = f"{settings.host.rstrip('/')}/api/v1/indexer"
+        resp = httpx.get(
+            url,
+            headers={'X-Api-Key': api_key},
+            timeout=_DEFAULT_TIMEOUT,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, list) else []
+    except Exception as exc:
+        logger.warning('Prowlarr indexer query failed: %s', exc)
+        return []
+
+
 def grab(
     settings: ProwlarrSettings,
     guid: str,

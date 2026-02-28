@@ -786,11 +786,15 @@ class DownloadJobResponse(BaseModel):
     library_id: int | None = None
     source_file_path: str
     search_query: str | None = None
+    release_name: str | None = None
+    indexer_id: int | None = None
+    indexer_name: str | None = None
     download_hash: str | None = None
     client_type: str | None = None
     status: str
     progress_percent: int
     eta_seconds: int | None = None
+    download_speed_bps: int | None = None
     downloaded_file_path: str | None = None
     imported_file_path: str | None = None
     error_message: str | None = None
@@ -807,11 +811,15 @@ class DownloadJobResponse(BaseModel):
             library_id=dj.library_id,
             source_file_path=dj.source_file_path,
             search_query=dj.search_query,
+            release_name=dj.release_name,
+            indexer_id=dj.indexer_id,
+            indexer_name=dj.indexer_name,
             download_hash=dj.download_hash,
             client_type=dj.client_type,
             status=dj.status,
             progress_percent=dj.progress_percent,
             eta_seconds=dj.eta_seconds,
+            download_speed_bps=dj.download_speed_bps,
             downloaded_file_path=dj.downloaded_file_path,
             imported_file_path=dj.imported_file_path,
             error_message=dj.error_message,
@@ -1848,10 +1856,13 @@ def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     dj.error_message = None
     dj.search_query = None
     dj.release_name = None
+    dj.indexer_id = None
+    dj.indexer_name = None
     dj.download_hash = None
     dj.client_type = None
     dj.progress_percent = 0
     dj.eta_seconds = None
+    dj.download_speed_bps = None
     dj.downloaded_file_path = None
     dj.imported_file_path = None
     dj.encode_job_id = None
@@ -1896,9 +1907,15 @@ def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     from datetime import datetime as _dt
     dj.status = DownloadJobStatus.pending.value
     dj.error_message = None
+    dj.search_query = None
+    dj.release_name = None
+    dj.indexer_id = None
+    dj.indexer_name = None
     dj.download_hash = None
+    dj.client_type = None
     dj.progress_percent = 0
     dj.eta_seconds = None
+    dj.download_speed_bps = None
     dj.completed_at = None
     dj.encode_job_id = None
     dj.created_at = _dt.utcnow()
