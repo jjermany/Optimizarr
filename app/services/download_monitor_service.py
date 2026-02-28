@@ -183,6 +183,7 @@ def download_job_exists_for_source(db: Session, source_path: str) -> bool:
         DownloadJobStatus.pending.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.downloading.value,
+        DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
         DownloadJobStatus.waiting_encode.value,
