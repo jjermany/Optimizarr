@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from app.core.database import SessionLocal
 from app.models.download_job import DownloadJob, DownloadJobStatus
+from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum
 from app.services.download_monitor_service import (
     _build_search_query,
@@ -511,6 +512,49 @@ def test_startup_recovery_imports_importing_job_completed_in_qbit(monkeypatch):
         assert summary['reset_to_searching'] == 0
         assert dj.status == DownloadJobStatus.complete.value
         assert imported_paths == ['/downloads/complete/The.Gorge.2025.1080p.WEB-DL']
+
+
+def test_startup_recovery_links_completed_download_to_waiting_encode_job(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        queued = Job(
+            input_path='/media/Blade Runner 2049 (2017).mkv',
+            status='queued',
+            library_id=library.id,
+            progress_percent=0,
+        )
+        db.add(queued)
+        db.commit()
+        db.refresh(queued)
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Blade Runner 2049 (2017).mkv',
+            status=DownloadJobStatus.complete.value,
+            imported_file_path='/media/Blade Runner 2049 (2017)-1080p.mkv',
+        )
+        db.add(dj)
+        db.commit()
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(queued)
+
+        assert summary['imported'] == 0
+        assert summary['reset_to_searching'] == 0
+        assert summary['linked_jobs'] == 1
+        assert queued.status == 'complete'
+        assert queued.progress_percent == 100
+        assert queued.output_path == '/media/Blade Runner 2049 (2017)-1080p.mkv'
+        assert queued.completed_at is not None
 
 
 def test_startup_recovery_skips_import_when_completed_release_does_not_match_profile(monkeypatch):

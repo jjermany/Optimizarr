@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.download_job import DownloadJob, DownloadJobStatus
+from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum, Library, LibraryProfile
 from app.services import download_client_service, prowlarr_service
 from app.services.job_service import create_job
@@ -241,6 +242,77 @@ def download_job_to_dict(dj: DownloadJob) -> dict:
 
 def _publish_download_job(dj: DownloadJob) -> None:
     broker.publish('download_job_update', download_job_to_dict(dj))
+
+
+def _publish_encode_job(job: Job) -> None:
+    broker.publish_job_update(
+        {
+            'id': job.id,
+            'status': job.status,
+            'source_path': job.source_path,
+            'output_path': job.output_path,
+            'retry_count': job.retry_count,
+            'cancel_requested': job.cancel_requested,
+            'progress_percent': job.progress_percent,
+            'fps': job.fps,
+            'eta_seconds': job.eta_seconds,
+            'encoder_used': job.encoder_used,
+            'codec_used': job.codec_used,
+            'hwaccel_used': job.hwaccel_used,
+            'used_fallback': job.used_fallback,
+            'fallback_reason': job.fallback_reason,
+            'error_message': job.error_message,
+            'source_resolution': job.source_resolution,
+            'source_is_hdr': job.source_is_hdr,
+            'completed_at': job.completed_at.isoformat() if job.completed_at else None,
+        },
+        throttle_progress=False,
+    )
+
+
+def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
+    """Mark queued/paused encode jobs complete when their download import already completed."""
+    terminal_waiting_statuses = ('queued', 'paused', 'starting', 'preflight')
+    completed_downloads = (
+        db.query(DownloadJob)
+        .filter(
+            DownloadJob.status == DownloadJobStatus.complete.value,
+            DownloadJob.imported_file_path.isnot(None),
+        )
+        .all()
+    )
+    if not completed_downloads:
+        return 0
+
+    linked_jobs: list[Job] = []
+    for dj in completed_downloads:
+        waiting_jobs = (
+            db.query(Job)
+            .filter(
+                Job.input_path == dj.source_file_path,
+                Job.library_id == dj.library_id,
+                Job.status.in_(terminal_waiting_statuses),
+            )
+            .all()
+        )
+        for job in waiting_jobs:
+            job.status = 'complete'
+            job.progress_percent = 100
+            job.eta_seconds = 0
+            job.output_path = dj.imported_file_path
+            job.error_message = None
+            job.cancel_requested = False
+            job.completed_at = datetime.utcnow()
+            linked_jobs.append(job)
+
+    if not linked_jobs:
+        return 0
+
+    db.commit()
+    for job in linked_jobs:
+        _publish_encode_job(job)
+    logger.info('Linked %s queued encode job(s) to completed download imports', len(linked_jobs))
+    return len(linked_jobs)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -981,6 +1053,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
+    _link_completed_downloads_to_waiting_jobs(db)
 
     # Clean up the download client entry after a successful import
     _cleanup_download_client(dj, qbt, sab)
@@ -1245,9 +1318,11 @@ def run_download_startup_recovery(db: Session) -> dict:
     # that Prowlarr grabs don't fire the instant the monitor loop starts.
     _arm_startup_grace_if_needed(db)
 
+    linked_jobs = _link_completed_downloads_to_waiting_jobs(db)
+
     if not in_flight_jobs and not qbt_candidate_jobs:
         logger.info('Download startup recovery: no in-flight or unimported download jobs found')
-        return {'imported': 0, 'reset_to_searching': 0}
+        return {'imported': 0, 'reset_to_searching': 0, 'linked_jobs': linked_jobs}
 
     qbt = download_client_service.get_or_create_qbt_settings(db)
     sab = download_client_service.get_or_create_sab_settings(db)
@@ -1405,9 +1480,13 @@ def run_download_startup_recovery(db: Session) -> dict:
         db, qbt, sab, qbt_map, all_qbt_torrents, qbt_candidate_jobs, context='startup'
     )
 
-    logger.info('Download startup recovery complete: imported=%s, reset_to_searching=%s',
-                imported, reset_count)
-    return {'imported': imported, 'reset_to_searching': reset_count}
+    linked_jobs += _link_completed_downloads_to_waiting_jobs(db)
+
+    logger.info(
+        'Download startup recovery complete: imported=%s, reset_to_searching=%s, linked_jobs=%s',
+        imported, reset_count, linked_jobs,
+    )
+    return {'imported': imported, 'reset_to_searching': reset_count, 'linked_jobs': linked_jobs}
 
 
 def _import_completed_qbt_candidates(
