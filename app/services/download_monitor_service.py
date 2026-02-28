@@ -364,12 +364,11 @@ def _recover_completed_root_for_waiting_queue_jobs(
     for job, library, profile in queue_rows:
         if not job.source_path:
             continue
-        existing = (
-            db.query(DownloadJob.id)
-            .filter(DownloadJob.source_file_path == job.source_path)
-            .first()
-        )
-        if existing is not None:
+        if download_job_exists_for_source(db, job.source_path):
+            logger.info(
+                'Queue adoption: skipping source %r because an active/complete download job already exists',
+                job.source_path,
+            )
             continue
 
         probe = DownloadJob(

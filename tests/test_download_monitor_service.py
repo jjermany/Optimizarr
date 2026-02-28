@@ -616,6 +616,62 @@ def test_startup_recovery_links_completed_download_to_waiting_encode_job(monkeyp
         assert queued.completed_at is not None
 
 
+def test_startup_recovery_adopts_queue_when_stale_complete_download_row_exists(monkeypatch):
+    imported_paths = []
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        queued = Job(
+            input_path='/media/Doctor Strange (2016).mkv',
+            status='queued',
+            library_id=library.id,
+            progress_percent=0,
+        )
+        db.add(queued)
+        db.commit()
+
+        stale = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Doctor Strange (2016).mkv',
+            status=DownloadJobStatus.complete.value,
+            imported_file_path='/does/not/exist/doctor-strange-1080p.mkv',
+        )
+        db.add(stale)
+        db.commit()
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_qbt_default_save_path', lambda _q: '/downloads/complete')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [])
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._find_completed_download_match',
+            lambda job, _root: '/downloads/complete/Doctor Strange (2016) IMAX (1080p DSNP WEB-DL x265 HEVC 10bit EAC3 5.1 Silence)'
+            if job.source_file_path == '/media/Doctor Strange (2016).mkv'
+            else None,
+        )
+
+        def _fake_import(_db, _dj, save_path, *_args):
+            imported_paths.append(save_path)
+            _dj.status = DownloadJobStatus.complete.value
+            _dj.imported_file_path = '/media/Doctor Strange (2016)-1080p.mkv'
+            _db.commit()
+
+        monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(queued)
+
+        assert summary.get('adopted_queue_jobs', 0) == 1
+        assert queued.status == 'complete'
+        assert imported_paths == ['/downloads/complete/Doctor Strange (2016) IMAX (1080p DSNP WEB-DL x265 HEVC 10bit EAC3 5.1 Silence)']
+
+
 def test_startup_recovery_imports_searching_job_via_source_name_match(monkeypatch):
     imported_paths = []
 
