@@ -1436,20 +1436,25 @@ def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = Fa
     )
 
     if not job or not job.library_id or not job.source_path:
+        logger.info('Promote encode->download skipped: missing job/library/source (job_id=%s)', getattr(job, 'id', None))
         return False
 
     library = db.query(Library).filter(Library.id == job.library_id).first()
     if library is None or library.profile is None:
+        logger.info('Promote encode->download skipped: library/profile missing for job %s', job.id)
         return False
 
     profile = library.profile
     if not getattr(profile, 'download_enabled', False):
+        logger.info('Promote encode->download skipped: download_enabled is false for library %s job %s', library.id, job.id)
         return False
 
     if not can_attempt_download(db):
+        logger.info('Promote encode->download skipped: download route unavailable for job %s', job.id)
         return False
 
     if download_job_exists_for_source(db, job.source_path):
+        logger.info('Promote encode->download skipped: download job already exists for source %r', job.source_path)
         return False
 
     if cancel_job_first:

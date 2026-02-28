@@ -594,6 +594,11 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         # If this library uses download mode and the source file is still
         # being searched for or downloaded, hold off on encoding it.
         if getattr(profile, 'download_enabled', False) and job.source_path:
+            from app.services.download_monitor_service import (
+                can_attempt_download,
+                create_download_job,
+                download_job_exists_for_source,
+            )
             if job.source_path in active_download_sources:
                 dj_id, dj_status = active_download_by_source.get(job.source_path, (None, None))
                 logger.info(
@@ -603,6 +608,18 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
                     dj_id,
                     dj_status,
                 )
+                continue
+            # Safety net: if a queued encode job exists for a download-enabled
+            # library and the download route is available, create the download
+            # job now and keep the encode job queued as a placeholder.
+            if can_attempt_download(db):
+                if not download_job_exists_for_source(db, job.source_path):
+                    create_download_job(db, job.source_path, library, profile)
+                    logger.info(
+                        'Queue routing: created download job for queued encode job %s source=%r',
+                        job.id,
+                        job.source_path,
+                    )
                 continue
 
         job.status = 'starting'
