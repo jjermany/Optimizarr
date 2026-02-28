@@ -547,12 +547,18 @@ def _rank_candidates(releases: list[dict]) -> list[dict]:
     Sort releases by Prowlarr indexer priority (lower wins), then seeders
     descending, then size ascending.
     """
+    def _safe_int(value: object, default: int = 0) -> int:
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+
     return sorted(
         releases,
         key=lambda r: (
-            int(r.get('_indexer_priority', 10_000_000)),
-            -int(r.get('seeders', 0) or 0),
-            int(r.get('size', 0) or 0),
+            _safe_int(r.get('_indexer_priority', 10_000_000), 10_000_000),
+            -_safe_int(r.get('seeders', 0), 0),
+            _safe_int(r.get('size', 0), 0),
         ),
     )
 

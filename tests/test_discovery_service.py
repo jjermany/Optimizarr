@@ -297,3 +297,39 @@ def test_download_mode_still_respects_resolution_and_hdr_filters(monkeypatch, tm
         assert scan_response.json()['created_jobs'] == []
 
     assert created_downloads == []
+
+
+def test_queue_file_if_eligible_download_mode_creates_download_job_when_route_ready(monkeypatch, tmp_path):
+    media_file = tmp_path / 'Kraven the Hunter (2024).mkv'
+    media_file.write_text('content')
+
+    with SessionLocal() as db:
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(tmp_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True, hdr_only=False, target_resolution=1080)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        created_downloads = []
+        monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
+        monkeypatch.setattr(download_monitor_service, 'download_job_exists_for_source', lambda _db, _path: False)
+        monkeypatch.setattr(
+            download_monitor_service,
+            'create_download_job',
+            lambda _db, source_path, *_args: created_downloads.append(source_path),
+        )
+        monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _path: 2160)
+        monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
+
+        result = discovery_service._queue_file_if_eligible(db, media_file, library, profile)
+        assert result is not None
+        assert result.source_path == str(media_file)
+        assert created_downloads == [str(media_file)]

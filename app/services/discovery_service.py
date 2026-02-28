@@ -343,6 +343,7 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
 
     source_path = str(media_file)
     download_enabled = getattr(profile, 'download_enabled', False)
+    route_to_download = False
 
     if download_enabled:
         from app.services.download_monitor_service import (
@@ -382,6 +383,19 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
             return None
 
     if download_enabled:
+        # If Prowlarr and at least one download client are configured, create a
+        # download job now; the queued encode job acts as a placeholder and is
+        # held by the queue worker until the download path completes/falls back.
+        if can_attempt_download(db):
+            create_download_job(db, source_path, library, profile)
+            route_to_download = True
+            logger.info('Discovery: created download job for %r (library_id=%s)', source_path, library.id)
+        else:
+            logger.info(
+                'Discovery: download mode enabled but Prowlarr/download client unavailable; '
+                'queuing encode directly for %r',
+                source_path,
+            )
         # Prowlarr / client not ready – fall through to queuing an encoding job.
         if job_exists_for_source(db, source_path, library_id=library.id):
             return None
@@ -420,6 +434,8 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
         throttle_progress=False,
     )
     broker.publish_system_event('discovery_job_queued', source_path=source_path)
+    if route_to_download:
+        broker.publish_system_event('discovery_download_routed', source_path=source_path, library_id=library.id)
     return job
 
 
