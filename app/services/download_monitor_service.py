@@ -597,21 +597,31 @@ def _extract_title_tokens(source_path: str) -> list[str]:
     return tokens[:8]
 
 
+def _is_optimizarr_tagged(torrent: dict) -> bool:
+    tags_value = str(torrent.get('tags') or '')
+    tags = {part.strip().lower() for part in tags_value.split(',') if part.strip()}
+    return 'optimizarr' in tags
+
+
 def _recover_qbt_hash_for_job(dj: DownloadJob, torrents: list[dict]) -> str:
     """Recover a qBit hash for jobs where Prowlarr grab did not return one."""
     if not torrents:
+        logger.info('Download job %s hash-recovery: no qBit torrents available', dj.id)
         return ''
     match = _find_qbt_torrent_for_release(dj, torrents)
     if match and match.get('hash'):
-        return str(match.get('hash')).lower()
+        recovered = str(match.get('hash')).lower()
+        logger.info('Download job %s hash-recovery: using name-based match hash=%s', dj.id, recovered)
+        return recovered
 
     tokens = _extract_title_tokens(dj.source_file_path)
     if not tokens:
+        logger.info('Download job %s hash-recovery: no source tokens extracted from %r', dj.id, dj.source_file_path)
         return ''
     job_ts = dj.download_started_at or dj.created_at
     job_epoch = int(job_ts.replace(tzinfo=timezone.utc).timestamp()) if job_ts else 0
 
-    scored: list[tuple[int, int, dict]] = []
+    scored: list[tuple[int, int, int, dict]] = []
     for torrent in torrents:
         name = str(torrent.get('name') or '').lower()
         if not name:
@@ -621,13 +631,39 @@ def _recover_qbt_hash_for_job(dj: DownloadJob, torrents: list[dict]) -> str:
             continue
         added_on = int(torrent.get('added_on') or 0)
         recency_bonus = 1 if added_on >= (job_epoch - 600) else 0
-        scored.append((overlap + recency_bonus, added_on, torrent))
+        tagged_bonus = 1 if _is_optimizarr_tagged(torrent) else 0
+        scored.append((overlap + recency_bonus, tagged_bonus, added_on, torrent))
 
     if not scored:
+        logger.info(
+            'Download job %s hash-recovery: token overlap found no candidates; tokens=%s torrent_count=%d',
+            dj.id,
+            tokens,
+            len(torrents),
+        )
         return ''
-    scored.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    winner = scored[0][2]
-    return str(winner.get('hash') or '').lower()
+    scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    winner = scored[0][3]
+    recovered = str(winner.get('hash') or '').lower()
+    top = scored[:3]
+    top_preview = [
+        {
+            'score': item[0],
+            'tagged': bool(item[1]),
+            'added_on': item[2],
+            'hash': str(item[3].get('hash', '')).lower(),
+            'name': item[3].get('name'),
+        }
+        for item in top
+    ]
+    logger.info(
+        'Download job %s hash-recovery: token match selected hash=%s using tokens=%s top_candidates=%s',
+        dj.id,
+        recovered,
+        tokens,
+        top_preview,
+    )
+    return recovered
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -648,7 +684,12 @@ def _process_searching_jobs(db: Session) -> None:
     global _startup_grace_until
     if _startup_grace_until is not None:
         if datetime.utcnow() < _startup_grace_until:
-            logger.debug('Download monitor: startup grace period active; deferring searches until %s', _startup_grace_until)
+            remaining = int((_startup_grace_until - datetime.utcnow()).total_seconds())
+            logger.info(
+                'Download monitor: startup grace active; deferring searches for ~%ss (until %s UTC)',
+                max(0, remaining),
+                _startup_grace_until.strftime('%H:%M:%S'),
+            )
             return
         _startup_grace_until = None  # expired — clear and proceed normally
 
@@ -1208,17 +1249,28 @@ def _normalize_release_key(value: str | None) -> str:
 
 def _find_qbt_torrent_for_release(dj: DownloadJob, torrents: list[dict]) -> dict | None:
     if not torrents:
+        logger.info('Download job %s match: no qBit torrents available for release matching', dj.id)
         return None
 
     if dj.release_name:
         exact = [t for t in torrents if t.get('name') == dj.release_name]
         if exact:
-            return max(exact, key=lambda t: t.get('added_on', 0))
+            # Prefer optimizarr-tagged torrents first, then newest.
+            chosen = max(exact, key=lambda t: (1 if _is_optimizarr_tagged(t) else 0, t.get('added_on', 0)))
+            logger.info(
+                'Download job %s match: exact release-name match (%d candidate(s)); picked hash=%s name=%r',
+                dj.id,
+                len(exact),
+                str(chosen.get('hash', '')).lower(),
+                chosen.get('name'),
+            )
+            return chosen
 
     release_key = _normalize_release_key(dj.release_name)
     source_key = _normalize_release_key(Path(dj.source_file_path).stem)
     key = release_key or source_key
     if not key:
+        logger.info('Download job %s match: no normalized key available from release/source name', dj.id)
         return None
 
     partial_matches = [
@@ -1226,16 +1278,35 @@ def _find_qbt_torrent_for_release(dj: DownloadJob, torrents: list[dict]) -> dict
         if key in _normalize_release_key(t.get('name', ''))
     ]
     if partial_matches:
-        return max(partial_matches, key=lambda t: t.get('added_on', 0))
+        # Prefer optimizarr-tagged torrents first, then newest.
+        chosen = max(partial_matches, key=lambda t: (1 if _is_optimizarr_tagged(t) else 0, t.get('added_on', 0)))
+        logger.info(
+            'Download job %s match: normalized key=%r matched %d torrent(s); picked hash=%s name=%r',
+            dj.id,
+            key,
+            len(partial_matches),
+            str(chosen.get('hash', '')).lower(),
+            chosen.get('name'),
+        )
+        return chosen
+    logger.info(
+        'Download job %s match: no qBit name matched normalized key=%r (release=%r source=%r)',
+        dj.id,
+        key,
+        dj.release_name,
+        dj.source_file_path,
+    )
     return None
 
 
 def _find_completed_download_match(dj: DownloadJob, completed_root: str | None) -> str | None:
     if not completed_root:
+        logger.info('Download job %s match: qBit completed root is not configured', dj.id)
         return None
 
     root = Path(completed_root)
     if not root.exists() or not root.is_dir():
+        logger.info('Download job %s match: qBit completed root %r is missing or not a directory', dj.id, completed_root)
         return None
 
     keys = [
@@ -1244,6 +1315,7 @@ def _find_completed_download_match(dj: DownloadJob, completed_root: str | None) 
     ]
     keys = [k for k in keys if k]
     if not keys:
+        logger.info('Download job %s match: no completed-root keys available for path matching', dj.id)
         return None
 
     try:
@@ -1252,9 +1324,22 @@ def _find_completed_download_match(dj: DownloadJob, completed_root: str | None) 
             if any(k and k in name_key for k in keys):
                 found = download_client_service.find_video_in_path(str(candidate))
                 if found:
+                    logger.info(
+                        'Download job %s match: completed-root match candidate=%r keys=%s',
+                        dj.id,
+                        str(candidate),
+                        keys,
+                    )
                     return str(candidate)
     except OSError:
+        logger.info('Download job %s match: failed reading completed-root %r', dj.id, completed_root)
         return None
+    logger.info(
+        'Download job %s match: no completed-root entry matched keys=%s in %r',
+        dj.id,
+        keys,
+        completed_root,
+    )
     return None
 
 
@@ -1417,6 +1502,11 @@ def run_download_startup_recovery(db: Session) -> dict:
             ),
         )
         .all()
+    )
+    logger.info(
+        'Download startup recovery: in_flight_jobs=%d candidate_jobs=%d',
+        len(in_flight_jobs),
+        len(qbt_candidate_jobs),
     )
 
     # Arm startup grace period if any jobs are already in searching state so
@@ -1604,7 +1694,14 @@ def run_download_startup_recovery(db: Session) -> dict:
 
     # ── Broad qBit recovery (all non-importing statuses) ─────────────────────
     imported += _import_completed_qbt_candidates(
-        db, qbt, sab, qbt_map, all_qbt_torrents, qbt_candidate_jobs, context='startup'
+        db,
+        qbt,
+        sab,
+        qbt_completed_root,
+        qbt_map,
+        all_qbt_torrents,
+        qbt_candidate_jobs,
+        context='startup',
     )
 
     linked_jobs += _link_completed_downloads_to_waiting_jobs(db)
@@ -1620,6 +1717,7 @@ def _import_completed_qbt_candidates(
     db: Session,
     qbt,
     sab,
+    qbt_completed_root: str | None,
     qbt_map: dict,
     all_qbt_torrents: list,
     candidate_jobs: list,
@@ -1654,6 +1752,29 @@ def _import_completed_qbt_candidates(
             torrent_info = _find_qbt_torrent_for_release(dj, all_qbt_torrents)
 
         if torrent_info is None:
+            completed_match = _find_completed_download_match(dj, qbt_completed_root)
+            if not completed_match:
+                continue
+            completed_name = Path(completed_match).name
+            if not _release_title_matches_profile(completed_name, profile):
+                logger.warning(
+                    'Download %s: completed-root match %r for job %s does not match profile; skipping import',
+                    context,
+                    completed_name,
+                    dj.id,
+                )
+                continue
+            logger.info(
+                'Download %s: job %s matched completed-root path %r; importing now',
+                context,
+                dj.id,
+                completed_match,
+            )
+            dj.status = DownloadJobStatus.downloading.value
+            dj.error_message = None
+            db.commit()
+            _import_file(db, dj, completed_match, library, profile, qbt, sab)
+            imported += 1
             continue
 
         state = torrent_info.get('state', '')
@@ -1743,7 +1864,14 @@ def run_scan_recovery(db: Session) -> dict:
                     qbt_map[h] = torrent
 
         imported = _import_completed_qbt_candidates(
-            db, qbt, sab, qbt_map, all_qbt_torrents, candidate_jobs, context='scan'
+            db,
+            qbt,
+            sab,
+            download_client_service.get_qbt_default_save_path(qbt) if qbt.enabled else None,
+            qbt_map,
+            all_qbt_torrents,
+            candidate_jobs,
+            context='scan',
         )
         logger.info('Scan recovery complete: imported=%s', imported)
         return {'imported': imported}
