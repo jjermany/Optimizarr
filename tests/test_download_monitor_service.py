@@ -248,6 +248,63 @@ def test_check_download_progress_recovers_stale_qbit_hash_and_imports(monkeypatc
         assert imported_paths == ['/downloads/The.Gorge.2025.1080p.WEB-DL']
 
 
+def test_check_download_progress_recovers_hash_when_qbit_title_is_renamed(monkeypatch):
+    imported_paths = []
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/The Gorge (2025).mkv',
+            # Release name from indexer/Prowlarr; qBit may rename this after metadata fetch.
+            release_name='The.Gorge.2025.1080p.WEB-DL-OLDNAME',
+            download_hash=None,
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            # Deliberately does NOT equal release_name exactly.
+            'name': 'The.Gorge.2025.1080p.WEB-DL-GROUP',
+            'hash': 'renamedhash',
+            'state': 'uploading',
+            'progress': 1.0,
+            'content_path': '/downloads/The.Gorge.2025.1080p.WEB-DL-GROUP',
+            'added_on': 1,
+        }])
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 100,
+            'is_complete': True,
+            'is_stalled': False,
+            'save_path': '/downloads/The.Gorge.2025.1080p.WEB-DL-GROUP',
+        })
+        monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kwargs: True)
+
+        def _fake_import(_db, _dj, save_path, *_args):
+            imported_paths.append(save_path)
+            _dj.status = DownloadJobStatus.complete.value
+            _db.commit()
+
+        monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.download_hash == 'renamedhash'
+        assert imported_paths == ['/downloads/The.Gorge.2025.1080p.WEB-DL-GROUP']
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Search query construction tests
 # ─────────────────────────────────────────────────────────────────────────────

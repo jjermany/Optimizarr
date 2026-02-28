@@ -7,6 +7,7 @@ import re
 import shutil
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -549,6 +550,16 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     if releases is None:
         logger.warning('Download job %s: Prowlarr search failed (connection error); will retry', dj.id)
         return
+    protocol_counts = Counter(
+        str(release.get('protocol', '') or '').strip().lower() or 'unknown'
+        for release in releases
+    )
+    logger.info(
+        'Download job %s: Prowlarr returned %d release(s) by protocol: %s',
+        dj.id,
+        len(releases),
+        dict(protocol_counts),
+    )
 
     best = _select_best_release(releases, profile, qbt_enabled=qbt.enabled, sab_enabled=sab.enabled)
 
@@ -567,7 +578,12 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         logger.warning('Download job %s: active download detected before grab; deferring', dj.id)
         return
 
-    logger.info('Download job %s: grabbing release %r', dj.id, best.get('title'))
+    logger.info(
+        'Download job %s: grabbing release %r (protocol=%s)',
+        dj.id,
+        best.get('title'),
+        str(best.get('protocol', '') or '').lower() or 'unknown',
+    )
     release_protocol = str(best.get('protocol', '') or '')
     download_client_id = prowlarr_service.resolve_download_client_id(prowlarr, release_protocol)
     if download_client_id is None:
@@ -701,11 +717,21 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                     dj.id, len(name_matches), dj.release_name,
                 )
             else:
-                logger.debug(
-                    'Download job %s: release %r not found in qBit yet; waiting',
-                    dj.id, dj.release_name,
-                )
-                return
+                # qBit names can differ from the original indexer title (e.g.
+                # post-grab metadata normalization). Try fuzzy matching before
+                # giving up and waiting.
+                recovered = _find_qbt_torrent_for_release(dj, all_torrents)
+                if recovered is not None:
+                    logger.info(
+                        'Download job %s: recovered hash via fuzzy release match for %r',
+                        dj.id, dj.release_name,
+                    )
+                else:
+                    logger.debug(
+                        'Download job %s: release %r not found in qBit yet; waiting',
+                        dj.id, dj.release_name,
+                    )
+                    return
         else:
             # Fallback for jobs grabbed before release_name was stored: use
             # timestamp filtering as before.
