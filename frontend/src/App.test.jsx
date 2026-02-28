@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { estimateDownloadEtaSeconds, getDownloadEtaSeconds, mergeDownloadJobsWithUpdate, mergeJobsWithUpdate } from './App';
+import { estimateDownloadEtaSeconds, getDownloadEtaSeconds, libraryQueueCount, mergeDownloadJobsWithUpdate, mergeJobsWithUpdate } from './App';
 
 describe('mergeJobsWithUpdate', () => {
   it('resets to page one when an existing queued job transitions to running', () => {
@@ -102,5 +102,43 @@ describe('getDownloadEtaSeconds', () => {
     const createdAt = new Date(nowMs - 300_000).toISOString();
 
     expect(getDownloadEtaSeconds({ status: 'complete', eta_seconds: 0, progress_percent: 100, created_at: createdAt }, nowMs)).toBe(0);
+  });
+});
+
+describe('libraryQueueCount', () => {
+  it('does not double-count waiting_encode when active encode matches same path', () => {
+    const library = { id: 7, path: '/data/media/movies' };
+    const jobs = [
+      { id: 202, status: 'running', library_id: 7, source_path: '/data/media/movies/Shadow.of.God.2025.mkv' },
+    ];
+    const downloadJobs = [
+      { id: 209, status: 'waiting_encode', library_id: 7, source_file_path: '/data/media/movies/Shadow.of.God.2025.mkv' },
+    ];
+
+    expect(libraryQueueCount(library, jobs, downloadJobs)).toBe(1);
+  });
+
+  it('does not double-count waiting_encode when active encode matches title/year', () => {
+    const library = { id: 7, path: '/data/media/movies' };
+    const jobs = [
+      { id: 202, status: 'running', library_id: 7, source_path: '/data/media/movies/Shadow of God (2025).mkv' },
+    ];
+    const downloadJobs = [
+      { id: 209, status: 'waiting_encode', library_id: 7, source_file_path: '/downloads/Shadow.of.God.2025.1080p.WEB-DL.x264.mkv' },
+    ];
+
+    expect(libraryQueueCount(library, jobs, downloadJobs)).toBe(1);
+  });
+
+  it('still counts waiting_encode when no active encode exists', () => {
+    const library = { id: 7, path: '/data/media/movies' };
+    const jobs = [
+      { id: 300, status: 'queued', library_id: 7, source_path: '/data/media/movies/Other.Movie.2022.mkv' },
+    ];
+    const downloadJobs = [
+      { id: 209, status: 'waiting_encode', library_id: 7, source_file_path: '/downloads/Shadow.of.God.2025.1080p.WEB-DL.x264.mkv' },
+    ];
+
+    expect(libraryQueueCount(library, jobs, downloadJobs)).toBe(2);
   });
 });

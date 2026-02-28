@@ -157,6 +157,7 @@ const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']
 const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode']);
 const TERMINAL_DL_STATUSES = new Set(['complete', 'failed', 'timed_out', 'fallback_queued']);
 const QUEUE_DEDUPE_DL_STATUSES = new Set([...ACTIVE_DL_STATUSES, 'complete', 'fallback_queued']);
+const ACTIVE_ENCODE_DEDUPE_STATUSES = new Set(['starting', 'running', 'preflight']);
 
 function isActiveEncodeStatus(status) {
   return ACTIVE_STATUSES.has(status?.toLowerCase());
@@ -204,25 +205,69 @@ export function mergeDownloadJobsWithUpdate(previousJobs, nextDownloadJob) {
 }
 
 function libraryEncodeQueueCount(library, jobs) {
-  return jobs.filter((job) => {
-    const status = job.status?.toLowerCase();
-    if (!status || TERMINAL_STATUSES.has(status)) return false;
-    // Prefer library_id match (accurate); fall back to path prefix for legacy data
-    if (job.library_id != null) return job.library_id === library.id;
-    return job.source_path === library.path || job.source_path?.startsWith(`${library.path}/`);
-  }).length;
+  return jobs.filter((job) => isActiveLibraryEncodeQueueJob(library, job)).length;
 }
 
-function libraryDownloadQueueCount(library, downloadJobs) {
+function normalizeQueueIdentityTitle(titleValue) {
+  return String(titleValue || '')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function queueIdentityKeyForPath(pathValue) {
+  const { title, year } = extractTitleYear(pathValue);
+  const normalizedTitle = normalizeQueueIdentityTitle(title);
+  const normalizedYear = String(year || '').trim();
+  if (!normalizedTitle) return '';
+  return `${normalizedTitle}::${normalizedYear}`;
+}
+
+function isLibraryEncodeJob(library, job) {
+  // Prefer library_id match (accurate); fall back to path prefix for legacy data
+  if (job.library_id != null) return job.library_id === library.id;
+  return job.source_path === library.path || job.source_path?.startsWith(`${library.path}/`);
+}
+
+function isActiveLibraryEncodeQueueJob(library, job) {
+  const status = job.status?.toLowerCase();
+  if (!status || TERMINAL_STATUSES.has(status)) return false;
+  return isLibraryEncodeJob(library, job);
+}
+
+function buildLibraryActiveEncodeIdentitySet(library, jobs) {
+  const sourcePaths = new Set();
+  const titleYearKeys = new Set();
+  for (const job of jobs) {
+    const status = String(job?.status ?? '').toLowerCase();
+    if (!ACTIVE_ENCODE_DEDUPE_STATUSES.has(status)) continue;
+    if (!isLibraryEncodeJob(library, job)) continue;
+    const sourcePath = String(job?.source_path ?? '').trim();
+    if (sourcePath) sourcePaths.add(sourcePath.toLowerCase());
+    const identityKey = queueIdentityKeyForPath(sourcePath);
+    if (identityKey) titleYearKeys.add(identityKey);
+  }
+  return { sourcePaths, titleYearKeys };
+}
+
+function libraryDownloadQueueCount(library, downloadJobs, activeEncodeIdentities = null) {
   return downloadJobs.filter((job) => {
     const status = String(job.status ?? '').toLowerCase();
     if (!ACTIVE_DL_STATUSES.has(status)) return false;
-    return job.library_id === library.id;
+    if (job.library_id !== library.id) return false;
+    if (status !== 'waiting_encode' || !activeEncodeIdentities) return true;
+    const sourcePath = String(job.source_file_path ?? '').trim();
+    if (sourcePath && activeEncodeIdentities.sourcePaths.has(sourcePath.toLowerCase())) return false;
+    const identityKey = queueIdentityKeyForPath(sourcePath);
+    if (identityKey && activeEncodeIdentities.titleYearKeys.has(identityKey)) return false;
+    return true;
   }).length;
 }
 
-function libraryQueueCount(library, jobs, downloadJobs) {
-  return libraryEncodeQueueCount(library, jobs) + libraryDownloadQueueCount(library, downloadJobs);
+export function libraryQueueCount(library, jobs, downloadJobs) {
+  const activeEncodeIdentities = buildLibraryActiveEncodeIdentitySet(library, jobs);
+  return libraryEncodeQueueCount(library, jobs) + libraryDownloadQueueCount(library, downloadJobs, activeEncodeIdentities);
 }
 
 function jobSortRank(job) {
