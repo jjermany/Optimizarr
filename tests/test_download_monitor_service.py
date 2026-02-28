@@ -1972,11 +1972,11 @@ def test_import_file_sab_removes_source_video_from_completed_directory(monkeypat
         db.commit()
         db.refresh(dj)
 
-        deleted_history = []
+        removed_sab = []
         monkeypatch.setattr(
             download_client_service,
-            'delete_sab_history',
-            lambda _sab, nzo_id: deleted_history.append(nzo_id),
+            'remove_sab_job',
+            lambda _sab, nzo_id, delete_files=False: removed_sab.append((nzo_id, delete_files)) or True,
         )
 
         _import_file(
@@ -1994,4 +1994,64 @@ def test_import_file_sab_removes_source_video_from_completed_directory(monkeypat
         assert dj.imported_file_path is not None
         assert Path(dj.imported_file_path).exists()
         assert not completed_video.exists()
-        assert deleted_history == ['SABNZBD_NZO_abc123']
+        assert not completed_dir.exists()
+        assert removed_sab == [('SABNZBD_NZO_abc123', True)]
+
+
+def test_import_file_sab_no_video_retries_and_purges_completed_directory(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        source = tmp_path / 'library' / 'The Monkey (2025).mkv'
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b'source')
+
+        completed_dir = tmp_path / 'complete' / 'usenet' / 'The.Monkey.2025.1080p.WEB-DL'
+        completed_dir.mkdir(parents=True)
+        (completed_dir / 'The.Monkey.2025.1080p.WEB-DL.part01.rar').write_bytes(b'rar-bytes')
+        (completed_dir / 'The.Monkey.2025.1080p.WEB-DL.part02.rar').write_bytes(b'rar-bytes')
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path=str(source),
+            release_name='The.Monkey.2025.1080p.WEB-DL',
+            selected_release_key='guid:monkey-nzb',
+            download_hash='SABNZBD_NZO_monkey1',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            max_retries=5,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        removed_sab = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_sab_job',
+            lambda _sab, nzo_id, delete_files=False: removed_sab.append((nzo_id, delete_files)) or True,
+        )
+
+        _import_file(
+            db,
+            dj,
+            str(completed_dir),
+            library,
+            library.profile,
+            SimpleNamespace(enabled=False),
+            SimpleNamespace(enabled=True),
+        )
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.searching.value
+        assert 'No video file found' in (dj.error_message or '')
+        assert dj.retry_count == 1
+        assert dj.download_hash is None
+        assert dj.client_type is None
+        assert not completed_dir.exists()
+        assert removed_sab == [('SABNZBD_NZO_monkey1', True)]

@@ -1887,8 +1887,15 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     video_file = download_client_service.find_video_in_path(save_path)
     if video_file is None:
         logger.error('Download job %s: no video file found in %r', dj.id, save_path)
-        _mark_failed(db, dj, f'No video file found in {save_path}')
-        _fallback_to_encode(db, dj, library, profile)
+        _cleanup_download_client(dj, qbt, sab, save_path=save_path, delete_files=True)
+        _retry_failed_download(
+            db,
+            dj,
+            library,
+            profile,
+            reason=f'No video file found in {save_path}',
+            failed_release_key=_release_selection_key_from_job(dj),
+        )
         return
 
     dj.downloaded_file_path = str(video_file)
@@ -1919,7 +1926,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             db.commit()
             db.refresh(dj)
             _publish_download_job(dj)
-            _cleanup_download_client(dj, qbt, sab)
+            _cleanup_download_client(dj, qbt, sab, save_path=save_path, delete_files=True)
             return
 
     # Place the downloaded file into the library.
@@ -1957,6 +1964,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             _cleanup_sab_import_source(save_path, video_file)
     except OSError as exc:
         logger.error('Download job %s: failed to import %r → %r: %s', dj.id, video_file, dest, exc)
+        _cleanup_download_client(dj, qbt, sab, save_path=save_path, delete_files=True)
         _mark_failed(db, dj, f'File import failed: {exc}')
         _stop_download_queue(f'Import error for job {dj.id}: {exc}')
         _fallback_to_encode(db, dj, library, profile)
@@ -1992,7 +2000,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     _link_completed_downloads_to_waiting_jobs(db)
 
     # Clean up the download client entry after a successful import
-    _cleanup_download_client(dj, qbt, sab)
+    _cleanup_download_client(dj, qbt, sab, save_path=save_path, delete_files=True)
 
     # Notify Plex if configured
     try:
@@ -2014,14 +2022,49 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             pass
 
 
-def _cleanup_download_client(dj: DownloadJob, qbt, sab) -> None:
+def _cleanup_download_client(
+    dj: DownloadJob,
+    qbt,
+    sab,
+    *,
+    save_path: str | None = None,
+    delete_files: bool = False,
+) -> None:
     """
     Post-import client cleanup:
-    - SABnzbd: remove the history entry (files are already in the library).
+    - SABnzbd: remove the queue/history entry and optionally request file deletion.
     - qBittorrent: leave untouched so it can follow its own seeding rules.
     """
     if dj.client_type == 'sabnzbd' and sab is not None and dj.download_hash:
-        download_client_service.delete_sab_history(sab, dj.download_hash)
+        if delete_files:
+            removed = download_client_service.remove_sab_job(sab, dj.download_hash, delete_files=True)
+            if not removed:
+                download_client_service.delete_sab_history(sab, dj.download_hash)
+        else:
+            download_client_service.delete_sab_history(sab, dj.download_hash)
+
+    if delete_files and dj.client_type == 'sabnzbd' and save_path:
+        _purge_sab_completed_path(save_path)
+
+
+def _purge_sab_completed_path(save_path: str) -> None:
+    """Best-effort removal of a SAB completed path (file or per-release directory)."""
+    root = Path(str(save_path or '').strip())
+    if not str(root):
+        return
+    try:
+        if root.is_file():
+            root.unlink(missing_ok=True)
+            return
+        if root.is_dir():
+            # Guard against accidental deletion of very broad roots.
+            name = root.name.lower()
+            if name in {'', '.', '..', 'complete', 'downloads', 'nzb'}:
+                logger.warning('SAB cleanup skipped unsafe directory path: %r', str(root))
+                return
+            shutil.rmtree(root)
+    except OSError as exc:
+        logger.warning('SAB cleanup failed for %r: %s', str(root), exc)
 
 
 def _cleanup_sab_import_source(save_path: str, imported_source_file: Path) -> None:
