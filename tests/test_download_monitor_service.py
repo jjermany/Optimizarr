@@ -7,6 +7,7 @@ from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum
 from app.services.download_monitor_service import (
     _extract_hash_from_release,
+    _find_completed_download_match,
     _build_search_query,
     _check_download_progress,
     _process_searching_jobs,
@@ -219,6 +220,24 @@ def test_startup_recovery_imports_match_from_completed_download_root(monkeypatch
         assert summary['imported'] == 1
         assert summary['reset_to_searching'] == 0
         assert imported_paths == [str(candidate)]
+
+
+def test_find_completed_download_match_uses_title_year_fallback_keys(tmp_path):
+    completed_root = tmp_path / 'complete'
+    candidate = completed_root / 'Doctor Strange (2016) IMAX (1080p DSNP WEB-DL x265 HEVC 10bit EAC3 5.1 Silence)'
+    candidate.mkdir(parents=True)
+    (candidate / 'Doctor.Strange.2016.1080p.mkv').write_bytes(b'x')
+
+    dj = DownloadJob(
+        source_file_path='/data/media/movies/Doctor Strange (2016) {imdb-tt1211837}/'
+        'Doctor Strange (2016) {imdb-tt1211837} [Bluray-2160p][HDR10][AC3 5.1][x265]-BHDStudio.mp4',
+        release_name=None,
+        client_type='qbittorrent',
+        status=DownloadJobStatus.downloading.value,
+    )
+
+    match = _find_completed_download_match(dj, str(completed_root))
+    assert match == str(candidate)
 
 
 def test_check_download_progress_recovers_stale_qbit_hash_and_imports(monkeypatch):

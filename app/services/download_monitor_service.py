@@ -1344,6 +1344,55 @@ def _normalize_release_key(value: str | None) -> str:
     return re.sub(r'[^a-z0-9]+', '', value.lower())
 
 
+def _build_completed_root_match_keys(dj: DownloadJob) -> list[str]:
+    """Build broad-to-specific keys for completed-root directory matching.
+
+    The persisted source path often includes metadata tags (imdb id, codec,
+    quality blocks) that are not present in the qBit completed folder name.
+    Include simplified title/year variants so restarts can still recover files
+    like:
+      source: Doctor Strange (2016) {imdb-...} [Bluray-2160p]...
+      folder: Doctor Strange (2016) IMAX (1080p ...)
+    """
+    keys: list[str] = []
+
+    # Existing keys.
+    keys.append(_normalize_release_key(dj.release_name))
+
+    source_stem = Path(dj.source_file_path).stem if dj.source_file_path else ''
+    keys.append(_normalize_release_key(source_stem))
+
+    # Remove bracketed metadata blocks before title/year extraction.
+    clean = re.sub(r'\{[^}]*\}', ' ', source_stem)
+    clean = re.sub(r'\[[^\]]*\]', ' ', clean)
+    clean = re.sub(r'[._-]+', ' ', clean)
+    clean = re.sub(r'\s+', ' ', clean).strip()
+
+    year_match = re.search(r'\b(19|20)\d{2}\b', clean)
+    if year_match:
+        year = year_match.group(0)
+        title = re.sub(r'[\s()\[\]{}._-]+$', '', clean[:year_match.start()]).strip()
+        title_key = _normalize_release_key(title)
+        if title_key:
+            keys.append(_normalize_release_key(f'{title} {year}'))
+            keys.append(title_key)
+    else:
+        title_key = _normalize_release_key(clean)
+        if title_key:
+            keys.append(title_key)
+
+    # De-duplicate while preserving insertion order and prioritize specific
+    # keys first to reduce accidental partial matches.
+    seen: set[str] = set()
+    unique = []
+    for key in keys:
+        if key and key not in seen:
+            seen.add(key)
+            unique.append(key)
+    unique.sort(key=len, reverse=True)
+    return unique
+
+
 def _find_qbt_torrent_for_release(dj: DownloadJob, torrents: list[dict]) -> dict | None:
     if not torrents:
         logger.info('Download job %s match: no qBit torrents available for release matching', dj.id)
@@ -1406,11 +1455,7 @@ def _find_completed_download_match(dj: DownloadJob, completed_root: str | None) 
         logger.info('Download job %s match: qBit completed root %r is missing or not a directory', dj.id, completed_root)
         return None
 
-    keys = [
-        _normalize_release_key(dj.release_name),
-        _normalize_release_key(Path(dj.source_file_path).stem),
-    ]
-    keys = [k for k in keys if k]
+    keys = _build_completed_root_match_keys(dj)
     if not keys:
         logger.info('Download job %s match: no completed-root keys available for path matching', dj.id)
         return None
@@ -1431,12 +1476,20 @@ def _find_completed_download_match(dj: DownloadJob, completed_root: str | None) 
     except OSError:
         logger.info('Download job %s match: failed reading completed-root %r', dj.id, completed_root)
         return None
-    logger.info(
-        'Download job %s match: no completed-root entry matched keys=%s in %r',
-        dj.id,
-        keys,
-        completed_root,
-    )
+    if dj.id is None:
+        logger.debug(
+            'Download job %s match: no completed-root entry matched keys=%s in %r',
+            dj.id,
+            keys,
+            completed_root,
+        )
+    else:
+        logger.info(
+            'Download job %s match: no completed-root entry matched keys=%s in %r',
+            dj.id,
+            keys,
+            completed_root,
+        )
     return None
 
 
