@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { estimateDownloadEtaSeconds, getDownloadEtaSeconds, libraryQueueCount, mergeDownloadJobsWithUpdate, mergeJobsWithUpdate } from './App';
+import {
+  downloadJobMatchesSearch,
+  estimateDownloadEtaSeconds,
+  getDownloadEtaSeconds,
+  libraryQueueCount,
+  mergeDownloadJobsWithUpdate,
+  mergeJobsWithUpdate,
+} from './App';
 
 describe('mergeJobsWithUpdate', () => {
   it('resets to page one when an existing queued job transitions to running', () => {
@@ -140,5 +147,36 @@ describe('libraryQueueCount', () => {
     ];
 
     expect(libraryQueueCount(library, jobs, downloadJobs)).toBe(2);
+  });
+});
+
+describe('downloadJobMatchesSearch', () => {
+  it('matches terminal download history rows by title/year and library', () => {
+    const downloadJob = {
+      id: 209,
+      status: 'complete',
+      source_file_path: '/downloads/Shadow.of.God.2025.1080p.WEB-DL.x264.mkv',
+      library_id: 7,
+      error_message: null,
+    };
+    const libraryById = { 7: { name: 'movies' } };
+
+    expect(downloadJobMatchesSearch(downloadJob, 'shadow', libraryById)).toBe(true);
+    expect(downloadJobMatchesSearch(downloadJob, '2025', libraryById)).toBe(true);
+    expect(downloadJobMatchesSearch(downloadJob, 'movies', libraryById)).toBe(true);
+  });
+
+  it('matches by status and error message and excludes non-matches', () => {
+    const failedJob = {
+      id: 77,
+      status: 'timed_out',
+      source_file_path: '/downloads/Some.Movie.2022.mkv',
+      library_id: 1,
+      error_message: 'Indexer returned no matches',
+    };
+
+    expect(downloadJobMatchesSearch(failedJob, 'timed_out', {})).toBe(true);
+    expect(downloadJobMatchesSearch(failedJob, 'indexer', {})).toBe(true);
+    expect(downloadJobMatchesSearch(failedJob, 'different term', {})).toBe(false);
   });
 });

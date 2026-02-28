@@ -1,4 +1,5 @@
 import os
+import logging
 from datetime import timezone
 from pathlib import Path
 from threading import Lock
@@ -86,6 +87,7 @@ LOGIN_RATE_LIMIT_WINDOW_SECONDS = 5 * 60
 LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5
 _login_attempts_by_key: dict[str, list[float]] = {}
 _login_attempts_lock = Lock()
+logger = logging.getLogger(__name__)
 
 
 def _is_test_runtime() -> bool:

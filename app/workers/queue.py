@@ -329,6 +329,20 @@ def _process_job(job_id: int) -> None:
             db.commit()
             _publish_job(job, throttle_progress=False)
             return
+        # If an abort/cancel request landed while optimize_video was running,
+        # never allow final metrics to overwrite it as complete.
+        if job.cancel_requested or job.status in {'aborting', 'cancelled'}:
+            job.status = 'cancelled'
+            job.error_message = job.error_message or 'Aborted by user'
+            job.eta_seconds = None
+            job.output_path = None
+            job.fps = None
+            job.cancel_requested = False
+            _mark_finished(job)
+            db.commit()
+            _publish_job(job, throttle_progress=False)
+            handle_job_terminal_state(job.id, job.status)
+            return
         if job.status == 'failed' and job.error_message == 'Aborted by user':
             _publish_job(job, throttle_progress=False)
             handle_job_terminal_state(job.id, job.status)

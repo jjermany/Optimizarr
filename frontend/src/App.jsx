@@ -401,6 +401,22 @@ export function getDownloadEtaSeconds(downloadJob, nowMs = Date.now()) {
   return estimated;
 }
 
+export function downloadJobMatchesSearch(downloadJob, search, libraryById = {}) {
+  if (!search) return true;
+  const lower = search.toLowerCase();
+  const { title, year } = extractTitleYear(downloadJob.source_file_path);
+  const libName = downloadJob.library_id != null ? (libraryById[downloadJob.library_id]?.name ?? '') : '';
+  return (
+    title.toLowerCase().includes(lower)
+    || (year && year.includes(lower))
+    || libName.toLowerCase().includes(lower)
+    || downloadJob.source_file_path?.toLowerCase().includes(lower)
+    || String(downloadJob.id).includes(lower)
+    || String(downloadJob.status ?? '').toLowerCase().includes(lower)
+    || String(downloadJob.error_message ?? '').toLowerCase().includes(lower)
+  );
+}
+
 function formatElapsed(seconds) {
   if (seconds == null || seconds < 0) return '—';
   if (seconds === 0) return '0s';
@@ -966,6 +982,16 @@ export default function App() {
   const filteredHistoryJobs = useMemo(
     () => sortedHistoryJobs.filter((job) => jobMatchesSearch(job, historySearch)),
     [sortedHistoryJobs, historySearch, libraryById],
+  );
+
+  const terminalDownloadHistoryJobs = useMemo(
+    () => downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())),
+    [downloadJobs],
+  );
+
+  const filteredTerminalDownloadHistoryJobs = useMemo(
+    () => terminalDownloadHistoryJobs.filter((dj) => downloadJobMatchesSearch(dj, historySearch, libraryById)),
+    [terminalDownloadHistoryJobs, historySearch, libraryById],
   );
 
   const activeDlQueueItems = useMemo(
@@ -2783,7 +2809,7 @@ export default function App() {
                     className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'history' ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
                   >
                     History
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'history' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredHistoryJobs.length + downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'history' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredHistoryJobs.length + filteredTerminalDownloadHistoryJobs.length}</span>
                   </button>
                 </div>
                 {/* Action buttons for the active view */}
@@ -3240,7 +3266,7 @@ export default function App() {
               {jobsView === 'history' && (
                 <>
                   <div className="space-y-3 p-3 md:hidden">
-                    {pagedHistoryJobs.length === 0 && (
+                    {pagedHistoryJobs.length === 0 && filteredTerminalDownloadHistoryJobs.length === 0 && (
                       <div className="rounded-xl border border-slate-700/70 bg-slate-900/60 px-4 py-10 text-center text-sm text-slate-500">
                         {historySearch ? 'No matching history.' : 'No completed jobs yet.'}
                       </div>
@@ -3302,7 +3328,7 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60">
-                        {pagedHistoryJobs.length === 0 && (
+                        {pagedHistoryJobs.length === 0 && filteredTerminalDownloadHistoryJobs.length === 0 && (
                           <tr>
                             <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
                               {historySearch ? 'No matching history.' : 'No completed jobs yet.'}
@@ -3380,11 +3406,11 @@ export default function App() {
                     </div>
                   )}
                   {/* Terminal download jobs in history */}
-                  {downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length > 0 && (
+                  {filteredTerminalDownloadHistoryJobs.length > 0 && (
                     <div className="border-t border-slate-700/70">
                       <div className="px-5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Downloads</div>
                       <div className="space-y-3 px-3 pb-3 md:hidden">
-                        {downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).map((dj) => {
+                        {filteredTerminalDownloadHistoryJobs.map((dj) => {
                           const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
                           const { title, year } = extractTitleYear(dj.source_file_path);
                           const displayName = title ? `${title}${year ? ` (${year})` : ''}` : '—';
@@ -3429,7 +3455,7 @@ export default function App() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-800/60">
-                            {downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).map((dj) => {
+                            {filteredTerminalDownloadHistoryJobs.map((dj) => {
                               const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
                               const { title, year } = extractTitleYear(dj.source_file_path);
                               const displayName = title ? `${title}${year ? ` (${year})` : ''}` : '—';

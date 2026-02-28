@@ -2497,6 +2497,7 @@ def run_download_startup_recovery(db: Session) -> dict:
     _skip_statuses = {
         DownloadJobStatus.downloading.value,  # already covered by in_flight_jobs loop
         DownloadJobStatus.moving.value,
+        DownloadJobStatus.importing.value,     # already covered by in_flight_jobs loop
         DownloadJobStatus.pending.value,       # not yet started — nothing to recover
     }
     qbt_candidate_jobs = (

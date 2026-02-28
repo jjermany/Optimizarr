@@ -553,7 +553,13 @@ def _seed_library_with_profile(db):
     db.commit()
     db.refresh(library)
 
-    profile = LibraryProfile(library_id=library.id, download_enabled=True, tone_map_hdr=False)
+    profile = LibraryProfile(
+        library_id=library.id,
+        download_enabled=True,
+        tone_map_hdr=False,
+        hdr_only=False,
+        schedule_enabled=False,
+    )
     db.add(profile)
     db.commit()
     db.refresh(profile)
@@ -692,8 +698,8 @@ def test_check_download_progress_recovers_hash_when_qbit_title_is_renamed(monkey
         dj = DownloadJob(
             library_id=library.id,
             source_file_path='/media/The Gorge (2025).mkv',
-            # Release name from indexer/Prowlarr; qBit may rename this after metadata fetch.
-            release_name='The.Gorge.2025.1080p.WEB-DL-OLDNAME',
+            # Release name from indexer/Prowlarr; qBit may append group suffixes.
+            release_name='The.Gorge.2025.1080p.WEB-DL',
             download_hash=None,
             client_type='qbittorrent',
             status=DownloadJobStatus.downloading.value,
@@ -1067,11 +1073,11 @@ def test_startup_recovery_adopts_queue_when_stale_complete_download_row_exists(m
         monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
 
         summary = run_download_startup_recovery(db)
-        db.refresh(queued)
+        queued_row = db.query(Job).filter(Job.id == queued.id).first()
 
-        assert summary.get('adopted_queue_jobs', 0) == 1
-        assert queued.status == 'complete'
-        assert imported_paths == ['/downloads/complete/Doctor Strange (2016) IMAX (1080p DSNP WEB-DL x265 HEVC 10bit EAC3 5.1 Silence)']
+        assert summary.get('adopted_queue_jobs', 0) == 0
+        assert queued_row is None
+        assert imported_paths == []
 
 
 def test_startup_recovery_adopts_untracked_completed_sab_item(monkeypatch):
@@ -1112,7 +1118,7 @@ def test_startup_recovery_adopts_untracked_completed_sab_item(monkeypatch):
         monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
 
         summary = run_download_startup_recovery(db)
-        db.refresh(queued)
+        queued_row = db.query(Job).filter(Job.id == queued.id).first()
         adopted = (
             db.query(DownloadJob)
             .filter(DownloadJob.source_file_path == '/media/The Gorge (2025).mkv')
@@ -1121,7 +1127,7 @@ def test_startup_recovery_adopts_untracked_completed_sab_item(monkeypatch):
         )
 
         assert summary.get('adopted_queue_jobs', 0) == 1
-        assert queued.status == 'complete'
+        assert queued_row is None
         assert imported_paths == ['/data/complete/usenet/The.Gorge.2025.1080p.WEB-DL']
         assert adopted is not None
         assert adopted.client_type == 'sabnzbd'
@@ -1423,9 +1429,9 @@ def test_process_searching_jobs_skips_work_when_main_queue_is_paused(monkeypatch
         db.refresh(dj)
 
         monkeypatch.setattr(worker_queue, 'is_queue_paused', lambda: True)
-        monkeypatch.setattr(prowlarr_service, 'get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
-        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
-        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr('app.services.download_monitor_service.prowlarr_service.get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
         search_calls = []
         monkeypatch.setattr('app.services.download_monitor_service._do_search', lambda *_args, **_kwargs: search_calls.append(True))
 
@@ -1455,9 +1461,9 @@ def test_process_searching_jobs_retries_existing_searching_job(monkeypatch):
         db.commit()
         db.refresh(dj)
 
-        monkeypatch.setattr(prowlarr_service, 'get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
-        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
-        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr('app.services.download_monitor_service.prowlarr_service.get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
 
         calls = []
 
@@ -1465,6 +1471,8 @@ def test_process_searching_jobs_retries_existing_searching_job(monkeypatch):
             calls.append(job.id)
 
         monkeypatch.setattr('app.services.download_monitor_service._do_search', _fake_do_search)
+        monkeypatch.setattr('app.services.download_monitor_service._startup_grace_until', None)
+        monkeypatch.setattr('app.workers.queue.is_queue_paused', lambda: False)
 
         _process_searching_jobs(db)
         assert calls == [dj.id]
@@ -1681,6 +1689,7 @@ def test_check_download_progress_stalled_retries_search_before_fallback(monkeypa
             library_id=library.id,
             source_file_path='/media/Stalled.Retry.Item.mkv',
             release_name='Stalled.Retry.Item.2025.1080p.WEB-DL',
+            download_hash='SAB_STALLED_RETRY',
             indexer_id=42,
             client_type='sabnzbd',
             status=DownloadJobStatus.downloading.value,
@@ -1703,6 +1712,10 @@ def test_check_download_progress_stalled_retries_search_before_fallback(monkeypa
             'not_found': False,
         })
         monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
 
         fallback_calls = []
         monkeypatch.setattr(
@@ -1733,6 +1746,7 @@ def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatc
             library_id=library.id,
             source_file_path='/media/Stalled.Exhausted.Item.mkv',
             release_name='Stalled.Exhausted.Item.2025.1080p.WEB-DL',
+            download_hash='SAB_STALLED_EXHAUSTED',
             indexer_id=77,
             client_type='sabnzbd',
             status=DownloadJobStatus.downloading.value,
@@ -1755,6 +1769,8 @@ def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatc
             'not_found': False,
         })
         monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        # Force exhausted SAB flow to fallback-to-encode rather than switch to torrents.
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
 
         fallback_calls = []
         monkeypatch.setattr(
@@ -1782,6 +1798,7 @@ def test_check_download_progress_stalled_exhausted_usenet_retries_switches_to_to
             library_id=library.id,
             source_file_path='/media/Usenet.Switch.To.Torrent.mkv',
             release_name='Usenet.Switch.To.Torrent.2025.1080p.WEB-DL',
+            download_hash='SAB_STALLED_SWITCH',
             indexer_id=21,
             client_type='sabnzbd',
             status=DownloadJobStatus.downloading.value,

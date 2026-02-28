@@ -448,7 +448,7 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_active_downloa
         db.commit()
         db.refresh(library)
 
-        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        profile = LibraryProfile(library_id=library.id, download_enabled=True, schedule_enabled=False)
         db.add(profile)
         db.commit()
 
@@ -490,7 +490,7 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_pending_downlo
         db.commit()
         db.refresh(library)
 
-        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        profile = LibraryProfile(library_id=library.id, download_enabled=True, schedule_enabled=False)
         db.add(profile)
         db.commit()
 
@@ -532,7 +532,7 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_moving_downloa
         db.commit()
         db.refresh(library)
 
-        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        profile = LibraryProfile(library_id=library.id, download_enabled=True, schedule_enabled=False)
         db.add(profile)
         db.commit()
 
@@ -574,7 +574,7 @@ def test_claim_next_queued_job_removes_placeholder_when_download_already_importe
         db.commit()
         db.refresh(library)
 
-        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        profile = LibraryProfile(library_id=library.id, download_enabled=True, schedule_enabled=False)
         db.add(profile)
         db.commit()
 
@@ -626,7 +626,7 @@ def test_claim_next_queued_job_routes_to_download_and_removes_placeholder(monkey
         db.commit()
         db.refresh(library)
 
-        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        profile = LibraryProfile(library_id=library.id, download_enabled=True, schedule_enabled=False)
         db.add(profile)
         db.commit()
 
@@ -670,7 +670,7 @@ def test_claim_next_queued_job_starts_fallback_encode_without_rerouting(monkeypa
         db.commit()
         db.refresh(library)
 
-        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        profile = LibraryProfile(library_id=library.id, download_enabled=True, schedule_enabled=False)
         db.add(profile)
         db.commit()
 
@@ -754,6 +754,52 @@ def test_process_job_ignores_late_progress_after_pause(monkeypatch):
         assert paused_job is not None
         assert paused_job.status == 'paused'
         assert paused_job.progress_percent == 41
+
+
+def test_process_job_does_not_mark_complete_when_abort_requested_mid_encode(monkeypatch):
+    queue.resume_queue()
+    queue.stop_event.clear()
+
+    monkeypatch.setattr(queue, 'preflight_job', lambda *_: True)
+    monkeypatch.setattr(queue, '_publish_job', lambda *_args, **_kwargs: None)
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, global_quiet_enabled=False))
+        job = Job(input_path='/media/abort-race.mkv', status='queued', progress_percent=0)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    def fake_optimize_video(_input_path, _settings, **_kwargs):
+        with SessionLocal() as db:
+            aborting_job = db.query(Job).filter(Job.id == job_id).first()
+            assert aborting_job is not None
+            aborting_job.status = 'aborting'
+            aborting_job.cancel_requested = True
+            aborting_job.error_message = 'Aborting by user request'
+            db.commit()
+
+        return OptimizationMetrics(
+            input_path='/media/abort-race.mkv',
+            output_path='/media/abort-race-1080p.mkv',
+            status='complete',
+            processed_seconds=15.0,
+            fps=30.0,
+        )
+
+    monkeypatch.setattr(queue, 'optimize_video', fake_optimize_video)
+
+    queue._process_job(job_id)
+
+    with SessionLocal() as db:
+        updated = db.query(Job).filter(Job.id == job_id).first()
+        assert updated is not None
+        assert updated.status == 'cancelled'
+        assert updated.completed_at is not None
+        assert updated.cancel_requested is False
+        assert updated.output_path is None
 
 
 def test_start_queued_job_manual_pauses_running_job(monkeypatch):

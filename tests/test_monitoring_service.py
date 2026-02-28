@@ -58,6 +58,7 @@ def test_get_gpu_metrics_returns_zero_when_intel_gpu_idle(monkeypatch):
         'Popen',
         lambda *args, **kwargs: _FakePopen(mock_stdout),
     )
+    monkeypatch.setattr(monitoring_service, '_get_intel_gpu_metrics_freq', lambda: None)
     # Keep the test focused on the Intel path; avoid subprocess.run hitting the
     # fake Popen context-manager mismatch in NVIDIA probing.
     monkeypatch.setattr(monitoring_service, '_get_nvidia_gpu_metrics', lambda: None)

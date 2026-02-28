@@ -877,7 +877,7 @@ def test_pause_resume_abort_and_queue_controls(monkeypatch, tmp_path):
 
         abort_response = client.post(f'/jobs/{job_id}/abort')
         assert abort_response.status_code == 200
-        assert abort_response.json()['status'] == 'failed'
+        assert abort_response.json()['status'] == 'cancelled'
         assert abort_response.json()['error_message'] == 'Aborted by user'
         assert abort_response.json()['progress_percent'] == 0
         assert abort_response.json()['fps'] is None
