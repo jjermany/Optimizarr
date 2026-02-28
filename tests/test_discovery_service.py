@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app.api import routes
 from app.core.database import SessionLocal
 from app.main import app
+from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.services import discovery_service
 from app.services import download_monitor_service
@@ -330,6 +331,54 @@ def test_queue_file_if_eligible_download_mode_creates_download_job_when_route_re
         monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
 
         result = discovery_service._queue_file_if_eligible(db, media_file, library, profile)
-        assert result is not None
-        assert result.source_path == str(media_file)
+        assert result is None
         assert created_downloads == [str(media_file)]
+
+
+def test_queue_file_if_eligible_download_mode_cancels_stale_placeholder_encode(monkeypatch, tmp_path):
+    media_file = tmp_path / 'The Unholy Trinity (2025).mkv'
+    media_file.write_text('content')
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(tmp_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True, hdr_only=False, target_resolution=1080)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        placeholder = Job(
+            input_path=str(media_file),
+            output_path='',
+            status='queued',
+            library_id=library.id,
+        )
+        db.add(placeholder)
+        db.commit()
+        db.refresh(placeholder)
+
+        created_downloads = []
+        monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
+        monkeypatch.setattr(download_monitor_service, 'download_job_exists_for_source', lambda _db, _path: False)
+        monkeypatch.setattr(
+            download_monitor_service,
+            'create_download_job',
+            lambda _db, source_path, *_args: created_downloads.append(source_path),
+        )
+        monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _path: 2160)
+        monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
+
+        result = discovery_service._queue_file_if_eligible(db, media_file, library, profile)
+        db.refresh(placeholder)
+
+        assert result is None
+        assert created_downloads == [str(media_file)]
+        assert placeholder.status == 'cancelled'

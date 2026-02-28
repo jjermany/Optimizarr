@@ -620,6 +620,12 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
                         job.id,
                         job.source_path,
                     )
+                    # This queued encode row was only a routing placeholder.
+                    # Remove it so queue UI does not show a duplicate row.
+                    placeholder_job_id = job.id
+                    db.delete(job)
+                    db.commit()
+                    broker.publish_system_event('job_removed', job_id=placeholder_job_id)
                 continue
 
         job.status = 'starting'

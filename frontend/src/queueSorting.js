@@ -54,8 +54,20 @@ export function buildUnifiedQueueItems({
   extractTitleYear,
   pinActiveFirst = false,
 }) {
+  const activeDownloadSources = new Set(
+    downloadItems
+      .map((item) => String(item.source_file_path || '').trim())
+      .filter(Boolean),
+  );
+  const dedupedEncodeItems = encodeItems.filter((item) => {
+    const sourcePath = String(item.source_path || '').trim();
+    if (!sourcePath || !activeDownloadSources.has(sourcePath)) return true;
+    // Keep truly active encode rows visible even if a download row exists.
+    return ENCODE_ACTIVE_STATUSES.has(String(item.status || '').toLowerCase());
+  });
+
   const merged = [
-    ...encodeItems.map((item) => ({ ...item, _itemType: 'encode' })),
+    ...dedupedEncodeItems.map((item) => ({ ...item, _itemType: 'encode' })),
     ...downloadItems.map((item) => ({ ...item, _itemType: 'download' })),
   ];
 

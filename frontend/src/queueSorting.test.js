@@ -68,4 +68,23 @@ describe('buildUnifiedQueueItems', () => {
       'download-5',
     ]);
   });
+
+  it('hides queued encode placeholder rows when an active download row exists for the same source', () => {
+    const source = '/media/Clown.in.a.Cornfield.2025.mkv';
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 178, status: 'queued', source_path: source },
+      ],
+      downloadItems: [
+        { id: 16, status: 'downloading', source_file_path: source },
+      ],
+      sortOption: 'default',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
+      'download-16',
+    ]);
+  });
 });

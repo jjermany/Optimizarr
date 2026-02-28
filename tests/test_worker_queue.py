@@ -515,6 +515,50 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_pending_downlo
         assert job.status == 'queued'
 
 
+def test_claim_next_queued_job_routes_to_download_and_removes_placeholder(monkeypatch):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        db.add(profile)
+        db.commit()
+
+        source_path = '/media/movies/title-route.mkv'
+        placeholder = Job(input_path=source_path, status='queued', library_id=library.id)
+        db.add(placeholder)
+        db.commit()
+        placeholder_id = placeholder.id
+
+        created_downloads = []
+        monkeypatch.setattr('app.services.download_monitor_service.can_attempt_download', lambda _db: True)
+        monkeypatch.setattr('app.services.download_monitor_service.download_job_exists_for_source', lambda _db, _path: False)
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.create_download_job',
+            lambda _db, source, *_args: created_downloads.append(source),
+        )
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        remaining_placeholder = db.query(Job).filter(Job.id == placeholder_id).first()
+
+        assert selected_id is None
+        assert created_downloads == [source_path]
+        assert remaining_placeholder is None
+
+
 def test_process_job_ignores_late_progress_after_pause(monkeypatch):
     queue.resume_queue()
     queue.stop_event.clear()
