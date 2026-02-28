@@ -1708,6 +1708,65 @@ def test_do_search_skips_previously_failed_release_keys(monkeypatch):
         assert dj.status == DownloadJobStatus.downloading.value
 
 
+def test_do_search_rejects_unrelated_episode_title_for_single_word_movie(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Wicked (2024).mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(prowlarr_service, 'search', lambda *_args, **_kw: [
+            {
+                'title': 'Cinderella.Game.2024.S01E75.The.Wicked.Exposure.1080p.VIU.WEB-DL.AAC2',
+                'seeders': 1000,
+                'size': 1200,
+                'protocol': 'usenet',
+                'guid': 'bad-episode-guid',
+                'indexerId': 1,
+            },
+            {
+                'title': 'Wicked.2024.1080p.WEB-DL.DDP5.1.H264',
+                'seeders': 10,
+                'size': 2200,
+                'protocol': 'usenet',
+                'guid': 'good-movie-guid',
+                'indexerId': 1,
+            },
+        ])
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
+
+        grabbed = []
+        monkeypatch.setattr(
+            prowlarr_service,
+            'grab',
+            lambda *_args, **_kwargs: (grabbed.append(_args[1]) or {'downloadId': 'NZO_WICKED_OK'}),
+        )
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+        db.refresh(dj)
+
+        assert grabbed == ['good-movie-guid']
+        assert dj.release_name == 'Wicked.2024.1080p.WEB-DL.DDP5.1.H264'
+
+
 def test_import_file_sab_removes_source_video_from_completed_directory(monkeypatch, tmp_path):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()

@@ -787,6 +787,65 @@ def _build_search_query(source_path: str, profile: LibraryProfile) -> str:
     return ' '.join(filter(None, [title, year, resolution]))
 
 
+def _extract_source_title_and_year(source_path: str) -> tuple[str, int | None]:
+    stem = Path(source_path or '').stem
+    clean = re.sub(r'[._]', ' ', stem)
+    year_match = re.search(r'\b(19|20)\d{2}\b', clean)
+    year: int | None = int(year_match.group(0)) if year_match else None
+    if year_match:
+        title = re.sub(r'[\s()\[\]{}._-]+$', '', clean[:year_match.start()]).strip()
+    else:
+        title = clean.strip()
+    return title, year
+
+
+def _title_tokens_for_matching(value: str) -> list[str]:
+    normalized = _normalize_release_title(value)
+    raw_tokens = re.findall(r'[a-z0-9]+', normalized)
+    stopwords = {'the', 'a', 'an', 'and', 'part', 'pt', 'movie'}
+    return [token for token in raw_tokens if len(token) > 2 and token not in stopwords]
+
+
+def _is_probable_tv_episode_title(title: str) -> bool:
+    normalized = _normalize_release_title(title)
+    patterns = (
+        r'\bs\d{1,2}e\d{1,3}\b',
+        r'\bseason\s*\d+\b',
+        r'\bepisode\s*\d+\b',
+        r'\bcomplete\s+series\b',
+        r'\bseries\s+pack\b',
+    )
+    return any(re.search(pattern, normalized) for pattern in patterns)
+
+
+def _release_matches_source_title(release_title: str, source_path: str) -> bool:
+    source_title, _ = _extract_source_title_and_year(source_path)
+    source_tokens = _title_tokens_for_matching(source_title)
+    if not source_tokens:
+        return True
+
+    normalized_release = _normalize_release_title(release_title)
+    release_tokens = _title_tokens_for_matching(release_title)
+    if not release_tokens:
+        return False
+
+    if _is_probable_tv_episode_title(release_title):
+        return False
+
+    overlap = len(set(source_tokens) & set(release_tokens))
+    if len(source_tokens) >= 2:
+        return overlap >= min(2, len(source_tokens))
+
+    # Single-word titles are ambiguous ("Wicked", "It", etc.). Require the
+    # token to appear near the start of the release title to avoid partial
+    # matches from unrelated episode names.
+    token = source_tokens[0]
+    match = re.search(rf'\b{re.escape(token)}\b', normalized_release)
+    if not match:
+        return False
+    return match.start() <= 12
+
+
 def _is_hdr_release(title_lower: str) -> bool:
     """Return True if the release title indicates HDR content."""
     # 'hdr' catches hdr, hdr10, hdr10+; 'dolby vision' catches full name
@@ -1287,6 +1346,18 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
             'Download job %s: excluded %d previously failed release(s); remaining=%d',
             dj.id,
             max(0, pre_filter_count - len(releases)),
+            len(releases),
+        )
+    pre_title_filter_count = len(releases)
+    releases = [
+        release for release in releases
+        if _release_matches_source_title(str(release.get('title') or ''), dj.source_file_path)
+    ]
+    if pre_title_filter_count != len(releases):
+        logger.info(
+            'Download job %s: excluded %d release(s) by source-title relevance; remaining=%d',
+            dj.id,
+            pre_title_filter_count - len(releases),
             len(releases),
         )
 
