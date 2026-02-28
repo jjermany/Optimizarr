@@ -592,7 +592,7 @@ def test_startup_recovery_keeps_hashless_qbit_job_downloading_when_unmatched(mon
         assert dj.status == DownloadJobStatus.downloading.value
 
 
-def test_startup_recovery_links_completed_download_to_waiting_encode_job(monkeypatch):
+def test_startup_recovery_removes_waiting_encode_placeholder_for_completed_download(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(Job).delete()
@@ -624,15 +624,12 @@ def test_startup_recovery_links_completed_download_to_waiting_encode_job(monkeyp
         monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
 
         summary = run_download_startup_recovery(db)
-        db.refresh(queued)
+        removed = db.query(Job).filter(Job.id == queued.id).first()
 
         assert summary['imported'] == 0
         assert summary['reset_to_searching'] == 0
         assert summary['linked_jobs'] == 1
-        assert queued.status == 'complete'
-        assert queued.progress_percent == 100
-        assert queued.output_path == '/media/Blade Runner 2049 (2017)-1080p.mkv'
-        assert queued.completed_at is not None
+        assert removed is None
 
 
 def test_startup_recovery_adopts_queue_when_stale_complete_download_row_exists(monkeypatch):

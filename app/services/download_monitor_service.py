@@ -263,34 +263,14 @@ def _publish_download_job(dj: DownloadJob) -> None:
     broker.publish('download_job_update', download_job_to_dict(dj))
 
 
-def _publish_encode_job(job: Job) -> None:
-    broker.publish_job_update(
-        {
-            'id': job.id,
-            'status': job.status,
-            'source_path': job.source_path,
-            'output_path': job.output_path,
-            'retry_count': job.retry_count,
-            'cancel_requested': job.cancel_requested,
-            'progress_percent': job.progress_percent,
-            'fps': job.fps,
-            'eta_seconds': job.eta_seconds,
-            'encoder_used': job.encoder_used,
-            'codec_used': job.codec_used,
-            'hwaccel_used': job.hwaccel_used,
-            'used_fallback': job.used_fallback,
-            'fallback_reason': job.fallback_reason,
-            'error_message': job.error_message,
-            'source_resolution': job.source_resolution,
-            'source_is_hdr': job.source_is_hdr,
-            'completed_at': job.completed_at.isoformat() if job.completed_at else None,
-        },
-        throttle_progress=False,
-    )
-
-
 def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
-    """Mark queued/paused encode jobs complete when their download import already completed."""
+    """Remove waiting encode placeholders once the download import is complete.
+
+    Download-enabled libraries create an encode queue row as an orchestration
+    placeholder. When the download path succeeds and the file is imported, that
+    placeholder should disappear rather than creating an "encoded complete"
+    history record.
+    """
     terminal_waiting_statuses = ('queued', 'paused', 'starting', 'preflight')
     completed_downloads = (
         db.query(DownloadJob)
@@ -303,7 +283,7 @@ def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
     if not completed_downloads:
         return 0
 
-    linked_jobs: list[Job] = []
+    removed_job_ids: list[int] = []
     for dj in completed_downloads:
         waiting_jobs = (
             db.query(Job)
@@ -315,23 +295,20 @@ def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
             .all()
         )
         for job in waiting_jobs:
-            job.status = 'complete'
-            job.progress_percent = 100
-            job.eta_seconds = 0
-            job.output_path = dj.imported_file_path
-            job.error_message = None
-            job.cancel_requested = False
-            job.completed_at = datetime.utcnow()
-            linked_jobs.append(job)
+            removed_job_ids.append(job.id)
+            db.delete(job)
 
-    if not linked_jobs:
+    if not removed_job_ids:
         return 0
 
     db.commit()
-    for job in linked_jobs:
-        _publish_encode_job(job)
-    logger.info('Linked %s queued encode job(s) to completed download imports', len(linked_jobs))
-    return len(linked_jobs)
+    for job_id in removed_job_ids:
+        broker.publish_system_event('job_removed', job_id=job_id)
+    logger.info(
+        'Removed %s waiting encode placeholder job(s) after completed download imports',
+        len(removed_job_ids),
+    )
+    return len(removed_job_ids)
 
 
 def _recover_completed_root_for_waiting_queue_jobs(
