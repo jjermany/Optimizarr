@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
@@ -69,7 +69,7 @@ def _should_cancel(db: Session, job_id: int) -> bool:
 
 def _mark_finished(job: Job) -> None:
     if job.status in TERMINAL_STATUSES:
-        job.completed_at = datetime.utcnow()
+        job.completed_at = datetime.now(UTC)
 
 
 def _publish_job(job: Job, *, throttle_progress: bool = True) -> None:

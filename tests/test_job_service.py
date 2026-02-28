@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from app.core.database import SessionLocal
 from app.models.job import Job
@@ -56,17 +56,17 @@ def test_prune_job_history_removes_stale_terminal_jobs():
         stale_terminal = Job(
             input_path='/media/old.mkv',
             status='complete',
-            completed_at=datetime.utcnow() - timedelta(days=40),
+            completed_at=datetime.now(UTC) - timedelta(days=40),
         )
         fresh_terminal = Job(
             input_path='/media/new.mkv',
             status='failed',
-            completed_at=datetime.utcnow() - timedelta(days=1),
+            completed_at=datetime.now(UTC) - timedelta(days=1),
         )
         stale_active = Job(
             input_path='/media/running.mkv',
             status='running',
-            completed_at=datetime.utcnow() - timedelta(days=40),
+            completed_at=datetime.now(UTC) - timedelta(days=40),
         )
         db.add_all([stale_terminal, fresh_terminal, stale_active])
         db.commit()
@@ -120,7 +120,7 @@ def test_cancel_job_requeues_queued_job_and_clears_transient_fields():
             fps=12.3,
             error_message='old error',
             cancel_requested=True,
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(UTC),
         )
         db.add(job)
         db.commit()
@@ -171,7 +171,7 @@ def test_resume_job_requeues_paused_job_without_clearing_resume_state():
             fps=10.0,
             eta_seconds=300,
             error_message='temporary',
-            completed_at=datetime.utcnow(),
+            completed_at=datetime.now(UTC),
         )
         db.add(job)
         db.commit()

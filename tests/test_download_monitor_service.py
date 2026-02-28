@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -626,7 +626,7 @@ def test_check_download_progress_imports_complete_download_despite_elapsed_timeo
             client_type='qbittorrent',
             status=DownloadJobStatus.downloading.value,
             # download started 5 minutes ago — well past the 1-minute timeout
-            download_started_at=datetime.utcnow() - timedelta(minutes=5),
+            download_started_at=datetime.now(UTC) - timedelta(minutes=5),
         )
         db.add(dj)
         db.commit()

@@ -1,5 +1,4 @@
-from datetime import datetime
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import subprocess
@@ -283,7 +282,7 @@ def abort_job(db: Session, job_id: int) -> Job | None:
     job.output_path = None
     job.error_message = 'Aborted by user'
     job.cancel_requested = False
-    job.completed_at = datetime.utcnow()
+    job.completed_at = datetime.now(UTC)
     db.commit()
     db.refresh(job)
     return job
@@ -324,7 +323,7 @@ def prune_job_history(db: Session, retention_days: int) -> int:
     if retention_days <= 0:
         return 0
 
-    cutoff = datetime.utcnow() - timedelta(days=retention_days)
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
     stale_jobs = (
         db.query(Job)
         .filter(Job.status.in_(TERMINAL_STATUSES), Job.completed_at.is_not(None), Job.completed_at < cutoff)
@@ -371,7 +370,7 @@ def abort_all_jobs(db: Session) -> list[Job]:
         return []
 
     settings = _get_settings(db)
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     for job in targets:
         optimization_service.stop_active_ffmpeg(job.id)
         optimization_service.delete_workspace(settings, job.id)
@@ -407,7 +406,7 @@ def cancel_all_queued_jobs(db: Session) -> list[Job]:
     if not targets:
         return []
 
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     for job in targets:
         job.status = 'cancelled'
         job.completed_at = now

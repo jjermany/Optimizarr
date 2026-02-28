@@ -1478,7 +1478,7 @@ def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = Fa
         job.eta_seconds = None
         job.output_path = None
         job.cancel_requested = False
-        job.completed_at = _dt.utcnow()
+        job.completed_at = _dt.now(timezone.utc)
         db.commit()
 
     create_download_job(db, job.source_path, library, profile)
@@ -1886,7 +1886,7 @@ def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     dj.encode_job_id = None
     dj.download_started_at = None
     dj.completed_at = None
-    dj.created_at = _dt.utcnow()
+    dj.created_at = _dt.now(timezone.utc)
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
@@ -1940,7 +1940,7 @@ def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     dj.download_speed_bps = None
     dj.completed_at = None
     dj.encode_job_id = None
-    dj.created_at = _dt.utcnow()
+    dj.created_at = _dt.now(timezone.utc)
     db.commit()
     db.refresh(dj)
     from app.services.download_monitor_service import _publish_download_job

@@ -1316,8 +1316,8 @@ def _process_searching_jobs(db: Session) -> None:
 
     global _startup_grace_until
     if _startup_grace_until is not None:
-        if datetime.utcnow() < _startup_grace_until:
-            remaining = int((_startup_grace_until - datetime.utcnow()).total_seconds())
+        if datetime.now(timezone.utc) < _startup_grace_until:
+            remaining = int((_startup_grace_until - datetime.now(timezone.utc)).total_seconds())
             logger.info(
                 'Download monitor: startup grace active; deferring searches for ~%ss (until %s UTC)',
                 max(0, remaining),
@@ -1509,7 +1509,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         dj.client_type = client_type
         dj.status = DownloadJobStatus.downloading.value
         dj.error_message = None
-        dj.download_started_at = datetime.utcnow()
+        dj.download_started_at = datetime.now(timezone.utc)
         dj.progress_percent = 0
         dj.eta_seconds = None
         dj.download_speed_bps = None
@@ -1549,7 +1549,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     dj.client_type = client_type
     dj.status = DownloadJobStatus.downloading.value
     dj.error_message = None
-    dj.download_started_at = datetime.utcnow()
+    dj.download_started_at = datetime.now(timezone.utc)
     dj.progress_percent = 0
     dj.eta_seconds = None
     dj.download_speed_bps = None
@@ -1797,7 +1797,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     # pre-date the download_started_at column.
     timeout_minutes = int(getattr(profile, 'download_timeout_minutes', 60) or 60)
     timeout_reference = dj.download_started_at or dj.created_at
-    elapsed = datetime.utcnow() - timeout_reference
+    elapsed = datetime.now(timezone.utc) - timeout_reference
     if elapsed > timedelta(minutes=timeout_minutes):
         _retry_failed_download(
             db,
@@ -1859,7 +1859,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             dj.imported_file_path = str(dest)
             dj.eta_seconds = None
             dj.download_speed_bps = None
-            dj.completed_at = datetime.utcnow()
+            dj.completed_at = datetime.now(timezone.utc)
             db.commit()
             db.refresh(dj)
             _publish_download_job(dj)
@@ -1929,7 +1929,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     dj.status = DownloadJobStatus.complete.value
     dj.eta_seconds = None
     dj.download_speed_bps = None
-    dj.completed_at = datetime.utcnow()
+    dj.completed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
@@ -2249,7 +2249,7 @@ def _mark_failed(db: Session, dj: DownloadJob, reason: str) -> None:
     dj.error_message = reason
     dj.eta_seconds = None
     dj.download_speed_bps = None
-    dj.completed_at = datetime.utcnow()
+    dj.completed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
@@ -2274,7 +2274,7 @@ def _arm_startup_grace_if_needed(db: Session) -> None:
         .count()
     )
     if searching_count > 0:
-        _startup_grace_until = datetime.utcnow() + timedelta(seconds=_STARTUP_GRACE_SECONDS)
+        _startup_grace_until = datetime.now(timezone.utc) + timedelta(seconds=_STARTUP_GRACE_SECONDS)
         logger.warning(
             'Download startup recovery: %d searching job(s) found; '
             'holding off grabs for %ds (until %s UTC) — remove unwanted jobs now',
@@ -2443,7 +2443,7 @@ def run_download_startup_recovery(db: Session) -> dict:
                             'keeping status=downloading for runtime recovery',
                             dj.id,
                         )
-                        dj.download_started_at = datetime.utcnow()
+                        dj.download_started_at = datetime.now(timezone.utc)
                         db.commit()
                         continue
 
@@ -2485,7 +2485,7 @@ def run_download_startup_recovery(db: Session) -> dict:
                 # timing out because created_at (or an old download_started_at)
                 # is already past the threshold.
                 logger.info('Download job %s: still in progress (state=%s), resuming monitoring', dj.id, state)
-                dj.download_started_at = datetime.utcnow()
+                dj.download_started_at = datetime.now(timezone.utc)
                 db.commit()
 
         # ── SABnzbd ──────────────────────────────────────────────────────────

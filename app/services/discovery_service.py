@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import logging
 from pathlib import Path
 import re
@@ -66,7 +66,7 @@ class DiscoveryManager:
         self._watched_paths: set[str] = set()
         self._pending_events: dict[str, PendingFileState] = {}
         self._pending_lock = threading.Lock()
-        self._next_interval_scan_at = datetime.utcnow()
+        self._next_interval_scan_at = datetime.now(UTC)
         self._scan_requested = threading.Event()
 
     def request_scan(self) -> None:
@@ -125,7 +125,7 @@ class DiscoveryManager:
         logger.info('Auto-discovery worker stopped')
 
     def _run_interval_scan_if_due(self, db: Session, libraries: list[Library], interval_minutes: int) -> None:
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         immediate = self._scan_requested.is_set()
         self._scan_requested.clear()
         if not immediate and now < self._next_interval_scan_at:
@@ -312,9 +312,9 @@ def _cancel_queued_encode_for_source(db: Session, source_path: str, library_id: 
         .first()
     )
     if existing:
-        from datetime import datetime as _dt
+        from datetime import UTC, datetime as _dt
         existing.status = 'cancelled'
-        existing.completed_at = _dt.utcnow()
+        existing.completed_at = _dt.now(UTC)
         db.commit()
 
 
