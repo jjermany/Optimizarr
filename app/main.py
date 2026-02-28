@@ -11,7 +11,7 @@ from app.core.database import SessionLocal, init_db
 from app.core.logging_config import configure_logging
 from app.services.discovery_service import start_discovery_worker, stop_discovery_worker, trigger_immediate_scan
 from app.services.download_monitor_service import register_job_complete_callback, run_download_startup_recovery, start_download_monitor, stop_download_monitor
-from app.services import notification_service
+from app.services import auth_service, notification_service
 from app.services.notification_service import start_notification_worker, stop_notification_worker
 from app.services.optimization_service import refresh_encoder_cache
 from app.services.recovery_service import run_startup_recovery, run_workspace_cleanup
@@ -50,6 +50,7 @@ async def lifespan(_: FastAPI):
     logger.info('Starting Optimizarr application')
     init_db()
     with SessionLocal() as db:
+        auth_service.purge_expired_sessions(db)
         persisted_settings = db.query(Settings).first()
         initial_queue_paused = bool(persisted_settings and persisted_settings.queue_paused)
         summary = run_startup_recovery(db)

@@ -14,6 +14,7 @@ from threading import Event, Lock, Thread
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.core import secrets_store
 from app.models.job import Job
 from app.models.library import Library
 from app.models.notification_settings import NotificationSettings
@@ -154,6 +155,10 @@ def get_or_create_notification_settings(db: Session) -> NotificationSettings:
         db.add(settings)
         db.commit()
         db.refresh(settings)
+    elif settings.smtp_password and not secrets_store.is_encrypted_secret(settings.smtp_password):
+        settings.smtp_password = secrets_store.encrypt_secret(settings.smtp_password)
+        db.commit()
+        db.refresh(settings)
     return settings
 
 
@@ -162,7 +167,7 @@ def settings_to_payload(settings: NotificationSettings) -> dict:
         'smtp_host': settings.smtp_host,
         'smtp_port': settings.smtp_port,
         'smtp_user': settings.smtp_user,
-        'smtp_password': settings.smtp_password,
+        'smtp_password': secrets_store.mask_secret(settings.smtp_password),
         'smtp_tls': settings.smtp_tls,
         'from_email': settings.from_email,
         'to_emails': _emails_from_csv(settings.to_emails_csv),
@@ -180,9 +185,13 @@ def settings_to_payload(settings: NotificationSettings) -> dict:
 def update_settings(db: Session, payload: dict) -> NotificationSettings:
     settings = get_or_create_notification_settings(db)
 
-    for key in ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_password', 'smtp_tls', 'from_email']:
+    for key in ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_tls', 'from_email']:
         if key in payload:
             setattr(settings, key, payload[key])
+    if 'smtp_password' in payload:
+        raw = payload['smtp_password'] or ''
+        if not secrets_store.is_masked_secret(raw):
+            settings.smtp_password = secrets_store.encrypt_secret(raw)
 
     if 'to_emails' in payload:
         settings.to_emails_csv = _emails_to_csv(payload['to_emails'])
@@ -225,7 +234,7 @@ def _send_via_smtp(event: EmailEvent, settings: NotificationSettings) -> None:
         if settings.smtp_tls:
             smtp.starttls()
         if settings.smtp_user:
-            smtp.login(settings.smtp_user, settings.smtp_password)
+            smtp.login(settings.smtp_user, secrets_store.decrypt_secret(settings.smtp_password))
         smtp.send_message(message)
 
 

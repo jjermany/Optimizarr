@@ -12,7 +12,7 @@ Optimizarr is an automated media optimization service with a web UI. It discover
 - Email notification settings + test trigger
 - Real-time WebSocket event stream for UI updates
 - Intel QSV / VAAPI hardware encoding support
-- Optional basic auth for UI / API access
+- Built-in admin login UI with optional dual-factor authentication (TOTP)
 
 ## Architecture
 
@@ -109,11 +109,21 @@ Key environment variables:
 | `LIBVA_DRIVER_NAME` | `iHD` | VA-API driver. Use `iHD` for Intel Gen 8+ / Arc |
 | `QSV_DEVICE` | `/dev/dri/renderD128` | DRM render node for QSV |
 | `OPTIMIZARR_VERSION` | `0.1.0` | Reported by `GET /version` |
-| `OPTIMIZARR_UI_USERNAME` | _(unset)_ | Enable basic auth — username |
-| `OPTIMIZARR_UI_PASSWORD` | _(unset)_ | Enable basic auth — password |
-| `OPTIMIZARR_WS_TOKEN` | _(unset)_ | Optional WebSocket token gate |
+| `OPTIMIZARR_SESSION_COOKIE_SECURE` | `auto` | Session cookie `Secure` policy (`auto`, `true`, `false`) |
+| `OPTIMIZARR_SECRETS_KEY` | _(unset)_ | Optional base64url 32-byte key for secrets encryption at rest |
+| `OPTIMIZARR_SECRETS_KEY_PATH` | `/config/optimizarr.secrets.key` | Path to persisted encryption key file when env key is unset |
 
-If both auth variables are unset, the API is open.
+Authentication:
+- On first startup (or first startup after upgrading from legacy basic-auth builds), Optimizarr prompts you to create an admin account.
+- During setup you can enable dual-factor authentication (TOTP) or skip it.
+- After setup, API/UI access requires a login session cookie.
+- Before admin setup is completed, non-setup API routes are blocked.
+- State-changing authenticated API calls require a CSRF token header (`X-CSRF-Token`) that matches the `optimizarr_csrf` cookie.
+- Login attempts are rate limited to reduce brute-force risk.
+
+Secrets at rest:
+- Sensitive integration fields (SMTP password, Plex token, Prowlarr API key, qBittorrent password, SABnzbd API key) are stored encrypted in the database.
+- If `OPTIMIZARR_SECRETS_KEY` is unset, Optimizarr auto-generates and persists a key at `OPTIMIZARR_SECRETS_KEY_PATH`.
 
 ---
 
@@ -163,8 +173,15 @@ If both auth variables are unset, the API is open.
 ### Recovery and WebSocket
 
 - `POST /api/recovery/run`
-- `GET /api/auth/ws-token`
 - `WS /ws`
+
+### Authentication
+
+- `GET /api/auth/status`
+- `POST /api/auth/totp/secret`
+- `POST /api/auth/bootstrap`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
 
 ---
 

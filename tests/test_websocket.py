@@ -1,9 +1,13 @@
+import time
+
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.core.database import SessionLocal
+from app.models.auth import AdminUser, AuthSession
 from app.models.job import Job
 from app.services.realtime_service import RealtimeBroker
+from app.services import auth_service
 
 
 
@@ -11,6 +15,13 @@ from app.services.realtime_service import RealtimeBroker
 def _clear_jobs():
     with SessionLocal() as db:
         db.query(Job).delete()
+        db.commit()
+
+
+def _clear_auth_state():
+    with SessionLocal() as db:
+        db.query(AuthSession).delete()
+        db.query(AdminUser).delete()
         db.commit()
 
 def _receive_event_of_type(websocket, event_type: str, max_messages: int = 20) -> dict:
@@ -34,28 +45,53 @@ def test_ws_stream_receives_job_update():
             assert event['data']['source_path'] == '/media/ws-demo.mkv'
 
 
-def test_ws_requires_token_when_basic_auth_enabled(monkeypatch):
+def test_ws_requires_session_when_admin_configured():
     _clear_jobs()
-    monkeypatch.setenv('OPTIMIZARR_UI_USERNAME', 'admin')
-    monkeypatch.setenv('OPTIMIZARR_UI_PASSWORD', 'secret')
+    _clear_auth_state()
 
     with TestClient(app) as client:
+        secret = client.post('/auth/totp/secret', json={'username': 'admin'}).json()['secret']
+        bootstrap = client.post(
+            '/auth/bootstrap',
+            json={
+                'username': 'admin',
+                'password': 'VeryStrongPassword123',
+                'enable_two_factor': True,
+                'totp_secret': secret,
+                'totp_code': auth_service.current_totp_code(secret, at_time=int(time.time())),
+            },
+        )
+        assert bootstrap.status_code == 201
+        client.post('/auth/logout', headers={'X-CSRF-Token': client.cookies.get('optimizarr_csrf', '')})
+
         try:
             with client.websocket_connect('/ws'):
                 raise AssertionError('expected websocket auth failure')
         except Exception:
             pass
 
-        token_response = client.get('/auth/ws-token', auth=('admin', 'secret'))
-        assert token_response.status_code == 200
-        token = token_response.json()['token']
+        login = client.post(
+            '/auth/login',
+            json={
+                'username': 'admin',
+                'password': 'VeryStrongPassword123',
+                'otp_code': auth_service.current_totp_code(secret, at_time=int(time.time())),
+            },
+        )
+        assert login.status_code == 200
 
-        with client.websocket_connect(f'/ws?token={token}') as websocket:
-            create_response = client.post('/jobs', json={'source_path': '/media/ws-auth-demo.mkv'}, auth=('admin', 'secret'))
+        with client.websocket_connect('/ws') as websocket:
+            create_response = client.post(
+                '/jobs',
+                json={'source_path': '/media/ws-auth-demo.mkv'},
+                headers={'X-CSRF-Token': client.cookies.get('optimizarr_csrf', '')},
+            )
             assert create_response.status_code == 201
 
             event = _receive_event_of_type(websocket, 'job_update')
             assert event['data']['source_path'] == '/media/ws-auth-demo.mkv'
+
+    _clear_auth_state()
 
 
 def test_job_progress_throttle_limits_to_one_event_per_second():

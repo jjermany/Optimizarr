@@ -7,6 +7,7 @@ from pathlib import Path
 import httpx
 from sqlalchemy.orm import Session
 
+from app.core import secrets_store
 from app.models.qbittorrent_settings import QBittorrentSettings
 from app.models.sabnzbd_settings import SabnzbdSettings
 
@@ -42,12 +43,20 @@ def get_or_create_qbt_settings(db: Session) -> QBittorrentSettings:
         db.add(settings)
         db.commit()
         db.refresh(settings)
+    if settings.password and not secrets_store.is_encrypted_secret(settings.password):
+        settings.password = secrets_store.encrypt_secret(settings.password)
+        db.commit()
+        db.refresh(settings)
     return settings
 
 
 def update_qbt_settings(db: Session, data: dict) -> QBittorrentSettings:
     settings = get_or_create_qbt_settings(db)
     for key, value in data.items():
+        if key == 'password':
+            if secrets_store.is_masked_secret(value):
+                continue
+            value = secrets_store.encrypt_secret(value or '')
         setattr(settings, key, value)
     db.commit()
     db.refresh(settings)
@@ -60,7 +69,7 @@ def qbt_settings_to_payload(s: QBittorrentSettings) -> dict:
         'host': s.host,
         'port': s.port,
         'username': s.username,
-        'password': s.password,
+        'password': secrets_store.mask_secret(s.password),
     }
 
 
@@ -81,7 +90,8 @@ def _qbt_session(s: QBittorrentSettings) -> httpx.Client:
         timeout=_DEFAULT_TIMEOUT,
         headers={'Referer': base, 'Origin': base},
     )
-    resp = client.post('/api/v2/auth/login', data={'username': s.username, 'password': s.password})
+    qbt_password = secrets_store.decrypt_secret(s.password)
+    resp = client.post('/api/v2/auth/login', data={'username': s.username, 'password': qbt_password})
     resp.raise_for_status()
     # qBittorrent returns HTTP 200 with body "Fails." on bad credentials.
     if resp.text.strip() != 'Ok.':
@@ -298,12 +308,20 @@ def get_or_create_sab_settings(db: Session) -> SabnzbdSettings:
         db.add(settings)
         db.commit()
         db.refresh(settings)
+    if settings.api_key and not secrets_store.is_encrypted_secret(settings.api_key):
+        settings.api_key = secrets_store.encrypt_secret(settings.api_key)
+        db.commit()
+        db.refresh(settings)
     return settings
 
 
 def update_sab_settings(db: Session, data: dict) -> SabnzbdSettings:
     settings = get_or_create_sab_settings(db)
     for key, value in data.items():
+        if key == 'api_key':
+            if secrets_store.is_masked_secret(value):
+                continue
+            value = secrets_store.encrypt_secret(value or '')
         setattr(settings, key, value)
     db.commit()
     db.refresh(settings)
@@ -315,7 +333,7 @@ def sab_settings_to_payload(s: SabnzbdSettings) -> dict:
         'enabled': s.enabled,
         'host': s.host,
         'port': s.port,
-        'api_key': s.api_key,
+        'api_key': secrets_store.mask_secret(s.api_key),
     }
 
 
@@ -329,7 +347,7 @@ def _sab_base_url(s: SabnzbdSettings) -> str:
 
 def _sab_api(s: SabnzbdSettings, **params) -> dict:
     url = f"{_sab_base_url(s)}/api"
-    merged = {'output': 'json', 'apikey': s.api_key, **params}
+    merged = {'output': 'json', 'apikey': secrets_store.decrypt_secret(s.api_key), **params}
     resp = httpx.get(url, params=merged, timeout=_DEFAULT_TIMEOUT)
     resp.raise_for_status()
     return resp.json()

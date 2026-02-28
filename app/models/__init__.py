@@ -1,3 +1,4 @@
+from app.models.auth import AdminUser, AuthSession
 from app.models.download_client_settings import DownloadClientSettings
 from app.models.download_job import DownloadJob
 from app.models.job import Job, OptimizationJob
@@ -10,6 +11,8 @@ from app.models.sabnzbd_settings import SabnzbdSettings
 from app.models.settings import Settings
 
 __all__ = [
+    'AdminUser',
+    'AuthSession',
     'DownloadClientSettings',
     'DownloadJob',
     'Job',

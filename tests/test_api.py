@@ -3,8 +3,17 @@ import time
 from fastapi.testclient import TestClient
 
 from app.api import routes
+from app.core.database import SessionLocal
+from app.models.auth import AdminUser, AuthSession
 from app.services import discovery_service
 from app.main import app
+
+
+def _clear_auth_state() -> None:
+    with SessionLocal() as db:
+        db.query(AuthSession).delete()
+        db.query(AdminUser).delete()
+        db.commit()
 
 
 def test_health_endpoint():
@@ -219,19 +228,83 @@ def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
     assert queued == ['sent']
 
 
-def test_ui_basic_auth(monkeypatch):
-    monkeypatch.setenv('OPTIMIZARR_UI_USERNAME', 'admin')
-    monkeypatch.setenv('OPTIMIZARR_UI_PASSWORD', 'secret')
+def test_auth_bootstrap_and_login_flow():
+    _clear_auth_state()
 
     with TestClient(app) as client:
-        unauthorized = client.get('/settings')
-        assert unauthorized.status_code == 401
+        status_before = client.get('/auth/status')
+        assert status_before.status_code == 200
+        assert status_before.json()['setup_required'] is True
 
-        wrong = client.get('/settings', auth=('admin', 'wrong'))
-        assert wrong.status_code == 401
+        bootstrap = client.post(
+            '/auth/bootstrap',
+            json={
+                'username': 'admin',
+                'password': 'VeryStrongPassword123',
+                'enable_two_factor': False,
+            },
+        )
+        assert bootstrap.status_code == 201
+        assert bootstrap.json()['username'] == 'admin'
+        assert bootstrap.cookies.get('optimizarr_session')
 
-        ok = client.get('/settings', auth=('admin', 'secret'))
+        settings = client.get('/settings')
+        assert settings.status_code == 200
+
+        client.post('/auth/logout', headers={'X-CSRF-Token': client.cookies.get('optimizarr_csrf', '')})
+        after_logout = client.get('/settings')
+        assert after_logout.status_code == 401
+
+        login = client.post('/auth/login', json={'username': 'admin', 'password': 'VeryStrongPassword123'})
+        assert login.status_code == 200
+        assert login.cookies.get('optimizarr_session')
+
+        settings_after_login = client.get('/settings')
+        assert settings_after_login.status_code == 200
+
+    _clear_auth_state()
+
+
+def test_auth_login_requires_totp_when_enabled():
+    _clear_auth_state()
+
+    with TestClient(app) as client:
+        secret_response = client.post('/auth/totp/secret', json={'username': 'admin'})
+        assert secret_response.status_code == 200
+        secret = secret_response.json()['secret']
+
+        bootstrap = client.post(
+            '/auth/bootstrap',
+            json={
+                'username': 'admin',
+                'password': 'VeryStrongPassword123',
+                'enable_two_factor': True,
+                'totp_secret': secret,
+                'totp_code': routes.auth_service.current_totp_code(secret, at_time=int(time.time())),
+            },
+        )
+        assert bootstrap.status_code == 201
+        client.post('/auth/logout', headers={'X-CSRF-Token': client.cookies.get('optimizarr_csrf', '')})
+
+        missing_otp = client.post('/auth/login', json={'username': 'admin', 'password': 'VeryStrongPassword123'})
+        assert missing_otp.status_code == 401
+        assert 'Two-factor code required' in missing_otp.text
+
+        wrong_otp = client.post('/auth/login', json={'username': 'admin', 'password': 'VeryStrongPassword123', 'otp_code': '000000'})
+        assert wrong_otp.status_code == 401
+
+        ok = client.post(
+            '/auth/login',
+            json={
+                'username': 'admin',
+                'password': 'VeryStrongPassword123',
+                'otp_code': routes.auth_service.current_totp_code(secret, at_time=int(time.time())),
+            },
+        )
         assert ok.status_code == 200
+        assert ok.cookies.get('optimizarr_session')
+
+    _clear_auth_state()
 
 
 def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_path):

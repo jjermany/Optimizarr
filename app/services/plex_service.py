@@ -6,6 +6,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.core import secrets_store
 from app.models.library import LibraryProfile
 from app.models.plex_settings import PlexSettings
 
@@ -19,6 +20,10 @@ def get_or_create_plex_settings(db: Session) -> PlexSettings:
         db.add(settings)
         db.commit()
         db.refresh(settings)
+    if settings.token and not secrets_store.is_encrypted_secret(settings.token):
+        settings.token = secrets_store.encrypt_secret(settings.token)
+        db.commit()
+        db.refresh(settings)
     return settings
 
 
@@ -27,16 +32,20 @@ def settings_to_payload(settings: PlexSettings) -> dict:
         'enabled': settings.enabled,
         'host': settings.host,
         'port': settings.port,
-        'token': settings.token,
+        'token': secrets_store.mask_secret(settings.token),
     }
 
 
 def update_settings(db: Session, payload: dict) -> PlexSettings:
     settings = get_or_create_plex_settings(db)
 
-    for key in ['enabled', 'host', 'port', 'token']:
+    for key in ['enabled', 'host', 'port']:
         if key in payload:
             setattr(settings, key, payload[key])
+    if 'token' in payload:
+        raw = payload['token'] or ''
+        if not secrets_store.is_masked_secret(raw):
+            settings.token = secrets_store.encrypt_secret(raw)
 
     db.commit()
     db.refresh(settings)
@@ -59,8 +68,9 @@ def _plex_headers(token: str) -> dict:
 def _trigger_section_scan(section_id: str, settings: PlexSettings) -> None:
     base_url = _build_base_url(settings)
     url = f'{base_url}/library/sections/{section_id}/refresh'
+    token = secrets_store.decrypt_secret(settings.token)
     with httpx.Client(timeout=10) as client:
-        response = client.get(url, headers=_plex_headers(settings.token))
+        response = client.get(url, headers=_plex_headers(token))
         response.raise_for_status()
     logger.debug('Triggered Plex scan for section %s', section_id)
 
@@ -70,13 +80,14 @@ def fetch_plex_libraries() -> list[dict]:
     db = SessionLocal()
     try:
         settings = get_or_create_plex_settings(db)
-        if not settings.token:
+        token = secrets_store.decrypt_secret(settings.token)
+        if not token:
             return []
 
         base_url = _build_base_url(settings)
         url = f'{base_url}/library/sections'
         with httpx.Client(timeout=10) as client:
-            response = client.get(url, headers=_plex_headers(settings.token))
+            response = client.get(url, headers=_plex_headers(token))
             response.raise_for_status()
 
         data = response.json()
@@ -100,7 +111,7 @@ def trigger_scan_after_job(library_id: int | None) -> None:
         settings = get_or_create_plex_settings(db)
         if not settings.enabled:
             return
-        if not settings.token:
+        if not secrets_store.decrypt_secret(settings.token):
             logger.warning('Plex integration enabled but no token configured; skipping scan')
             return
 
@@ -130,13 +141,14 @@ def test_plex_connection() -> dict:
     db = SessionLocal()
     try:
         settings = get_or_create_plex_settings(db)
-        if not settings.token:
+        token = secrets_store.decrypt_secret(settings.token)
+        if not token:
             return {'success': False, 'error': 'No token configured'}
 
         base_url = _build_base_url(settings)
         url = f'{base_url}/library/sections'
         with httpx.Client(timeout=10) as client:
-            response = client.get(url, headers=_plex_headers(settings.token))
+            response = client.get(url, headers=_plex_headers(token))
             response.raise_for_status()
 
         return {'success': True}

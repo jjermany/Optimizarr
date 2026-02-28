@@ -1,8 +1,23 @@
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 
+function getCookie(name) {
+  if (typeof document === 'undefined') return null;
+  const escaped = name.replace(/[$()*+./?[\\\]^{|}-]/g, '\\$&');
+  const match = document.cookie.match(new RegExp(`(?:^|; )${escaped}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 async function request(path, options) {
+  const method = String(options?.method || 'GET').toUpperCase();
+  const headers = { 'Content-Type': 'application/json', ...(options?.headers || {}) };
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
+    const csrfToken = getCookie('optimizarr_csrf');
+    if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+  }
+
   const response = await fetch(`${API_BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers,
+    credentials: 'include',
     ...options,
   });
 
@@ -44,6 +59,35 @@ async function request(path, options) {
 
 export function fetchMetrics() {
   return request('/metrics');
+}
+
+export function fetchAuthStatus() {
+  return request('/auth/status');
+}
+
+export function createTotpSecret(username) {
+  return request('/auth/totp/secret', {
+    method: 'POST',
+    body: JSON.stringify({ username }),
+  });
+}
+
+export function bootstrapAuth(payload) {
+  return request('/auth/bootstrap', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function login(payload) {
+  return request('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function logout() {
+  return request('/auth/logout', { method: 'POST' });
 }
 
 export function fetchJobs() {

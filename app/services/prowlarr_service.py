@@ -5,6 +5,7 @@ import logging
 import httpx
 from sqlalchemy.orm import Session
 
+from app.core import secrets_store
 from app.models.prowlarr_settings import ProwlarrSettings
 
 logger = logging.getLogger(__name__)
@@ -19,12 +20,20 @@ def get_or_create_prowlarr_settings(db: Session) -> ProwlarrSettings:
         db.add(settings)
         db.commit()
         db.refresh(settings)
+    if settings.api_key and not secrets_store.is_encrypted_secret(settings.api_key):
+        settings.api_key = secrets_store.encrypt_secret(settings.api_key)
+        db.commit()
+        db.refresh(settings)
     return settings
 
 
 def update_settings(db: Session, data: dict) -> ProwlarrSettings:
     settings = get_or_create_prowlarr_settings(db)
     for key, value in data.items():
+        if key == 'api_key':
+            if secrets_store.is_masked_secret(value):
+                continue
+            value = secrets_store.encrypt_secret(value or '')
         setattr(settings, key, value)
     db.commit()
     db.refresh(settings)
@@ -35,17 +44,18 @@ def settings_to_payload(settings: ProwlarrSettings) -> dict:
     return {
         'enabled': settings.enabled,
         'host': settings.host,
-        'api_key': settings.api_key,
+        'api_key': secrets_store.mask_secret(settings.api_key),
     }
 
 
 def test_connection(settings: ProwlarrSettings) -> dict:
     """Test connectivity to Prowlarr by fetching the indexer list."""
     try:
+        api_key = secrets_store.decrypt_secret(settings.api_key)
         url = f"{settings.host.rstrip('/')}/api/v1/indexer"
         resp = httpx.get(
             url,
-            headers={'X-Api-Key': settings.api_key},
+            headers={'X-Api-Key': api_key},
             timeout=_DEFAULT_TIMEOUT,
         )
         resp.raise_for_status()
@@ -70,6 +80,7 @@ def search(settings: ProwlarrSettings, query: str, categories: list[int] | None 
         categories = [2000, 5000]
 
     try:
+        api_key = secrets_store.decrypt_secret(settings.api_key)
         url = f"{settings.host.rstrip('/')}/api/v1/search"
         params: dict = {'query': query, 'limit': 50}
         if categories:
@@ -79,7 +90,7 @@ def search(settings: ProwlarrSettings, query: str, categories: list[int] | None 
         resp = httpx.get(
             url,
             params=params,
-            headers={'X-Api-Key': settings.api_key},
+            headers={'X-Api-Key': api_key},
             timeout=_DEFAULT_TIMEOUT,
         )
         resp.raise_for_status()
@@ -95,10 +106,11 @@ def search(settings: ProwlarrSettings, query: str, categories: list[int] | None 
 def get_download_clients(settings: ProwlarrSettings) -> list[dict]:
     """Return configured Prowlarr download clients."""
     try:
+        api_key = secrets_store.decrypt_secret(settings.api_key)
         url = f"{settings.host.rstrip('/')}/api/v1/downloadclient"
         resp = httpx.get(
             url,
-            headers={'X-Api-Key': settings.api_key},
+            headers={'X-Api-Key': api_key},
             timeout=_DEFAULT_TIMEOUT,
         )
         resp.raise_for_status()
@@ -138,6 +150,7 @@ def grab(
     Returns the response dict (may contain downloadId/hash) or None on failure.
     """
     try:
+        api_key = secrets_store.decrypt_secret(settings.api_key)
         url = f"{settings.host.rstrip('/')}/api/v1/search"
         payload: dict[str, int | str] = {'guid': guid, 'indexerId': indexer_id}
         if isinstance(download_client_id, int):
@@ -145,7 +158,7 @@ def grab(
         resp = httpx.post(
             url,
             json=payload,
-            headers={'X-Api-Key': settings.api_key},
+            headers={'X-Api-Key': api_key},
             timeout=_DEFAULT_TIMEOUT,
         )
         resp.raise_for_status()

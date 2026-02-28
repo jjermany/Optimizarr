@@ -2,8 +2,10 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   abortAllJobs,
   abortJob,
+  bootstrapAuth,
   cancelAllQueued,
   cancelJob,
+  createTotpSecret,
   clearQueue,
   removeAndResetDownloadJob,
   deleteDownloadJob,
@@ -17,6 +19,7 @@ import {
   fetchDownloadJobs,
   fetchLibraries,
   fetchEncoders,
+  fetchAuthStatus,
   fetchLibraryProfile,
   fetchJobs,
   fetchMetrics,
@@ -27,7 +30,8 @@ import {
   fetchDirs,
   fetchQueueStatus,
   fetchSettings,
-  fetchWsToken,
+  login as loginRequest,
+  logout as logoutRequest,
   pauseJob,
   pauseQueue,
   purgeHistory,
@@ -746,6 +750,21 @@ export default function App() {
   const [fallbackPollingEnabled, setFallbackPollingEnabled] = useState(false);
   const [queuePaused, setQueuePaused] = useState(false);
   const [toasts, setToasts] = useState([]);
+  const [authStatus, setAuthStatus] = useState({ loading: true, setup_required: false, authenticated: false, username: null, two_factor_enabled: false });
+  const [setupForm, setSetupForm] = useState({
+    username: 'admin',
+    password: '',
+    confirmPassword: '',
+    enableTwoFactor: false,
+    totpSecret: '',
+    totpCode: '',
+  });
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupError, setSetupError] = useState(null);
+  const [setupSecretBusy, setSetupSecretBusy] = useState(false);
+  const [loginForm, setLoginForm] = useState({ username: '', password: '', otpCode: '' });
+  const [loginBusy, setLoginBusy] = useState(false);
+  const [loginError, setLoginError] = useState(null);
   const [availableEncodersByCodec, setAvailableEncodersByCodec] = useState({});
   const [jobsPage, setJobsPage] = useState(1);
   const [historyPage, setHistoryPage] = useState(1);
@@ -950,6 +969,106 @@ export default function App() {
     });
   }, [jobs, downloadJobs, libraries, libraryProfiles, nowHour, queuePaused]);
 
+  async function refreshAuthStatus() {
+    try {
+      const statusPayload = await fetchAuthStatus();
+      setAuthStatus({ loading: false, ...statusPayload });
+      if (statusPayload?.authenticated && statusPayload?.username) {
+        setLoginForm((prev) => ({ ...prev, username: statusPayload.username }));
+      }
+      return statusPayload;
+    } catch {
+      setAuthStatus({ loading: false, setup_required: false, authenticated: false, username: null, two_factor_enabled: false });
+      return null;
+    }
+  }
+
+  async function handleGenerateSetupSecret() {
+    const username = setupForm.username.trim();
+    if (!username) {
+      setSetupError('Username is required to generate a 2FA secret.');
+      return;
+    }
+    setSetupSecretBusy(true);
+    setSetupError(null);
+    try {
+      const payload = await createTotpSecret(username);
+      setSetupForm((prev) => ({ ...prev, totpSecret: payload.secret }));
+    } catch (error) {
+      setSetupError(error.message || 'Failed to generate a TOTP secret.');
+    } finally {
+      setSetupSecretBusy(false);
+    }
+  }
+
+  async function handleBootstrapSubmit(event) {
+    event.preventDefault();
+    setSetupError(null);
+
+    if (setupForm.password !== setupForm.confirmPassword) {
+      setSetupError('Passwords do not match.');
+      return;
+    }
+    if (setupForm.password.length < 12) {
+      setSetupError('Password must be at least 12 characters.');
+      return;
+    }
+    if (setupForm.enableTwoFactor && !setupForm.totpSecret.trim()) {
+      setSetupError('Generate a 2FA secret before enabling dual-factor authentication.');
+      return;
+    }
+    if (setupForm.enableTwoFactor && !setupForm.totpCode.trim()) {
+      setSetupError('Enter a 2FA code from your authenticator app.');
+      return;
+    }
+
+    setSetupBusy(true);
+    try {
+      await bootstrapAuth({
+        username: setupForm.username.trim(),
+        password: setupForm.password,
+        enable_two_factor: setupForm.enableTwoFactor,
+        totp_secret: setupForm.enableTwoFactor ? setupForm.totpSecret.trim() : null,
+        totp_code: setupForm.enableTwoFactor ? setupForm.totpCode.trim() : null,
+      });
+      await refreshAuthStatus();
+      setSetupForm((prev) => ({ ...prev, password: '', confirmPassword: '', totpCode: '' }));
+    } catch (error) {
+      setSetupError(error.message || 'Failed to create admin account.');
+    } finally {
+      setSetupBusy(false);
+    }
+  }
+
+  async function handleLoginSubmit(event) {
+    event.preventDefault();
+    setLoginError(null);
+    setLoginBusy(true);
+    try {
+      await loginRequest({
+        username: loginForm.username.trim(),
+        password: loginForm.password,
+        otp_code: loginForm.otpCode.trim() || undefined,
+      });
+      await refreshAuthStatus();
+      setLoginForm((prev) => ({ ...prev, password: '', otpCode: '' }));
+    } catch (error) {
+      setLoginError(error.message || 'Login failed.');
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await logoutRequest();
+    } finally {
+      setAuthStatus({ loading: false, setup_required: false, authenticated: false, username: null, two_factor_enabled: false });
+      setConnectionStatus('offline');
+      setFallbackPollingEnabled(false);
+    }
+  }
+
   async function refreshAll() {
     try {
       const [nextMetrics, nextJobs, nextSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus, nextProwlarrSettings, nextQbtSettings, nextSabSettings, nextDownloadJobs] = await Promise.all([
@@ -981,6 +1100,10 @@ export default function App() {
         fetchPlexLibraries().then((sections) => setPlexLibraries(sections ?? [])).catch(() => {});
       }
     } catch (refreshError) {
+      if (refreshError.status === 401) {
+        await refreshAuthStatus();
+        return;
+      }
       pushToast(refreshError.message || 'Could not refresh data.', 'error');
     }
   }
@@ -1042,17 +1165,15 @@ export default function App() {
     if (resetToFirstPage) setJobsPage(1);
   }
 
-  function wsUrlWithToken(token) {
+  function wsUrlWithToken() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const base = import.meta.env.VITE_API_BASE ?? '';
     if (base) {
       const normalizedBase = base.startsWith('http') ? base : `${window.location.origin}${base}`;
       const url = new URL(`${normalizedBase}${WS_PATH}`);
-      if (token) url.searchParams.set('token', token);
       return url.toString().replace(/^http/, 'ws');
     }
     const url = new URL(`${protocol}//${window.location.host}${WS_PATH}`);
-    if (token) url.searchParams.set('token', token);
     return url.toString();
   }
 
@@ -1064,9 +1185,14 @@ export default function App() {
   }, [settings?.queue_sort]);
 
   useEffect(() => {
+    refreshAuthStatus();
+  }, []);
+
+  useEffect(() => {
+    if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return;
     refreshAll();
     refreshLibrariesAndProfiles();
-  }, []);
+  }, [authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
   useEffect(() => {
     const timer = setInterval(() => setNowHour(new Date().getHours()), 60_000);
@@ -1097,21 +1223,24 @@ export default function App() {
   }, [selectedLibraryId, selectedLibraryProfile]);
 
   useEffect(() => {
+    if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
     if (!fallbackPollingEnabled) return undefined;
     const timer = setInterval(refreshAll, FALLBACK_POLL_MS);
     return () => clearInterval(timer);
-  }, [fallbackPollingEnabled]);
+  }, [fallbackPollingEnabled, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
   // When jobs are actively processing, poll every 5 s so status changes
   // (e.g. queued → running) are visible quickly even if a WebSocket update
   // is missed or the connection is still establishing.
   useEffect(() => {
+    if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
     if (activeJobs.length === 0) return undefined;
     const timer = setInterval(refreshAll, 5000);
     return () => clearInterval(timer);
-  }, [activeJobs.length]);
+  }, [activeJobs.length, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
   useEffect(() => {
+    if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
     const timer = setInterval(async () => {
       try {
         const nextMetrics = await fetchMetrics();
@@ -1122,7 +1251,7 @@ export default function App() {
     }, METRICS_POLL_MS);
 
     return () => clearInterval(timer);
-  }, []);
+  }, [authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
   useEffect(() => {
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
@@ -1130,6 +1259,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
     intentionallyClosedRef.current = false;
 
     function clearTimers() {
@@ -1155,8 +1285,7 @@ export default function App() {
 
     async function connectWebSocket() {
       try {
-        const tokenResponse = await fetchWsToken();
-        const websocket = new WebSocket(wsUrlWithToken(tokenResponse?.token));
+        const websocket = new WebSocket(wsUrlWithToken());
         wsRef.current = websocket;
 
         websocket.onopen = () => {
@@ -1231,7 +1360,7 @@ export default function App() {
       toastTimersRef.current = {};
       if (wsRef.current) { wsRef.current.close(); wsRef.current = undefined; }
     };
-  }, []);
+  }, [authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
   async function handleJobAction(action, jobId) {
     try {
@@ -1660,6 +1789,129 @@ export default function App() {
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
+  if (authStatus.loading) {
+    return (
+      <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
+        <div className="mx-auto flex min-h-[70vh] max-w-md items-center justify-center">
+          <SectionCard className="w-full">
+            <SectionTitle>Loading</SectionTitle>
+            <p className="text-sm text-slate-300">Checking authentication status…</p>
+          </SectionCard>
+        </div>
+      </main>
+    );
+  }
+
+  if (authStatus.setup_required) {
+    return (
+      <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
+        <div className="mx-auto flex min-h-[70vh] max-w-lg items-center justify-center">
+          <SectionCard className="w-full space-y-4">
+            <SectionTitle>Initial Admin Setup</SectionTitle>
+            <p className="text-sm text-slate-300">Create the first admin account to secure Optimizarr. Dual-factor authentication is optional and can be skipped.</p>
+            <form className="space-y-3" onSubmit={handleBootstrapSubmit}>
+              <FormField label="Admin Username">
+                <TextInput
+                  value={setupForm.username}
+                  onChange={(event) => setSetupForm((prev) => ({ ...prev, username: event.target.value }))}
+                  autoComplete="username"
+                />
+              </FormField>
+              <FormField label="Password" hint="Minimum 12 characters.">
+                <TextInput
+                  type="password"
+                  value={setupForm.password}
+                  onChange={(event) => setSetupForm((prev) => ({ ...prev, password: event.target.value }))}
+                  autoComplete="new-password"
+                />
+              </FormField>
+              <FormField label="Confirm Password">
+                <TextInput
+                  type="password"
+                  value={setupForm.confirmPassword}
+                  onChange={(event) => setSetupForm((prev) => ({ ...prev, confirmPassword: event.target.value }))}
+                  autoComplete="new-password"
+                />
+              </FormField>
+              <label className="flex items-center gap-2 text-sm text-slate-200">
+                <input
+                  type="checkbox"
+                  checked={setupForm.enableTwoFactor}
+                  onChange={(event) => setSetupForm((prev) => ({ ...prev, enableTwoFactor: event.target.checked }))}
+                />
+                Enable dual-factor authentication (TOTP)
+              </label>
+              {setupForm.enableTwoFactor && (
+                <div className="space-y-3 rounded-xl border border-slate-700/80 bg-slate-950/50 p-3">
+                  <Btn variant="secondary" onClick={handleGenerateSetupSecret} disabled={setupSecretBusy} type="button">
+                    {setupSecretBusy ? 'Generating…' : 'Generate 2FA Secret'}
+                  </Btn>
+                  <FormField label="TOTP Secret" hint="Add this secret in your authenticator app.">
+                    <TextInput
+                      value={setupForm.totpSecret}
+                      onChange={(event) => setSetupForm((prev) => ({ ...prev, totpSecret: event.target.value }))}
+                    />
+                  </FormField>
+                  <FormField label="Current 2FA Code" hint="Enter the 6-digit code from your authenticator app.">
+                    <TextInput
+                      value={setupForm.totpCode}
+                      onChange={(event) => setSetupForm((prev) => ({ ...prev, totpCode: event.target.value }))}
+                      inputMode="numeric"
+                    />
+                  </FormField>
+                </div>
+              )}
+              {setupError && <p className="text-sm text-red-400">{setupError}</p>}
+              <Btn variant="primary" size="lg" className="w-full" disabled={setupBusy} type="submit">
+                {setupBusy ? 'Creating Admin…' : 'Create Admin Account'}
+              </Btn>
+            </form>
+          </SectionCard>
+        </div>
+      </main>
+    );
+  }
+
+  if (!authStatus.authenticated) {
+    return (
+      <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
+        <div className="mx-auto flex min-h-[70vh] max-w-md items-center justify-center">
+          <SectionCard className="w-full space-y-4">
+            <SectionTitle>Login</SectionTitle>
+            <form className="space-y-3" onSubmit={handleLoginSubmit}>
+              <FormField label="Username">
+                <TextInput
+                  value={loginForm.username}
+                  onChange={(event) => setLoginForm((prev) => ({ ...prev, username: event.target.value }))}
+                  autoComplete="username"
+                />
+              </FormField>
+              <FormField label="Password">
+                <TextInput
+                  type="password"
+                  value={loginForm.password}
+                  onChange={(event) => setLoginForm((prev) => ({ ...prev, password: event.target.value }))}
+                  autoComplete="current-password"
+                />
+              </FormField>
+              <FormField label="2FA Code (if enabled)">
+                <TextInput
+                  value={loginForm.otpCode}
+                  onChange={(event) => setLoginForm((prev) => ({ ...prev, otpCode: event.target.value }))}
+                  inputMode="numeric"
+                />
+              </FormField>
+              {loginError && <p className="text-sm text-red-400">{loginError}</p>}
+              <Btn variant="primary" size="lg" className="w-full" disabled={loginBusy} type="submit">
+                {loginBusy ? 'Signing In…' : 'Sign In'}
+              </Btn>
+            </form>
+          </SectionCard>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
       <div className="mx-auto max-w-7xl space-y-5">
@@ -1679,12 +1931,18 @@ export default function App() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <StatusDot status={connectionStatus} />
+              <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-300">
+                {authStatus.username}
+              </span>
               <span aria-label={`Queue items: ${queueCount}`} className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-300">
                 Queue {queueCount}
               </span>
               <span aria-label={`Active jobs: ${metrics?.active_jobs ?? 0}`} className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-300">
                 Active {metrics?.active_jobs ?? 0}
               </span>
+              <Btn variant="secondary" size="sm" onClick={handleLogout}>
+                Logout
+              </Btn>
             </div>
           </div>
           <nav className="relative mt-3 flex gap-1 rounded-xl border border-slate-700/70 bg-slate-950/60 p-1">

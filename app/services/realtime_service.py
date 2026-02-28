@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from hashlib import sha256
 import json
-import os
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
 import time
@@ -118,27 +116,6 @@ class RealtimeBroker:
 
 
 broker = RealtimeBroker()
-
-
-def basic_auth_enabled() -> bool:
-    username = os.getenv('OPTIMIZARR_UI_USERNAME')
-    password = os.getenv('OPTIMIZARR_UI_PASSWORD')
-    return bool(username or password)
-
-
-def expected_ws_token() -> str | None:
-    if not basic_auth_enabled():
-        return None
-
-    explicit_token = os.getenv('OPTIMIZARR_WS_TOKEN')
-    if explicit_token:
-        return explicit_token
-
-    username = os.getenv('OPTIMIZARR_UI_USERNAME', '')
-    password = os.getenv('OPTIMIZARR_UI_PASSWORD', '')
-    return sha256(f'{username}:{password}'.encode('utf-8')).hexdigest()
-
-
 async def next_message(subscription: Subscription, timeout_seconds: float = 15.0) -> dict[str, Any] | None:
     try:
         return await asyncio.to_thread(subscription.queue.get, True, timeout_seconds)

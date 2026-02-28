@@ -21,6 +21,6 @@
   <Config Name="Web UI Port" Target="8080" Default="8080" Mode="tcp" Description="Port the web UI is accessible on." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
   <Config Name="VA-API Driver" Target="LIBVA_DRIVER_NAME" Default="iHD" Mode="" Description="VA-API driver name. Use iHD for Intel Gen 8+ / Arc (recommended) or i965 for older hardware." Type="Variable" Display="always" Required="false" Mask="false">iHD</Config>
   <Config Name="QSV Device" Target="QSV_DEVICE" Default="/dev/dri/renderD128" Mode="" Description="Path to the Intel render device used for QSV hardware encoding." Type="Variable" Display="always" Required="false" Mask="false">/dev/dri/renderD128</Config>
-  <Config Name="UI Username" Target="OPTIMIZARR_UI_USERNAME" Default="" Mode="" Description="Optional: username for basic auth on the web UI. Leave blank to disable auth." Type="Variable" Display="always" Required="false" Mask="false"></Config>
-  <Config Name="UI Password" Target="OPTIMIZARR_UI_PASSWORD" Default="" Mode="" Description="Optional: password for basic auth on the web UI. Leave blank to disable auth." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="Session Cookie Secure" Target="OPTIMIZARR_SESSION_COOKIE_SECURE" Default="auto" Mode="" Description="Cookie Secure policy: auto, true, or false." Type="Variable" Display="advanced" Required="false" Mask="false">auto</Config>
+  <Config Name="Secrets Key Path" Target="OPTIMIZARR_SECRETS_KEY_PATH" Default="/config/optimizarr.secrets.key" Mode="" Description="Path to persisted encryption key for secrets at rest." Type="Variable" Display="advanced" Required="false" Mask="false">/config/optimizarr.secrets.key</Config>
 </Container>

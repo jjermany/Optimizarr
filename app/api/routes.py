@@ -1,15 +1,17 @@
 import os
 from datetime import timezone
 from pathlib import Path
+from threading import Lock
+import time
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
+from app.models.auth import AdminUser
 from app.models.library import (
     AudioModeEnum,
     BitrateModeEnum,
@@ -29,7 +31,7 @@ from app.models.qbittorrent_settings import QBittorrentSettings
 from app.models.sabnzbd_settings import SabnzbdSettings
 from app.models.settings import DiscoveryMethodEnum, QueueSortEnum, Settings
 
-from app.services import download_client_service, notification_service, plex_service, prowlarr_service
+from app.services import auth_service, download_client_service, notification_service, plex_service, prowlarr_service
 from app.services.job_service import (
     abort_all_jobs,
     abort_job,
@@ -57,7 +59,7 @@ from app.services.monitoring_service import (
     _intel_gpu_top_raw,
     get_system_metrics,
 )
-from app.services.realtime_service import broker, expected_ws_token, next_message
+from app.services.realtime_service import broker, next_message
 from app.services.discovery_service import scan_enabled_libraries, scan_library
 from app.services.recovery_service import requeue_interrupted_job, run_startup_recovery, run_workspace_cleanup
 from app.workers import queue as worker_queue
@@ -69,40 +71,177 @@ BRANDING_ROOTS = (
     Path(__file__).resolve().parents[2] / 'media' / 'Logo',
 )
 APP_VERSION = os.getenv('OPTIMIZARR_VERSION', '0.1.0')
-security = HTTPBasic(auto_error=False)
+CSRF_COOKIE_NAME = 'optimizarr_csrf'
+CSRF_HEADER_NAME = 'x-csrf-token'
+SETUP_ALLOWED_PATHS = {
+    '/health',
+    '/version',
+    '/favicon.ico',
+    '/auth/status',
+    '/auth/bootstrap',
+    '/auth/totp/secret',
+}
+SETUP_ALLOWED_PREFIXES = ('/branding/',)
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = 5 * 60
+LOGIN_RATE_LIMIT_MAX_ATTEMPTS = 5
+_login_attempts_by_key: dict[str, list[float]] = {}
+_login_attempts_lock = Lock()
 
 
-def require_ui_auth(credentials: HTTPBasicCredentials | None = Depends(security)) -> None:
-    username = os.getenv('OPTIMIZARR_UI_USERNAME')
-    password = os.getenv('OPTIMIZARR_UI_PASSWORD')
-
-    if not username and not password:
-        return
-
-    if credentials is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Authentication required',
-            headers={'WWW-Authenticate': 'Basic'},
-        )
-
-    username_ok = secrets.compare_digest(credentials.username, username or '')
-    password_ok = secrets.compare_digest(credentials.password, password or '')
-    if not (username_ok and password_ok):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail='Invalid credentials',
-            headers={'WWW-Authenticate': 'Basic'},
-        )
+def _is_test_runtime() -> bool:
+    return 'PYTEST_CURRENT_TEST' in os.environ
 
 
-def _ws_token_or_unauthorized(token: str | None) -> None:
-    required_token = expected_ws_token()
-    if required_token is None:
-        return
+def _normalize_api_path(path: str) -> str:
+    if path == '/api':
+        return '/'
+    if path.startswith('/api/'):
+        return path[4:]
+    return path
 
-    if not token or not secrets.compare_digest(token, required_token):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid websocket token')
+
+def _setup_mode_path_allowed(path: str) -> bool:
+    normalized = _normalize_api_path(path)
+    if normalized in SETUP_ALLOWED_PATHS:
+        return True
+    return any(normalized.startswith(prefix) for prefix in SETUP_ALLOWED_PREFIXES)
+
+
+def _csrf_required(request: Request) -> bool:
+    if request.method.upper() not in {'POST', 'PUT', 'PATCH', 'DELETE'}:
+        return False
+    normalized = _normalize_api_path(request.url.path)
+    if normalized in {'/auth/login', '/auth/bootstrap'}:
+        return False
+    return True
+
+
+def _session_cookie_secure(request: Request) -> bool:
+    policy = (os.getenv('OPTIMIZARR_SESSION_COOKIE_SECURE', 'auto') or 'auto').strip().lower()
+    if policy in {'1', 'true', 'yes', 'on'}:
+        return True
+    if policy in {'0', 'false', 'no', 'off'}:
+        return False
+    return request.url.scheme == 'https'
+
+
+def _set_session_cookie(response: Response, token: str, request: Request) -> None:
+    response.set_cookie(
+        key=auth_service.SESSION_COOKIE_NAME,
+        value=token,
+        httponly=True,
+        samesite='lax',
+        secure=_session_cookie_secure(request),
+        max_age=auth_service.SESSION_MAX_AGE_SECONDS,
+        path='/',
+    )
+
+
+def _clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(auth_service.SESSION_COOKIE_NAME, path='/', httponly=True, samesite='lax')
+    response.delete_cookie(CSRF_COOKIE_NAME, path='/', httponly=False, samesite='lax')
+
+
+def _csrf_cookie_secure(request: Request) -> bool:
+    policy = (os.getenv('OPTIMIZARR_SESSION_COOKIE_SECURE', 'auto') or 'auto').strip().lower()
+    if policy in {'1', 'true', 'yes', 'on'}:
+        return True
+    if policy in {'0', 'false', 'no', 'off'}:
+        return False
+    return request.url.scheme == 'https'
+
+
+def _set_csrf_cookie_for_request(response: Response, request: Request) -> str:
+    token = secrets.token_urlsafe(32)
+    response.set_cookie(
+        key=CSRF_COOKIE_NAME,
+        value=token,
+        httponly=False,
+        samesite='lax',
+        secure=_csrf_cookie_secure(request),
+        max_age=auth_service.SESSION_MAX_AGE_SECONDS,
+        path='/',
+    )
+    return token
+
+
+def _session_user_from_request(db: Session, request: Request) -> AdminUser | None:
+    token = request.cookies.get(auth_service.SESSION_COOKIE_NAME)
+    return auth_service.get_user_from_session_token(db, token)
+
+
+def require_ui_auth(request: Request, db: Session = Depends(get_db)) -> AdminUser | None:
+    if not auth_service.has_admin_user(db):
+        if _is_test_runtime():
+            return None
+        if not _setup_mode_path_allowed(request.url.path):
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Admin setup required')
+        return None
+
+    user = _session_user_from_request(db, request)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Authentication required')
+
+    if _csrf_required(request):
+        cookie_token = request.cookies.get(CSRF_COOKIE_NAME) or ''
+        header_token = request.headers.get(CSRF_HEADER_NAME, '') or ''
+        if not cookie_token or not header_token or not secrets.compare_digest(cookie_token, header_token):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='CSRF validation failed')
+    return user
+
+
+def _ws_user_or_unauthorized(websocket: WebSocket) -> None:
+    with SessionLocal() as db:
+        if not auth_service.has_admin_user(db):
+            if _is_test_runtime():
+                return
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail='Admin setup required')
+        token = websocket.cookies.get(auth_service.SESSION_COOKIE_NAME)
+        user = auth_service.get_user_from_session_token(db, token)
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Authentication required')
+
+
+def _login_rate_limit_key(request: Request, username: str) -> str:
+    client_host = request.client.host if request.client else 'unknown'
+    return f'{client_host}:{auth_service.normalize_username(username).lower()}'
+
+
+def _prune_login_attempts(now_monotonic: float) -> None:
+    threshold = now_monotonic - LOGIN_RATE_LIMIT_WINDOW_SECONDS
+    to_delete: list[str] = []
+    for key, attempts in _login_attempts_by_key.items():
+        kept = [ts for ts in attempts if ts >= threshold]
+        if kept:
+            _login_attempts_by_key[key] = kept
+        else:
+            to_delete.append(key)
+    for key in to_delete:
+        _login_attempts_by_key.pop(key, None)
+
+
+def _record_failed_login_attempt(key: str) -> None:
+    now_mono = time.monotonic()
+    with _login_attempts_lock:
+        _prune_login_attempts(now_mono)
+        _login_attempts_by_key.setdefault(key, []).append(now_mono)
+
+
+def _clear_login_attempts(key: str) -> None:
+    with _login_attempts_lock:
+        _login_attempts_by_key.pop(key, None)
+
+
+def _login_retry_after_seconds(key: str) -> int | None:
+    now_mono = time.monotonic()
+    with _login_attempts_lock:
+        _prune_login_attempts(now_mono)
+        attempts = _login_attempts_by_key.get(key, [])
+        if len(attempts) < LOGIN_RATE_LIMIT_MAX_ATTEMPTS:
+            return None
+        oldest_relevant = attempts[-LOGIN_RATE_LIMIT_MAX_ATTEMPTS]
+        retry_after = int((oldest_relevant + LOGIN_RATE_LIMIT_WINDOW_SECONDS) - now_mono)
+        return max(retry_after, 1)
 
 
 @router.get('/branding/{asset_name}')
@@ -128,6 +267,160 @@ def get_branding_asset(asset_name: str) -> FileResponse:
 @router.get('/favicon.ico', include_in_schema=False)
 def get_favicon() -> FileResponse:
     return get_branding_asset('icon')
+
+
+class AuthStatusResponse(BaseModel):
+    setup_required: bool
+    authenticated: bool
+    username: str | None = None
+    two_factor_enabled: bool | None = None
+
+
+class AuthUserResponse(BaseModel):
+    username: str
+    two_factor_enabled: bool
+
+
+class TotpSecretRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+
+
+class TotpSecretResponse(BaseModel):
+    secret: str
+    otpauth_url: str
+
+
+class AuthBootstrapRequest(BaseModel):
+    username: str = Field(..., min_length=3)
+    password: str = Field(..., min_length=12)
+    enable_two_factor: bool = False
+    totp_secret: str | None = None
+    totp_code: str | None = None
+
+
+class AuthLoginRequest(BaseModel):
+    username: str = Field(..., min_length=1)
+    password: str = Field(..., min_length=1)
+    otp_code: str | None = None
+
+
+@router.get('/auth/status', response_model=AuthStatusResponse)
+def auth_status(request: Request, db: Session = Depends(get_db)) -> AuthStatusResponse:
+    setup_required = not auth_service.has_admin_user(db)
+    if setup_required:
+        return AuthStatusResponse(setup_required=True, authenticated=False)
+
+    user = _session_user_from_request(db, request)
+    if user is None:
+        return AuthStatusResponse(setup_required=False, authenticated=False)
+    return AuthStatusResponse(
+        setup_required=False,
+        authenticated=True,
+        username=user.username,
+        two_factor_enabled=user.two_factor_enabled,
+    )
+
+
+@router.post('/auth/totp/secret', response_model=TotpSecretResponse)
+def create_totp_secret(
+    payload: TotpSecretRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> TotpSecretResponse:
+    # Setup mode can generate secrets before the admin user exists.
+    if auth_service.has_admin_user(db) and _session_user_from_request(db, request) is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Authentication required')
+
+    username = auth_service.normalize_username(payload.username)
+    secret = auth_service.generate_totp_secret()
+    return TotpSecretResponse(
+        secret=secret,
+        otpauth_url=auth_service.totp_provisioning_uri(secret, username),
+    )
+
+
+@router.post('/auth/bootstrap', response_model=AuthUserResponse, status_code=201)
+def bootstrap_auth(
+    payload: AuthBootstrapRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> AuthUserResponse:
+    if auth_service.has_admin_user(db):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Admin user already configured')
+
+    try:
+        if payload.enable_two_factor:
+            if not payload.totp_secret:
+                raise ValueError('TOTP secret is required when two-factor authentication is enabled')
+            if not payload.totp_code or not auth_service.verify_totp_code(payload.totp_secret, payload.totp_code):
+                raise ValueError('Invalid two-factor code')
+
+        user = auth_service.create_admin_user(
+            db,
+            username=payload.username,
+            password=payload.password,
+            two_factor_enabled=payload.enable_two_factor,
+            totp_secret=payload.totp_secret,
+        )
+        token, _session = auth_service.create_session(db, user)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    _set_session_cookie(response, token, request)
+    _set_csrf_cookie_for_request(response, request)
+    return AuthUserResponse(username=user.username, two_factor_enabled=user.two_factor_enabled)
+
+
+@router.post('/auth/login', response_model=AuthUserResponse)
+def login(
+    payload: AuthLoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> AuthUserResponse:
+    if not auth_service.has_admin_user(db):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Admin setup required')
+
+    rate_key = _login_rate_limit_key(request, payload.username)
+    retry_after = _login_retry_after_seconds(rate_key)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Too many login attempts. Try again later.',
+            headers={'Retry-After': str(retry_after)},
+        )
+
+    user = auth_service.get_user_by_username(db, payload.username)
+    if not user or not auth_service.verify_password(payload.password, user.password_hash):
+        _record_failed_login_attempt(rate_key)
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid credentials')
+
+    if user.two_factor_enabled:
+        if not payload.otp_code:
+            _record_failed_login_attempt(rate_key)
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Two-factor code required')
+        if not user.totp_secret or not auth_service.verify_totp_code(user.totp_secret, payload.otp_code):
+            _record_failed_login_attempt(rate_key)
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid two-factor code')
+
+    _clear_login_attempts(rate_key)
+    token, _session = auth_service.create_session(db, user)
+    _set_session_cookie(response, token, request)
+    _set_csrf_cookie_for_request(response, request)
+    return AuthUserResponse(username=user.username, two_factor_enabled=user.two_factor_enabled)
+
+
+@router.post('/auth/logout')
+def logout(
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    token = request.cookies.get(auth_service.SESSION_COOKIE_NAME)
+    auth_service.revoke_session(db, token)
+    _clear_session_cookie(response)
+    return {'status': 'ok'}
 
 
 class JobCreateRequest(BaseModel):
@@ -1526,16 +1819,15 @@ def resume_download_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict:
 
 @router.get('/auth/ws-token')
 def get_ws_token(_: None = Depends(require_ui_auth)) -> dict[str, str]:
-    token = expected_ws_token()
-    if token is None:
-        raise HTTPException(status_code=404, detail='WebSocket token not required')
-    return {'token': token}
+    # Backwards-compatible endpoint for older frontends; websocket auth now uses
+    # the same session cookie as the REST API.
+    raise HTTPException(status_code=404, detail='WebSocket token not required')
 
 
 @router.websocket('/ws')
 async def websocket_events(websocket: WebSocket) -> None:
     try:
-        _ws_token_or_unauthorized(websocket.query_params.get('token'))
+        _ws_user_or_unauthorized(websocket)
     except HTTPException:
         await websocket.close(code=1008)
         return
