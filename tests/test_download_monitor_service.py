@@ -15,6 +15,7 @@ from app.services.download_monitor_service import (
     _import_file,
     _process_searching_jobs,
     _release_matches_source_title,
+    _release_title_matches_profile,
     _select_best_release,
     download_job_exists_for_source,
     run_download_startup_recovery,
@@ -28,12 +29,14 @@ def _profile(
     *,
     tone_map_hdr: bool = False,
     hdr_only: bool = False,
+    codec: str = 'hevc',
 ):
     return SimpleNamespace(
         target_resolution=1080,
         download_quality_profile=quality.value,
         tone_map_hdr=tone_map_hdr,
         hdr_only=hdr_only,
+        codec=codec,
     )
 
 
@@ -384,7 +387,7 @@ def test_select_best_release_rejects_sing_along_variant():
 
     selected = _select_best_release(
         releases,
-        _profile(DownloadQualityProfileEnum.web_dl),
+        _profile(DownloadQualityProfileEnum.web_dl, codec='av1'),
         qbt_enabled=True,
         sab_enabled=True,
     )
@@ -411,7 +414,7 @@ def test_select_best_release_allows_sing_along_variant_when_source_title_matches
 
     selected = _select_best_release(
         releases,
-        _profile(DownloadQualityProfileEnum.web_dl),
+        _profile(DownloadQualityProfileEnum.web_dl, codec='av1'),
         qbt_enabled=True,
         sab_enabled=True,
         source_path='/media/Wicked Sing Along Version (2024).mkv',
@@ -439,7 +442,7 @@ def test_select_best_release_rejects_directors_cut_variant_when_source_does_not_
 
     selected = _select_best_release(
         releases,
-        _profile(DownloadQualityProfileEnum.bluray),
+        _profile(DownloadQualityProfileEnum.bluray, codec='h264'),
         qbt_enabled=True,
         sab_enabled=True,
         source_path='/media/Blade Runner (1982).mkv',
@@ -467,7 +470,7 @@ def test_select_best_release_allows_directors_cut_variant_when_source_matches():
 
     selected = _select_best_release(
         releases,
-        _profile(DownloadQualityProfileEnum.bluray),
+        _profile(DownloadQualityProfileEnum.bluray, codec='h264'),
         qbt_enabled=True,
         sab_enabled=True,
         source_path='/media/Blade Runner Directors Cut (1982).mkv',
@@ -475,6 +478,86 @@ def test_select_best_release_allows_directors_cut_variant_when_source_matches():
 
     assert selected is not None
     assert selected['title'] == 'Blade.Runner.1982.Directors.Cut.1080p.BluRay.x264-GROUP'
+
+
+def test_select_best_release_filters_av1_when_profile_codec_is_hevc():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.AV1-GROUP',
+            'seeders': 1000,
+            'size': 1200,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-GROUP',
+            'seeders': 25,
+            'size': 1300,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl, codec='hevc'),
+        qbt_enabled=True,
+        sab_enabled=True,
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-GROUP'
+
+
+def test_select_best_release_allows_av1_when_profile_codec_is_av1():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.AV1-GROUP',
+            'seeders': 500,
+            'size': 1200,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-GROUP',
+            'seeders': 200,
+            'size': 1300,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl, codec='av1'),
+        qbt_enabled=True,
+        sab_enabled=True,
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.AV1-GROUP'
+
+
+def test_select_best_release_keeps_unknown_codec_titles_eligible():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL-GROUP',
+            'seeders': 100,
+            'size': 1400,
+            'protocol': 'torrent',
+        }
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl, codec='hevc'),
+        qbt_enabled=True,
+        sab_enabled=True,
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL-GROUP'
+
+
+def test_release_title_matches_profile_rejects_av1_when_codec_is_hevc():
+    profile = _profile(DownloadQualityProfileEnum.web_dl, codec='hevc')
+    assert _release_title_matches_profile('Movie.2024.1080p.WEB-DL.AV1-GROUP', profile) is False
 
 
 def test_release_matches_source_title_rejects_explicit_year_mismatch():
@@ -2095,7 +2178,7 @@ def test_do_search_rejects_unrelated_episode_title_for_single_word_movie(monkeyp
                 'indexerId': 1,
             },
             {
-                'title': 'Wicked.2024.1080p.WEB-DL.DDP5.1.H264',
+                'title': 'Wicked.2024.1080p.WEB-DL.DDP5.1.x265',
                 'seeders': 10,
                 'size': 2200,
                 'protocol': 'usenet',
@@ -2117,7 +2200,7 @@ def test_do_search_rejects_unrelated_episode_title_for_single_word_movie(monkeyp
         db.refresh(dj)
 
         assert grabbed == ['good-movie-guid']
-        assert dj.release_name == 'Wicked.2024.1080p.WEB-DL.DDP5.1.H264'
+        assert dj.release_name == 'Wicked.2024.1080p.WEB-DL.DDP5.1.x265'
 
 
 def test_import_file_sab_removes_source_video_from_completed_directory(monkeypatch, tmp_path):

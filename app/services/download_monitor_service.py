@@ -805,6 +805,49 @@ def _release_matches_target_resolution(release: dict, target_resolution: int) ->
     return False
 
 
+def _profile_codec_value(profile: LibraryProfile) -> str:
+    raw = getattr(profile, 'codec', 'hevc')
+    value = getattr(raw, 'value', raw)
+    return str(value or 'hevc').strip().lower()
+
+
+def _detect_release_codecs(release: dict) -> set[str]:
+    """
+    Best-effort codec detection from release metadata/title.
+    Returns an empty set when no codec token is detectable.
+    """
+    candidates: list[str] = [str(release.get('title', '') or '')]
+    for key in ('codec', 'videoCodec'):
+        value = release.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+        elif isinstance(value, dict):
+            for nested_key in ('name', 'codec', 'videoCodec'):
+                nested = value.get(nested_key)
+                if isinstance(nested, str):
+                    candidates.append(nested)
+    for key in ('quality', 'qualityName', 'source'):
+        value = release.get(key)
+        if isinstance(value, str):
+            candidates.append(value)
+        elif isinstance(value, dict):
+            for nested_key in ('name', 'quality', 'source'):
+                nested = value.get(nested_key)
+                if isinstance(nested, str):
+                    candidates.append(nested)
+
+    detected: set[str] = set()
+    for text in candidates:
+        normalized = _normalize_release_title(text)
+        if re.search(r'\b(av1|av01|svtav1)\b', normalized):
+            detected.add('av1')
+        if re.search(r'\b(hevc|x265)\b|\bh\s*265\b', normalized):
+            detected.add('hevc')
+        if re.search(r'\b(h264|x264|avc)\b|\bh\s*264\b', normalized):
+            detected.add('h264')
+    return detected
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Search query construction
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1005,6 +1048,8 @@ def _select_best_release(
     filtered_by_quality = 0
     filtered_by_client = 0
     filtered_by_variant = 0
+    filtered_by_codec = 0
+    target_codec = _profile_codec_value(profile)
 
     for r in releases:
         title = r.get('title', '')
@@ -1026,6 +1071,13 @@ def _select_best_release(
 
         if _is_unwanted_variant_release(title, source_path):
             filtered_by_variant += 1
+            continue
+
+        # Codec filter: if codec is detectable and doesn't match the library
+        # target codec, skip this release (e.g. AV1 when profile is HEVC).
+        detected_codecs = _detect_release_codecs(r)
+        if detected_codecs and target_codec not in detected_codecs:
+            filtered_by_codec += 1
             continue
 
         # Quality source filter
@@ -1076,7 +1128,7 @@ def _select_best_release(
     logger.info(
         'Download filtering produced no candidates: total=%d filtered_resolution=%d '
         'filtered_tone_map_hdr=%d filtered_hdr_only=%d filtered_quality=%d '
-        'filtered_variant=%d '
+        'filtered_variant=%d filtered_codec=%d '
         'filtered_client=%d profile={target_resolution=%s quality=%s hdr_only=%s tone_map_hdr=%s} '
         'clients={qbt=%s sab=%s}',
         len(releases),
@@ -1085,6 +1137,7 @@ def _select_best_release(
         filtered_by_hdr_only,
         filtered_by_quality,
         filtered_by_variant,
+        filtered_by_codec,
         filtered_by_client,
         getattr(profile, 'target_resolution', None),
         quality_val,
@@ -2354,6 +2407,11 @@ def _release_title_matches_profile(title: str, profile: LibraryProfile) -> bool:
             return False
         if tone_map_hdr and _is_hdr_release(title_lower):
             return False
+
+    target_codec = _profile_codec_value(profile)
+    detected_codecs = _detect_release_codecs(release)
+    if detected_codecs and target_codec not in detected_codecs:
+        return False
 
     quality_val = _quality_profile_value(profile)
     if quality_val == DownloadQualityProfileEnum.any.value:
