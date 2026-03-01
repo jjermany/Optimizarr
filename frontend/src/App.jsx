@@ -1407,9 +1407,12 @@ export default function App() {
     try {
       const nextLibraries = await fetchLibraries();
       setLibraries(nextLibraries);
-      if (!selectedLibraryId && nextLibraries.length > 0) {
-        setSelectedLibraryId(nextLibraries[0].id);
-      }
+      setSelectedLibraryId((prevSelectedLibraryId) => {
+        if (nextLibraries.length === 0) return null;
+        if (prevSelectedLibraryId == null) return nextLibraries[0].id;
+        const stillExists = nextLibraries.some((library) => library.id === prevSelectedLibraryId);
+        return stillExists ? prevSelectedLibraryId : nextLibraries[0].id;
+      });
       const profileEntries = await Promise.all(
         nextLibraries.map(async (library) => {
           const profile = await fetchLibraryProfile(library.id);
@@ -1508,9 +1511,14 @@ export default function App() {
       preferred_video_encoder: 'auto',
       hdr_only: true,
       tone_map_hdr: false,
+      bitrate_mode: 'vbr_crf',
+      crf: 23,
       minimum_source_resolution: 2160,
       ...selectedLibraryProfile,
     };
+    if (nextDraft.bitrate_mode === 'vbr_crf' && !Number.isInteger(nextDraft.crf)) {
+      nextDraft.crf = 23;
+    }
     setProfileDraft(nextDraft);
     setTargetResolutionCustom(!TARGET_RESOLUTION_PRESETS.includes(Number(nextDraft.target_resolution)));
     setMinimumResolutionCustom(!MIN_SOURCE_RESOLUTION_PRESETS.includes(Number(nextDraft.minimum_source_resolution)));
@@ -2824,7 +2832,16 @@ export default function App() {
                       <p className="mb-3 text-xs text-slate-500">CRF targets visual quality. CBR targets a fixed bitrate.</p>
                       <div className="flex gap-5 text-sm">
                         <label className="flex cursor-pointer items-center gap-2">
-                          <input type="radio" name="bitrate-mode" checked={profileDraft.bitrate_mode === 'vbr_crf'} onChange={() => setProfileDraft((prev) => ({ ...prev, bitrate_mode: 'vbr_crf' }))} />
+                          <input
+                            type="radio"
+                            name="bitrate-mode"
+                            checked={profileDraft.bitrate_mode === 'vbr_crf'}
+                            onChange={() => setProfileDraft((prev) => ({
+                              ...prev,
+                              bitrate_mode: 'vbr_crf',
+                              crf: Number.isInteger(prev.crf) ? prev.crf : 23,
+                            }))}
+                          />
                           <span className="text-slate-200">CRF (quality target)</span>
                         </label>
                         <label className="flex cursor-pointer items-center gap-2">
@@ -2838,7 +2855,7 @@ export default function App() {
                     {profileDraft.bitrate_mode === 'vbr_crf' && (
                       <FormField label={`CRF (${profileDraft.crf ?? 23})`} hint="Range 18–30. Lower = better quality / larger files." error={profileErrors.crf} span2>
                         <input type="range" min={1} max={40} value={profileDraft.crf ?? 23} onChange={(e) => setProfileDraft((prev) => ({ ...prev, crf: Number(e.target.value) }))} className="w-full" />
-                        <TextInput type="number" min={1} value={profileDraft.crf ?? ''} onChange={(e) => setProfileDraft((prev) => ({ ...prev, crf: Number(e.target.value) }))} className="mt-2" />
+                        <TextInput type="number" min={1} value={profileDraft.crf ?? 23} onChange={(e) => setProfileDraft((prev) => ({ ...prev, crf: Number(e.target.value) }))} className="mt-2" />
                       </FormField>
                     )}
 
