@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from email.message import EmailMessage
 from html import escape
 import logging
@@ -15,9 +16,11 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.core import secrets_store
+from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import Library
 from app.models.notification_settings import NotificationSettings
+from app.services.realtime_service import broker
 
 logger = logging.getLogger(__name__)
 
@@ -413,9 +416,88 @@ def register_scan_batch(job_ids: list[int], library_name: str | None = None) -> 
         _batches.append(BatchTracker(pending_ids=set(job_ids), library_name=library_name))
 
 
+def _download_job_payload(dj: DownloadJob) -> dict:
+    def _iso_utc(value: datetime | None) -> str | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC).isoformat()
+        return value.astimezone(UTC).isoformat()
+
+    return {
+        'id': dj.id,
+        'library_id': dj.library_id,
+        'source_file_path': dj.source_file_path,
+        'search_query': dj.search_query,
+        'release_name': dj.release_name,
+        'indexer_id': dj.indexer_id,
+        'indexer_name': dj.indexer_name,
+        'selected_release_key': dj.selected_release_key,
+        'failed_release_keys': dj.failed_release_keys,
+        'retry_count': dj.retry_count,
+        'max_retries': dj.max_retries,
+        'download_hash': dj.download_hash,
+        'client_type': dj.client_type,
+        'status': dj.status,
+        'progress_percent': dj.progress_percent,
+        'eta_seconds': dj.eta_seconds,
+        'download_speed_bps': dj.download_speed_bps,
+        'downloaded_file_path': dj.downloaded_file_path,
+        'imported_file_path': dj.imported_file_path,
+        'error_message': dj.error_message,
+        'encode_job_id': dj.encode_job_id,
+        'created_at': _iso_utc(dj.created_at),
+        'download_started_at': _iso_utc(dj.download_started_at),
+        'completed_at': _iso_utc(dj.completed_at),
+    }
+
+
+def _sync_linked_download_job_terminal_state(job_id: int, status: str) -> None:
+    # Download fallback rows stay in waiting_encode while the encode runs.
+    # Move them to a terminal state when the encode finishes so queue/history
+    # don't show a stale active row.
+    db = SessionLocal()
+    try:
+        waiting = (
+            db.query(DownloadJob)
+            .filter(
+                DownloadJob.encode_job_id == job_id,
+                DownloadJob.status == DownloadJobStatus.waiting_encode.value,
+            )
+            .all()
+        )
+        if not waiting:
+            return
+
+        now = datetime.now(UTC)
+        for dj in waiting:
+            if status == 'complete':
+                dj.status = DownloadJobStatus.fallback_queued.value
+                dj.error_message = None
+            else:
+                dj.status = DownloadJobStatus.failed.value
+                if not dj.error_message:
+                    dj.error_message = f'Fallback encode {status}'
+            dj.eta_seconds = None
+            dj.download_speed_bps = None
+            dj.completed_at = now
+
+        db.commit()
+
+        for dj in waiting:
+            broker.publish('download_job_update', _download_job_payload(dj))
+    except Exception:
+        logger.exception('Failed to sync linked download job state for terminal encode job %s', job_id)
+        db.rollback()
+    finally:
+        db.close()
+
+
 def handle_job_terminal_state(job_id: int, status: str) -> None:
     if status not in {'complete', 'failed', 'skipped', 'cancelled'}:
         return
+
+    _sync_linked_download_job_terminal_state(job_id, status)
 
     completed_batch: BatchTracker | None = None
     with _batch_lock:

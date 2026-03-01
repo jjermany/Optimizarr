@@ -1,3 +1,6 @@
+from app.core.database import SessionLocal
+from app.models.download_job import DownloadJob, DownloadJobStatus
+from app.models.job import Job
 from app.models.notification_settings import NotificationSettings
 from app.services import notification_service
 
@@ -114,3 +117,70 @@ def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
     assert queued[0][0] == 'Optimizarr batch complete'
     assert 'title.mkv' in queued[0][1]
     assert 'grouped alert' in queued[0][1]
+
+
+def test_handle_job_terminal_state_marks_waiting_encode_as_fallback_queued(monkeypatch):
+    monkeypatch.setattr(notification_service.broker, 'publish', lambda *_args, **_kwargs: None)
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.commit()
+
+        encode_job = Job(input_path='/media/Shadow of God (2025).mkv', status='complete')
+        db.add(encode_job)
+        db.commit()
+        db.refresh(encode_job)
+        encode_job_id = encode_job.id
+
+        dj = DownloadJob(
+            source_file_path='/media/Shadow of God (2025).mkv',
+            status=DownloadJobStatus.waiting_encode.value,
+            encode_job_id=encode_job.id,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+        dj_id = dj.id
+
+    notification_service.handle_job_terminal_state(encode_job_id, 'complete')
+
+    with SessionLocal() as db:
+        updated = db.query(DownloadJob).filter(DownloadJob.id == dj_id).first()
+        assert updated is not None
+        assert updated.status == DownloadJobStatus.fallback_queued.value
+        assert updated.completed_at is not None
+
+
+def test_handle_job_terminal_state_marks_waiting_encode_as_failed_when_encode_fails(monkeypatch):
+    monkeypatch.setattr(notification_service.broker, 'publish', lambda *_args, **_kwargs: None)
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.commit()
+
+        encode_job = Job(input_path='/media/Shadow of God (2025).mkv', status='failed')
+        db.add(encode_job)
+        db.commit()
+        db.refresh(encode_job)
+        encode_job_id = encode_job.id
+
+        dj = DownloadJob(
+            source_file_path='/media/Shadow of God (2025).mkv',
+            status=DownloadJobStatus.waiting_encode.value,
+            encode_job_id=encode_job.id,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+        dj_id = dj.id
+
+    notification_service.handle_job_terminal_state(encode_job_id, 'failed')
+
+    with SessionLocal() as db:
+        updated = db.query(DownloadJob).filter(DownloadJob.id == dj_id).first()
+        assert updated is not None
+        assert updated.status == DownloadJobStatus.failed.value
+        assert updated.error_message == 'Fallback encode failed'
+        assert updated.completed_at is not None
