@@ -804,6 +804,31 @@ def test_profile_update_allows_equal_min_resolution_when_hdr_only_enabled(monkey
         assert payload['minimum_source_resolution'] == 1080
 
 
+def test_profile_update_allows_equal_min_resolution_when_tonemap_enabled(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'library-tonemap'
+    library_path.mkdir()
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+
+    with TestClient(app) as client:
+        create_library = client.post('/libraries', json={'name': 'Validation ToneMap', 'path': str(library_path), 'enabled': True})
+        assert create_library.status_code == 201
+        library_id = create_library.json()['id']
+
+        valid_update = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'hdr_only': False, 'tone_map_hdr': True, 'target_resolution': 1080, 'minimum_source_resolution': 1080},
+        )
+        assert valid_update.status_code == 200
+        payload = valid_update.json()
+        assert payload['hdr_only'] is False
+        assert payload['tone_map_hdr'] is True
+        assert payload['target_resolution'] == 1080
+        assert payload['minimum_source_resolution'] == 1080
+
+
 def test_profile_update_allows_combined_hdr_only_and_tonemap_flags(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()

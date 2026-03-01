@@ -299,6 +299,32 @@ def test_preflight_job_uses_profile_minimum_source_resolution(monkeypatch, tmp_p
     assert job.status == 'queued'
 
 
+def test_preflight_job_tonemap_hdr_does_not_skip_at_target_resolution(monkeypatch, tmp_path):
+    media = tmp_path / 'movie.mkv'
+    media.write_text('x')
+    job = Job(
+        input_path=str(media),
+        status='queued',
+        profile_snapshot_json=json.dumps({
+            'hdr_only': True,
+            'tone_map_hdr': True,
+            'minimum_source_resolution': 1080,
+            'target_resolution': 1080,
+            'output_suffix': '-opt',
+            'container': 'mkv',
+        }),
+    )
+
+    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 1080)
+    monkeypatch.setattr(queue, 'is_hdr_video', lambda _: True)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda _: 100 * queue.BYTES_PER_GB)
+
+    passed = queue.preflight_job(job, queue.Settings())
+
+    assert passed is True
+    assert job.status == 'queued'
+
+
 def test_preflight_job_sets_output_from_snapshot_and_checks_cache(monkeypatch, tmp_path):
     media = tmp_path / 'movie.mkv'
     media.write_text('x')

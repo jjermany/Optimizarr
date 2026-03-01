@@ -51,6 +51,34 @@ def test_optimize_video_skips_low_height(monkeypatch, tmp_path):
     assert metrics.skipped_reason == 'source_height_below_target'
 
 
+def test_optimize_video_tonemap_hdr_runs_when_at_target(monkeypatch, tmp_path):
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('placeholder')
+
+    class HDROnlySettings:
+        bitrate_mbps = 8
+        workspace_root = DummySettings.workspace_root
+        profile_snapshot_json = (
+            '{"target_resolution":1080,"minimum_source_resolution":1080,'
+            '"hdr_only":true,"tone_map_hdr":true,"container":"mkv","codec":"h264"}'
+        )
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1080)
+    monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 100.0)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+    monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: True)
+    monkeypatch.setattr(
+        optimization_service,
+        '_run_ffmpeg',
+        lambda *_args, **_kwargs: (0, 100.0, 30.0, False, []),
+    )
+    monkeypatch.setattr(optimization_service, '_commit_output_file', lambda *args, **kwargs: True)
+
+    metrics = optimization_service.optimize_video(str(input_path), HDROnlySettings())
+
+    assert metrics.status == 'complete'
+
+
 def test_optimize_video_runs_and_reports_progress(monkeypatch, tmp_path):
     input_path = tmp_path / 'movie.mkv'
     input_path.write_text('placeholder')

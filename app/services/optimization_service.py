@@ -1241,18 +1241,22 @@ def optimize_video(
         metrics.skipped_reason = 'ffprobe_failed'
         return metrics
 
-    hdr_only = bool(profile.get('hdr_only'))
-    if not hdr_only:
-        minimum_source_resolution = int(profile.get('minimum_source_resolution') or 0)
-        target_resolution = int(profile.get('target_resolution') or 1080)
-        if minimum_source_resolution and height < minimum_source_resolution:
-            metrics.status = 'skipped'
-            metrics.skipped_reason = 'source_height_below_threshold'
-            return metrics
-        if height <= target_resolution:
-            metrics.status = 'skipped'
-            metrics.skipped_reason = 'source_height_below_target'
-            return metrics
+    tone_map_hdr = bool(profile.get('tone_map_hdr'))
+    source_is_hdr = bool(profile.get('source_is_hdr'))
+    if tone_map_hdr and 'source_is_hdr' not in profile:
+        source_is_hdr = is_hdr_video(input_path)
+        profile['source_is_hdr'] = source_is_hdr
+
+    minimum_source_resolution = int(profile.get('minimum_source_resolution') or 0)
+    target_resolution = int(profile.get('target_resolution') or 1080)
+    if minimum_source_resolution and height < minimum_source_resolution:
+        metrics.status = 'skipped'
+        metrics.skipped_reason = 'source_height_below_threshold'
+        return metrics
+    if not (tone_map_hdr and source_is_hdr) and height <= target_resolution:
+        metrics.status = 'skipped'
+        metrics.skipped_reason = 'source_height_below_target'
+        return metrics
 
     # Check whether we can resume from a previously saved partial output.
     # A resume is valid when a resume position is given AND the partial file still exists.

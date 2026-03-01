@@ -209,23 +209,29 @@ def preflight_job(job: Job, settings: Settings) -> bool:
         job.error_message = 'Unable to probe input'
         return False
 
-    if bool(snapshot.get('hdr_only')):
-        if not is_hdr_video(job.input_path):
-            job.status = 'skipped'
-            job.error_message = 'No longer matches criteria'
-            return False
-    else:
-        minimum_source_resolution = int(snapshot.get('minimum_source_resolution') or MIN_SOURCE_HEIGHT)
-        if height < minimum_source_resolution:
-            job.status = 'skipped'
-            job.error_message = 'No longer matches criteria'
-            return False
+    hdr_only = bool(snapshot.get('hdr_only'))
+    tone_map_hdr = bool(snapshot.get('tone_map_hdr'))
+    source_is_hdr = is_hdr_video(job.input_path) if (hdr_only or tone_map_hdr) else False
 
-        target_resolution = snapshot.get('target_resolution')
-        if isinstance(target_resolution, int) and height <= target_resolution:
-            job.status = 'skipped'
-            job.error_message = 'No longer matches criteria'
-            return False
+    if hdr_only and not source_is_hdr:
+        job.status = 'skipped'
+        job.error_message = 'No longer matches criteria'
+        return False
+
+    minimum_source_resolution = int(snapshot.get('minimum_source_resolution') or MIN_SOURCE_HEIGHT)
+    if height < minimum_source_resolution:
+        job.status = 'skipped'
+        job.error_message = 'No longer matches criteria'
+        return False
+
+    # Tone-map jobs should still run at or below target resolution because the
+    # HDR->SDR conversion itself is the required processing.
+    skip_target_check = tone_map_hdr and source_is_hdr
+    target_resolution = snapshot.get('target_resolution')
+    if not skip_target_check and isinstance(target_resolution, int) and height <= target_resolution:
+        job.status = 'skipped'
+        job.error_message = 'No longer matches criteria'
+        return False
 
     job.output_path = _preflight_output_path(job, snapshot)
     if not _apply_output_conflict_policy(job, snapshot):

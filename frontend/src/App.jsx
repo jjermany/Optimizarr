@@ -126,6 +126,9 @@ const QUALITY_PRESETS = {
   },
 };
 
+const TARGET_RESOLUTION_PRESETS = [2160, 1440, 1080, 720];
+const MIN_SOURCE_RESOLUTION_PRESETS = [2160, 1440, 1080];
+
 function progressFromJob(job) {
   const normalized = job.status?.toLowerCase();
   const reported = Number(job.progress_percent);
@@ -865,6 +868,8 @@ export default function App() {
   const [dirBrowser, setDirBrowser] = useState({ open: false, target: null, initialPath: null });
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
+  const [targetResolutionCustom, setTargetResolutionCustom] = useState(false);
+  const [minimumResolutionCustom, setMinimumResolutionCustom] = useState(false);
   const [profileErrors, setProfileErrors] = useState({});
   const [selectedPreset, setSelectedPreset] = useState('balanced');
   const [savingProfile, setSavingProfile] = useState(false);
@@ -1378,17 +1383,22 @@ export default function App() {
   useEffect(() => {
     if (!selectedLibraryId || !selectedLibraryProfile) {
       setProfileDraft(null);
+      setTargetResolutionCustom(false);
+      setMinimumResolutionCustom(false);
       setProfileErrors({});
       return;
     }
-    setProfileDraft({
+    const nextDraft = {
       schedule_enabled: true,
       preferred_video_encoder: 'auto',
       hdr_only: true,
       tone_map_hdr: false,
       minimum_source_resolution: 2160,
       ...selectedLibraryProfile,
-    });
+    };
+    setProfileDraft(nextDraft);
+    setTargetResolutionCustom(!TARGET_RESOLUTION_PRESETS.includes(Number(nextDraft.target_resolution)));
+    setMinimumResolutionCustom(!MIN_SOURCE_RESOLUTION_PRESETS.includes(Number(nextDraft.minimum_source_resolution)));
     setProfileErrors({});
   }, [selectedLibraryId, selectedLibraryProfile]);
 
@@ -1729,6 +1739,8 @@ export default function App() {
       const updated = await updateLibraryProfile(selectedLibrary.id, profileDraft);
       setLibraryProfiles((prev) => ({ ...prev, [selectedLibrary.id]: updated }));
       setProfileDraft({ ...updated });
+      setTargetResolutionCustom(!TARGET_RESOLUTION_PRESETS.includes(Number(updated.target_resolution)));
+      setMinimumResolutionCustom(!MIN_SOURCE_RESOLUTION_PRESETS.includes(Number(updated.minimum_source_resolution)));
       pushToast('Library profile saved.', 'success');
     } catch (saveError) {
       pushToast(saveError.message || 'Failed to save library profile.', 'error');
@@ -2528,10 +2540,15 @@ export default function App() {
                     {/* Target resolution */}
                     <FormField label="Target Resolution" hint="Output height. 1080p is recommended for mixed libraries." error={profileErrors.target_resolution} span2>
                       <SelectInput
-                        value={[2160, 1440, 1080, 720].includes(profileDraft.target_resolution) ? String(profileDraft.target_resolution) : 'custom'}
+                        value={targetResolutionCustom ? 'custom' : String(profileDraft.target_resolution)}
                         onChange={(e) => {
                           const v = e.target.value;
-                          setProfileDraft((prev) => ({ ...prev, target_resolution: v === 'custom' ? prev.target_resolution : Number(v) }));
+                          if (v === 'custom') {
+                            setTargetResolutionCustom(true);
+                            return;
+                          }
+                          setTargetResolutionCustom(false);
+                          setProfileDraft((prev) => ({ ...prev, target_resolution: Number(v) }));
                         }}
                       >
                         <option value="2160">2160p (4K)</option>
@@ -2540,18 +2557,23 @@ export default function App() {
                         <option value="720">720p</option>
                         <option value="custom">Custom</option>
                       </SelectInput>
-                      {![2160, 1440, 1080, 720].includes(profileDraft.target_resolution) && (
+                      {targetResolutionCustom && (
                         <TextInput type="number" min={1} value={profileDraft.target_resolution} onChange={(e) => setProfileDraft((prev) => ({ ...prev, target_resolution: Number(e.target.value) }))} className="mt-2" />
                       )}
                     </FormField>
 
                     {/* Minimum source resolution */}
-                    <FormField label="Minimum Source Resolution" hint="Only queue sources at or above this height. With HDR Only enabled, this is the minimum HDR height (set 2160 for 4K HDR only)." error={profileErrors.minimum_source_resolution} span2>
+                    <FormField label="Minimum Source Resolution" hint="Only queue sources at or above this height. Examples: 2160 for 4K HDR only, 1080 to include HDR 1080p sources." error={profileErrors.minimum_source_resolution} span2>
                       <SelectInput
-                        value={[2160, 1440, 1080].includes(profileDraft.minimum_source_resolution) ? String(profileDraft.minimum_source_resolution) : 'custom'}
+                        value={minimumResolutionCustom ? 'custom' : String(profileDraft.minimum_source_resolution)}
                         onChange={(e) => {
                           const v = e.target.value;
-                          setProfileDraft((prev) => ({ ...prev, minimum_source_resolution: v === 'custom' ? prev.minimum_source_resolution : Number(v) }));
+                          if (v === 'custom') {
+                            setMinimumResolutionCustom(true);
+                            return;
+                          }
+                          setMinimumResolutionCustom(false);
+                          setProfileDraft((prev) => ({ ...prev, minimum_source_resolution: Number(v) }));
                         }}
                       >
                         <option value="2160">2160p (4K)</option>
@@ -2559,7 +2581,7 @@ export default function App() {
                         <option value="1080">1080p</option>
                         <option value="custom">Custom</option>
                       </SelectInput>
-                      {![2160, 1440, 1080].includes(profileDraft.minimum_source_resolution) && (
+                      {minimumResolutionCustom && (
                         <TextInput type="number" min={1} value={profileDraft.minimum_source_resolution} onChange={(e) => setProfileDraft((prev) => ({ ...prev, minimum_source_resolution: Number(e.target.value) }))} className="mt-2" />
                       )}
                     </FormField>
