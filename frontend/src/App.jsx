@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import QRCode from 'qrcode';
 import {
   abortAllJobs,
   abortJob,
@@ -420,6 +421,16 @@ export function downloadJobMatchesSearch(downloadJob, search, libraryById = {}) 
   );
 }
 
+export async function buildQrCodeDataUrl(value) {
+  const trimmed = String(value ?? '').trim();
+  if (!trimmed) return '';
+  return QRCode.toDataURL(trimmed, {
+    errorCorrectionLevel: 'M',
+    margin: 1,
+    width: 320,
+  });
+}
+
 function formatElapsed(seconds) {
   if (seconds == null || seconds < 0) return '—';
   if (seconds === 0) return '0s';
@@ -612,6 +623,32 @@ function Btn({ variant = 'primary', size = 'md', className = '', children, ...pr
     <button type="button" className={`${base} ${sizes[size]} ${variants[variant]} ${className}`} {...props}>
       {children}
     </button>
+  );
+}
+
+function Modal({ open, title, onClose, children }) {
+  useEffect(() => {
+    if (!open) return undefined;
+    function onKeyDown(event) {
+      if (event.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <button type="button" className="absolute inset-0 bg-slate-950/85" onClick={onClose} aria-label="Close dialog" />
+      <div className="relative z-10 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl shadow-black/50">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold tracking-wide text-slate-100">{title}</h3>
+          <Btn variant="secondary" size="sm" onClick={onClose}>Close</Btn>
+        </div>
+        {children}
+      </div>
+    </div>
   );
 }
 
@@ -842,6 +879,7 @@ export default function App() {
   const [generatingAccountTotpSecret, setGeneratingAccountTotpSecret] = useState(false);
   const [accountTwoFactorDraft, setAccountTwoFactorDraft] = useState({
     totpSecret: '',
+    totpUri: '',
     totpCode: '',
     currentPassword: '',
   });
@@ -890,11 +928,16 @@ export default function App() {
     confirmPassword: '',
     enableTwoFactor: false,
     totpSecret: '',
+    totpUri: '',
     totpCode: '',
   });
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupError, setSetupError] = useState(null);
   const [setupSecretBusy, setSetupSecretBusy] = useState(false);
+  const [qrModal, setQrModal] = useState({ open: false, title: '', subtitle: '', secret: '', otpauthUrl: '' });
+  const [qrImageDataUrl, setQrImageDataUrl] = useState('');
+  const [qrImageBusy, setQrImageBusy] = useState(false);
+  const [qrImageError, setQrImageError] = useState(null);
   const [loginForm, setLoginForm] = useState({ username: '', password: '', otpCode: '' });
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState(null);
@@ -1161,9 +1204,58 @@ export default function App() {
     setSetupError(null);
     try {
       const payload = await createTotpSecret(username);
-      setSetupForm((prev) => ({ ...prev, totpSecret: payload.secret }));
+      setSetupForm((prev) => ({ ...prev, totpSecret: payload.secret, totpUri: payload.otpauth_url || '' }));
     } catch (error) {
       setSetupError(error.message || 'Failed to generate a TOTP secret.');
+    } finally {
+      setSetupSecretBusy(false);
+    }
+  }
+
+  function openQrModal({ title, subtitle, secret, otpauthUrl }) {
+    setQrModal({
+      open: true,
+      title,
+      subtitle,
+      secret: secret || '',
+      otpauthUrl: otpauthUrl || '',
+    });
+  }
+
+  function closeQrModal() {
+    setQrModal({ open: false, title: '', subtitle: '', secret: '', otpauthUrl: '' });
+    setQrImageDataUrl('');
+    setQrImageError(null);
+    setQrImageBusy(false);
+  }
+
+  async function openSetupQrCode() {
+    const username = setupForm.username.trim();
+    if (!username) {
+      setSetupError('Username is required before creating a QR code.');
+      return;
+    }
+
+    setSetupSecretBusy(true);
+    setSetupError(null);
+    try {
+      const shouldGenerate = !setupForm.totpSecret.trim() || !setupForm.totpUri.trim();
+      let secret = setupForm.totpSecret.trim();
+      let otpauthUrl = setupForm.totpUri.trim();
+      if (shouldGenerate) {
+        const payload = await createTotpSecret(username);
+        secret = payload.secret;
+        otpauthUrl = payload.otpauth_url || '';
+        setSetupForm((prev) => ({ ...prev, totpSecret: secret, totpUri: otpauthUrl }));
+      }
+      openQrModal({
+        title: 'Scan QR Code',
+        subtitle: 'Use your authenticator app to scan this code, then enter the current 6-digit code below.',
+        secret,
+        otpauthUrl,
+      });
+    } catch (error) {
+      setSetupError(error.message || 'Failed to generate a 2FA QR code.');
     } finally {
       setSetupSecretBusy(false);
     }
@@ -1810,10 +1902,36 @@ export default function App() {
     setGeneratingAccountTotpSecret(true);
     try {
       const payload = await createTotpSecret(accountSettings.username);
-      setAccountTwoFactorDraft((prev) => ({ ...prev, totpSecret: payload.secret }));
+      setAccountTwoFactorDraft((prev) => ({ ...prev, totpSecret: payload.secret, totpUri: payload.otpauth_url || '' }));
       pushToast('Generated 2FA secret.', 'success');
     } catch (err) {
       pushToast(err.message || 'Failed to generate 2FA secret.', 'error');
+    } finally {
+      setGeneratingAccountTotpSecret(false);
+    }
+  }
+
+  async function openAccountQrCode() {
+    if (!accountSettings?.username) return;
+    setGeneratingAccountTotpSecret(true);
+    try {
+      const shouldGenerate = !accountTwoFactorDraft.totpSecret.trim() || !accountTwoFactorDraft.totpUri.trim();
+      let secret = accountTwoFactorDraft.totpSecret.trim();
+      let otpauthUrl = accountTwoFactorDraft.totpUri.trim();
+      if (shouldGenerate) {
+        const payload = await createTotpSecret(accountSettings.username);
+        secret = payload.secret;
+        otpauthUrl = payload.otpauth_url || '';
+        setAccountTwoFactorDraft((prev) => ({ ...prev, totpSecret: secret, totpUri: otpauthUrl }));
+      }
+      openQrModal({
+        title: 'Use QR Code for 2FA',
+        subtitle: 'Scan this code in your authenticator app, then enter the current code and your password to enable 2FA.',
+        secret,
+        otpauthUrl,
+      });
+    } catch (err) {
+      pushToast(err.message || 'Failed to generate 2FA QR code.', 'error');
     } finally {
       setGeneratingAccountTotpSecret(false);
     }
@@ -1842,7 +1960,7 @@ export default function App() {
       });
       setAccountSettings(updated);
       setAuthStatus((prev) => ({ ...prev, two_factor_enabled: true }));
-      setAccountTwoFactorDraft({ totpSecret: '', totpCode: '', currentPassword: '' });
+      setAccountTwoFactorDraft({ totpSecret: '', totpUri: '', totpCode: '', currentPassword: '' });
       pushToast('Dual-factor authentication enabled.', 'success');
     } catch (err) {
       pushToast(err.message || 'Failed to enable 2FA.', 'error');
@@ -1891,6 +2009,36 @@ export default function App() {
       setSavingSettings(false);
     }
   }
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!qrModal.open || !qrModal.otpauthUrl) {
+      setQrImageDataUrl('');
+      setQrImageBusy(false);
+      setQrImageError(null);
+      return undefined;
+    }
+
+    setQrImageBusy(true);
+    setQrImageError(null);
+    buildQrCodeDataUrl(qrModal.otpauthUrl)
+      .then((dataUrl) => {
+        if (cancelled) return;
+        setQrImageDataUrl(dataUrl);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setQrImageError('Failed to render QR code.');
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setQrImageBusy(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [qrModal.open, qrModal.otpauthUrl]);
 
   async function sendNotificationTest() {
     try {
@@ -2165,13 +2313,18 @@ export default function App() {
               </label>
               {setupForm.enableTwoFactor && (
                 <div className="space-y-3 rounded-xl border border-slate-700/80 bg-slate-950/50 p-3">
-                  <Btn variant="secondary" onClick={handleGenerateSetupSecret} disabled={setupSecretBusy} type="button">
-                    {setupSecretBusy ? 'Generating…' : 'Generate 2FA Secret'}
-                  </Btn>
+                  <div className="flex flex-wrap gap-2">
+                    <Btn variant="secondary" onClick={handleGenerateSetupSecret} disabled={setupSecretBusy} type="button">
+                      {setupSecretBusy ? 'Generating…' : 'Generate 2FA Secret'}
+                    </Btn>
+                    <Btn variant="primary" onClick={openSetupQrCode} disabled={setupSecretBusy} type="button">
+                      {setupSecretBusy ? 'Generating…' : 'Use QR Code'}
+                    </Btn>
+                  </div>
                   <FormField label="TOTP Secret" hint="Add this secret in your authenticator app.">
                     <TextInput
                       value={setupForm.totpSecret}
-                      onChange={(event) => setSetupForm((prev) => ({ ...prev, totpSecret: event.target.value }))}
+                      onChange={(event) => setSetupForm((prev) => ({ ...prev, totpSecret: event.target.value, totpUri: '' }))}
                     />
                   </FormField>
                   <FormField label="Current 2FA Code" hint="Enter the 6-digit code from your authenticator app.">
@@ -2188,6 +2341,21 @@ export default function App() {
                 {setupBusy ? 'Creating Admin…' : 'Create Admin Account'}
               </Btn>
             </form>
+            <Modal open={qrModal.open} onClose={closeQrModal} title={qrModal.title}>
+              <div className="space-y-3">
+                {qrModal.subtitle && <p className="text-xs text-slate-300">{qrModal.subtitle}</p>}
+                <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-3">
+                  {qrImageBusy && <p className="text-xs text-slate-400">Rendering QR code…</p>}
+                  {!qrImageBusy && qrImageDataUrl && (
+                    <img src={qrImageDataUrl} alt="Authenticator setup QR code" className="mx-auto h-64 w-64 rounded-md bg-white p-2" />
+                  )}
+                  {qrImageError && <p className="text-xs text-red-400">{qrImageError}</p>}
+                </div>
+                <FormField label="Manual Secret (fallback)">
+                  <TextInput readOnly value={qrModal.secret} />
+                </FormField>
+              </div>
+            </Modal>
           </SectionCard>
         </div>
       </main>
@@ -3579,6 +3747,9 @@ export default function App() {
                   <p className="text-sm font-medium text-slate-200">Enable Dual-Factor Authentication</p>
                   <p className="text-xs text-slate-500">Generate a TOTP secret, add it to your authenticator app, then verify with a live code.</p>
                   <div className="flex flex-wrap gap-3">
+                    <Btn variant="primary" disabled={generatingAccountTotpSecret} onClick={openAccountQrCode}>
+                      {generatingAccountTotpSecret ? 'Generating…' : 'Use QR Code'}
+                    </Btn>
                     <Btn variant="secondary" disabled={generatingAccountTotpSecret} onClick={generateAccountTotpSecret}>
                       {generatingAccountTotpSecret ? 'Generating…' : 'Generate 2FA Secret'}
                     </Btn>
@@ -3588,7 +3759,7 @@ export default function App() {
                       <TextInput
                         type="text"
                         value={accountTwoFactorDraft.totpSecret}
-                        onChange={(e) => setAccountTwoFactorDraft((prev) => ({ ...prev, totpSecret: e.target.value }))}
+                        onChange={(e) => setAccountTwoFactorDraft((prev) => ({ ...prev, totpSecret: e.target.value, totpUri: '' }))}
                       />
                     </FormField>
                     <FormField label="Authenticator Code">
@@ -4020,6 +4191,21 @@ export default function App() {
         )}
 
       </div>
+      <Modal open={qrModal.open} onClose={closeQrModal} title={qrModal.title}>
+        <div className="space-y-3">
+          {qrModal.subtitle && <p className="text-xs text-slate-300">{qrModal.subtitle}</p>}
+          <div className="rounded-xl border border-slate-700 bg-slate-950/70 p-3">
+            {qrImageBusy && <p className="text-xs text-slate-400">Rendering QR code…</p>}
+            {!qrImageBusy && qrImageDataUrl && (
+              <img src={qrImageDataUrl} alt="Authenticator setup QR code" className="mx-auto h-64 w-64 rounded-md bg-white p-2" />
+            )}
+            {qrImageError && <p className="text-xs text-red-400">{qrImageError}</p>}
+          </div>
+          <FormField label="Manual Secret (fallback)">
+            <TextInput readOnly value={qrModal.secret} />
+          </FormField>
+        </div>
+      </Modal>
     </main>
   );
 }

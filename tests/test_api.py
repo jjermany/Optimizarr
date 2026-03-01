@@ -268,6 +268,48 @@ def test_auth_bootstrap_and_login_flow():
 def test_auth_login_requires_totp_when_enabled():
     _clear_auth_state()
 
+    with TestClient(app) as client:
+        secret_response = client.post('/auth/totp/secret', json={'username': 'admin'})
+        assert secret_response.status_code == 200
+        secret_payload = secret_response.json()
+        secret = secret_payload['secret']
+        assert secret_payload['otpauth_url'].startswith('otpauth://totp/')
+        assert f'secret={secret}' in secret_payload['otpauth_url']
+        assert 'admin' in secret_payload['otpauth_url']
+
+        bootstrap = client.post(
+            '/auth/bootstrap',
+            json={
+                'username': 'admin',
+                'password': 'VeryStrongPassword123',
+                'enable_two_factor': True,
+                'totp_secret': secret,
+                'totp_code': routes.auth_service.current_totp_code(secret, at_time=int(time.time())),
+            },
+        )
+        assert bootstrap.status_code == 201
+        client.post('/auth/logout', headers={'X-CSRF-Token': client.cookies.get('optimizarr_csrf', '')})
+
+        missing_otp = client.post('/auth/login', json={'username': 'admin', 'password': 'VeryStrongPassword123'})
+        assert missing_otp.status_code == 401
+        assert 'Two-factor code required' in missing_otp.text
+
+        wrong_otp = client.post('/auth/login', json={'username': 'admin', 'password': 'VeryStrongPassword123', 'otp_code': '000000'})
+        assert wrong_otp.status_code == 401
+
+        ok = client.post(
+            '/auth/login',
+            json={
+                'username': 'admin',
+                'password': 'VeryStrongPassword123',
+                'otp_code': routes.auth_service.current_totp_code(secret, at_time=int(time.time())),
+            },
+        )
+        assert ok.status_code == 200
+        assert ok.cookies.get('optimizarr_session')
+
+    _clear_auth_state()
+
 
 def test_auth_account_update_and_enable_two_factor():
     _clear_auth_state()

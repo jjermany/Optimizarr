@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildQrCodeDataUrl,
   downloadJobMatchesSearch,
   estimateDownloadEtaSeconds,
   getDownloadEtaSeconds,
@@ -8,6 +9,17 @@ import {
   mergeDownloadJobsWithUpdate,
   mergeJobsWithUpdate,
 } from './App';
+
+describe('buildQrCodeDataUrl', () => {
+  it('returns a PNG data URL for a valid otpauth URI', async () => {
+    const dataUrl = await buildQrCodeDataUrl('otpauth://totp/Optimizarr:admin?secret=JBSWY3DPEHPK3PXP&issuer=Optimizarr&algorithm=SHA1&digits=6&period=30');
+    expect(dataUrl.startsWith('data:image/png;base64,')).toBe(true);
+  });
+
+  it('returns empty string when no payload is provided', async () => {
+    await expect(buildQrCodeDataUrl('')).resolves.toBe('');
+  });
+});
 
 describe('mergeJobsWithUpdate', () => {
   it('resets to page one when an existing queued job transitions to running', () => {
