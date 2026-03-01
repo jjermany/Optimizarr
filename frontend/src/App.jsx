@@ -993,6 +993,8 @@ export default function App() {
     () => terminalDownloadHistoryJobs.filter((dj) => downloadJobMatchesSearch(dj, historySearch, libraryById)),
     [terminalDownloadHistoryJobs, historySearch, libraryById],
   );
+  const totalHistoryCount = sortedHistoryJobs.length + terminalDownloadHistoryJobs.length;
+  const visibleHistoryCount = filteredHistoryJobs.length + filteredTerminalDownloadHistoryJobs.length;
 
   const activeDlQueueItems = useMemo(
     () => downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())),
@@ -2809,7 +2811,12 @@ export default function App() {
                     className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'history' ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
                   >
                     History
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'history' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}>{filteredHistoryJobs.length + filteredTerminalDownloadHistoryJobs.length}</span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-xs font-semibold ${jobsView === 'history' ? 'bg-slate-950/30 text-slate-900' : 'bg-slate-700 text-slate-300'}`}
+                      title={historySearch ? `Showing ${visibleHistoryCount} filtered result(s)` : 'Total history entries'}
+                    >
+                      {totalHistoryCount}
+                    </span>
                   </button>
                 </div>
                 {/* Action buttons for the active view */}
