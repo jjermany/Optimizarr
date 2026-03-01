@@ -74,7 +74,7 @@ const FALLBACK_POLL_MS = 10000;
 const METRICS_POLL_MS = 10000;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
-const JOBS_PAGE_SIZE = 25;
+const JOBS_PAGE_SIZE = 50;
 const HISTORY_PAGE_SIZE = 25;
 const JOBS_UI_PREFS_KEY = 'optimizarr.jobsUiPrefs.v1';
 
@@ -943,7 +943,8 @@ export default function App() {
   const [loginError, setLoginError] = useState(null);
   const [availableEncodersByCodec, setAvailableEncodersByCodec] = useState({});
   const [jobsPage, setJobsPage] = useState(1);
-  const [historyPage, setHistoryPage] = useState(1);
+  const [encodeHistoryPage, setEncodeHistoryPage] = useState(1);
+  const [downloadHistoryPage, setDownloadHistoryPage] = useState(1);
   const [queueSearch, setQueueSearch] = useState(() => String(jobsUiPrefs.queueSearch ?? ''));
   const [historySearch, setHistorySearch] = useState(() => String(jobsUiPrefs.historySearch ?? ''));
   const [queueSort, setQueueSort] = useState(() => {
@@ -1113,9 +1114,14 @@ export default function App() {
     [paginatedQueueItems.length],
   );
 
-  const totalHistoryPages = useMemo(
+  const totalEncodeHistoryPages = useMemo(
     () => Math.max(1, Math.ceil(filteredHistoryJobs.length / HISTORY_PAGE_SIZE)),
     [filteredHistoryJobs.length],
+  );
+
+  const totalDownloadHistoryPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredTerminalDownloadHistoryJobs.length / HISTORY_PAGE_SIZE)),
+    [filteredTerminalDownloadHistoryJobs.length],
   );
 
   const pagedJobs = useMemo(() => {
@@ -1124,9 +1130,14 @@ export default function App() {
   }, [paginatedQueueItems, jobsPage]);
 
   const pagedHistoryJobs = useMemo(() => {
-    const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
+    const start = (encodeHistoryPage - 1) * HISTORY_PAGE_SIZE;
     return filteredHistoryJobs.slice(start, start + HISTORY_PAGE_SIZE);
-  }, [filteredHistoryJobs, historyPage]);
+  }, [filteredHistoryJobs, encodeHistoryPage]);
+
+  const pagedTerminalDownloadHistoryJobs = useMemo(() => {
+    const start = (downloadHistoryPage - 1) * HISTORY_PAGE_SIZE;
+    return filteredTerminalDownloadHistoryJobs.slice(start, start + HISTORY_PAGE_SIZE);
+  }, [filteredTerminalDownloadHistoryJobs, downloadHistoryPage]);
 
   useEffect(() => {
     if (jobsPage > totalJobPages) setJobsPage(totalJobPages);
@@ -1137,8 +1148,12 @@ export default function App() {
   }, [queueSort]);
 
   useEffect(() => {
-    if (historyPage > totalHistoryPages) setHistoryPage(totalHistoryPages);
-  }, [historyPage, totalHistoryPages]);
+    if (encodeHistoryPage > totalEncodeHistoryPages) setEncodeHistoryPage(totalEncodeHistoryPages);
+  }, [encodeHistoryPage, totalEncodeHistoryPages]);
+
+  useEffect(() => {
+    if (downloadHistoryPage > totalDownloadHistoryPages) setDownloadHistoryPage(totalDownloadHistoryPages);
+  }, [downloadHistoryPage, totalDownloadHistoryPages]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -3063,12 +3078,19 @@ export default function App() {
                       type="text"
                       placeholder="Search history…"
                       value={historySearch}
-                      onChange={(e) => { setHistorySearch(e.target.value); setHistoryPage(1); }}
+                      onChange={(e) => {
+                        setHistorySearch(e.target.value);
+                        setEncodeHistoryPage(1);
+                        setDownloadHistoryPage(1);
+                      }}
                       className="w-48 py-1.5 text-xs"
                     />
                     <SelectInput
                       value={historySort}
-                      onChange={(e) => setHistorySort(e.target.value)}
+                      onChange={(e) => {
+                        setHistorySort(e.target.value);
+                        setEncodeHistoryPage(1);
+                      }}
                       className="w-48 py-1.5 text-xs"
                     >
                       <option value="completed_desc">Completed (Newest)</option>
@@ -3593,16 +3615,16 @@ export default function App() {
                       </tbody>
                     </table>
                   </div>
-                  {totalHistoryPages > 1 && (
+                  {totalEncodeHistoryPages > 1 && (
                     <div className="flex items-center justify-between border-t border-slate-700/70 px-5 py-3 text-sm text-slate-400">
-                      <p>Page {historyPage} of {totalHistoryPages}</p>
+                      <p>Encode Page {encodeHistoryPage} of {totalEncodeHistoryPages}</p>
                       <div className="flex items-center gap-1">
-                        {Array.from({ length: totalHistoryPages }, (_, i) => i + 1).map((pageNum) => (
+                        {Array.from({ length: totalEncodeHistoryPages }, (_, i) => i + 1).map((pageNum) => (
                           <button
                             key={pageNum}
                             type="button"
-                            onClick={() => setHistoryPage(pageNum)}
-                            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${historyPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                            onClick={() => setEncodeHistoryPage(pageNum)}
+                            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${encodeHistoryPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
                           >
                             {pageNum}
                           </button>
@@ -3615,7 +3637,7 @@ export default function App() {
                     <div className="border-t border-slate-700/70">
                       <div className="px-5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Downloads</div>
                       <div className="space-y-3 px-3 pb-3 md:hidden">
-                        {filteredTerminalDownloadHistoryJobs.map((dj) => {
+                        {pagedTerminalDownloadHistoryJobs.map((dj) => {
                           const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
                           const { title, year } = extractTitleYear(dj.source_file_path);
                           const displayName = title ? `${title}${year ? ` (${year})` : ''}` : '—';
@@ -3660,7 +3682,7 @@ export default function App() {
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-800/60">
-                            {filteredTerminalDownloadHistoryJobs.map((dj) => {
+                            {pagedTerminalDownloadHistoryJobs.map((dj) => {
                               const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
                               const { title, year } = extractTitleYear(dj.source_file_path);
                               const displayName = title ? `${title}${year ? ` (${year})` : ''}` : '—';
@@ -3691,6 +3713,23 @@ export default function App() {
                           </tbody>
                         </table>
                       </div>
+                      {totalDownloadHistoryPages > 1 && (
+                        <div className="flex items-center justify-between border-t border-slate-700/70 px-5 py-3 text-sm text-slate-400">
+                          <p>Download Page {downloadHistoryPage} of {totalDownloadHistoryPages}</p>
+                          <div className="flex items-center gap-1">
+                            {Array.from({ length: totalDownloadHistoryPages }, (_, i) => i + 1).map((pageNum) => (
+                              <button
+                                key={pageNum}
+                                type="button"
+                                onClick={() => setDownloadHistoryPage(pageNum)}
+                                className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${downloadHistoryPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                              >
+                                {pageNum}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </>

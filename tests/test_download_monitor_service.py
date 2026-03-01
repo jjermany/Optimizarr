@@ -7,6 +7,7 @@ from app.core.database import SessionLocal
 from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum
+from app.models.settings import QueueSortEnum, Settings
 from app.services.download_monitor_service import (
     _extract_hash_from_release,
     _find_completed_download_match,
@@ -1559,6 +1560,111 @@ def test_process_searching_jobs_retries_existing_searching_job(monkeypatch):
 
         _process_searching_jobs(db)
         assert calls == [dj.id]
+
+
+def test_process_searching_jobs_uses_newest_sort_for_pending(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        settings = db.query(Settings).first()
+        if settings is None:
+            settings = Settings(queue_sort=QueueSortEnum.newest)
+            db.add(settings)
+        else:
+            settings.queue_sort = QueueSortEnum.newest
+        db.commit()
+
+        older = DownloadJob(
+            source_file_path='/media/Older.Movie.2010.mkv',
+            status=DownloadJobStatus.pending.value,
+            created_at=datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
+        )
+        newer = DownloadJob(
+            source_file_path='/media/Newer.Movie.2024.mkv',
+            status=DownloadJobStatus.pending.value,
+            created_at=datetime(2026, 1, 2, 0, 0, tzinfo=UTC),
+        )
+        db.add_all([older, newer])
+        db.commit()
+        db.refresh(older)
+        db.refresh(newer)
+
+        monkeypatch.setattr('app.services.download_monitor_service.prowlarr_service.get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr('app.services.download_monitor_service._startup_grace_until', None)
+        monkeypatch.setattr('app.workers.queue.is_queue_paused', lambda: False)
+
+        calls = []
+
+        def _fake_do_search(_db, job, *_args):
+            calls.append(job.id)
+
+        monkeypatch.setattr('app.services.download_monitor_service._do_search', _fake_do_search)
+
+        _process_searching_jobs(db)
+        db.refresh(older)
+        db.refresh(newer)
+
+        assert calls == [newer.id]
+        assert newer.status == DownloadJobStatus.searching.value
+        assert older.status == DownloadJobStatus.pending.value
+
+
+def test_process_searching_jobs_uses_year_sort_for_pending(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        settings = db.query(Settings).first()
+        if settings is None:
+            settings = Settings(queue_sort=QueueSortEnum.year_newest)
+            db.add(settings)
+        else:
+            settings.queue_sort = QueueSortEnum.year_newest
+        db.commit()
+
+        older_year = DownloadJob(
+            source_file_path='/media/Classic.Movie.1984.mkv',
+            status=DownloadJobStatus.pending.value,
+        )
+        newer_year = DownloadJob(
+            source_file_path='/media/Fresh.Movie.2025.mkv',
+            status=DownloadJobStatus.pending.value,
+        )
+        db.add_all([older_year, newer_year])
+        db.commit()
+        db.refresh(older_year)
+        db.refresh(newer_year)
+
+        monkeypatch.setattr('app.services.download_monitor_service.prowlarr_service.get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr('app.services.download_monitor_service._startup_grace_until', None)
+        monkeypatch.setattr('app.workers.queue.is_queue_paused', lambda: False)
+
+        calls = []
+        monkeypatch.setattr('app.services.download_monitor_service._do_search', lambda _db, job, *_args: calls.append(job.id))
+
+        _process_searching_jobs(db)
+        db.refresh(older_year)
+        db.refresh(newer_year)
+        assert calls == [newer_year.id]
+        assert newer_year.status == DownloadJobStatus.searching.value
+
+        # Reset states and invert sort to verify year_oldest path.
+        newer_year.status = DownloadJobStatus.pending.value
+        older_year.status = DownloadJobStatus.pending.value
+        settings.queue_sort = QueueSortEnum.year_oldest
+        db.commit()
+
+        calls.clear()
+        _process_searching_jobs(db)
+        db.refresh(older_year)
+        db.refresh(newer_year)
+        assert calls == [older_year.id]
+        assert older_year.status == DownloadJobStatus.searching.value
 
 
 # ─────────────────────────────────────────────────────────────────────────────

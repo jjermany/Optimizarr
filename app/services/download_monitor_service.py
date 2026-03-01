@@ -19,6 +19,7 @@ from app.core.database import SessionLocal
 from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum, Library, LibraryProfile
+from app.models.settings import QueueSortEnum, Settings
 from app.services import download_client_service, prowlarr_service
 from app.services.job_service import create_job
 from app.services.optimization_service import is_hdr_video, probe_video_height, stop_active_ffmpeg
@@ -1202,6 +1203,54 @@ def _extract_hash_from_release(release: dict) -> str:
     return ''
 
 
+def _extract_year_from_path(path: str | None) -> int | None:
+    if not path:
+        return None
+    stem = Path(path).stem
+    spaced = re.sub(r'[._]', ' ', stem)
+    paren_match = re.search(r'\(((?:19|20)\d{2})\)', spaced)
+    if paren_match:
+        return int(paren_match.group(1))
+    year_match = re.search(r'\b((?:19|20)\d{2})\b', spaced)
+    if year_match:
+        return int(year_match.group(1))
+    return None
+
+
+def _pending_download_sort_option(db: Session) -> str:
+    settings = db.query(Settings).first()
+    raw_sort_option = getattr(settings, 'queue_sort', QueueSortEnum.default) if settings is not None else QueueSortEnum.default
+    return str(getattr(raw_sort_option, 'value', raw_sort_option))
+
+
+def _select_next_pending_download_job(db: Session) -> DownloadJob | None:
+    sort_option = _pending_download_sort_option(db)
+    base_query = db.query(DownloadJob).filter(DownloadJob.status == DownloadJobStatus.pending.value)
+
+    if sort_option == QueueSortEnum.newest.value:
+        return base_query.order_by(DownloadJob.created_at.desc(), DownloadJob.id.desc()).first()
+
+    if sort_option in {QueueSortEnum.default.value, QueueSortEnum.oldest.value}:
+        return base_query.order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc()).first()
+
+    pending_jobs = base_query.all()
+    if not pending_jobs:
+        return None
+
+    def sort_key(job: DownloadJob) -> tuple[int, int]:
+        if sort_option == QueueSortEnum.year_newest.value:
+            year = _extract_year_from_path(job.source_file_path)
+            return (-(year if year is not None else 0), -job.id)
+        if sort_option == QueueSortEnum.year_oldest.value:
+            year = _extract_year_from_path(job.source_file_path)
+            return ((year if year is not None else 9999), job.id)
+        created_ts = job.created_at.timestamp() if job.created_at else 0
+        return (int(created_ts), job.id)
+
+    pending_jobs.sort(key=sort_key)
+    return pending_jobs[0]
+
+
 def _extract_title_tokens(source_path: str) -> list[str]:
     stem = Path(source_path or '').stem.lower()
     stem = re.sub(r'[\._-]+', ' ', stem)
@@ -1481,13 +1530,9 @@ def _process_searching_jobs(db: Session) -> None:
             return
         _startup_grace_until = None  # expired — clear and proceed normally
 
-    # Pick the oldest pending job, promote it to searching, then run the search.
-    dj = (
-        db.query(DownloadJob)
-        .filter(DownloadJob.status == DownloadJobStatus.pending.value)
-        .order_by(DownloadJob.created_at.asc())
-        .first()
-    )
+    # Pick the next pending job using the configured queue sort policy,
+    # promote it to searching, then run the search.
+    dj = _select_next_pending_download_job(db)
     if dj:
         dj.status = DownloadJobStatus.searching.value
         db.commit()
