@@ -2563,7 +2563,7 @@ export default function App() {
                     </FormField>
 
                     {/* Minimum source resolution */}
-                    <FormField label="Minimum Source Resolution" hint="Only queue sources at or above this height. Examples: 2160 for 4K HDR only, 1080 to include HDR 1080p sources." error={profileErrors.minimum_source_resolution} span2>
+                    <FormField label="Minimum Source Resolution" hint="Only queue sources at or above this height." error={profileErrors.minimum_source_resolution} span2>
                       <SelectInput
                         value={minimumResolutionCustom ? 'custom' : String(profileDraft.minimum_source_resolution)}
                         onChange={(e) => {
