@@ -1412,13 +1412,21 @@ export default function App() {
     setActivePage(page);
   }
 
-  function pushToast(messageText, tone = 'info') {
+  function pushToast(messageText, tone = 'info', options = {}) {
     const id = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     setToasts((prev) => [...prev, { id, message: messageText, tone }]);
+    const toneDurationMs = tone === 'error'
+      ? 7000
+      : tone === 'warn'
+        ? 6500
+        : tone === 'success'
+          ? 6500
+          : 5000;
+    const durationMs = Number.isFinite(options.durationMs) ? Math.max(1500, options.durationMs) : toneDurationMs;
     const timer = window.setTimeout(() => {
       setToasts((prev) => prev.filter((toast) => toast.id !== id));
       delete toastTimersRef.current[id];
-    }, 5000);
+    }, durationMs);
     toastTimersRef.current[id] = timer;
   }
 
@@ -1961,7 +1969,7 @@ export default function App() {
       setAccountSettings(updated);
       setAuthStatus((prev) => ({ ...prev, two_factor_enabled: true }));
       setAccountTwoFactorDraft({ totpSecret: '', totpUri: '', totpCode: '', currentPassword: '' });
-      pushToast('Dual-factor authentication enabled.', 'success');
+      pushToast('Dual-factor authentication enabled.', 'success', { durationMs: 9000 });
     } catch (err) {
       pushToast(err.message || 'Failed to enable 2FA.', 'error');
     } finally {
