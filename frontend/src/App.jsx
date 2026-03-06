@@ -854,17 +854,8 @@ function MobileActionMenu({ children, label = 'Actions' }) {
 }
 
 function FallbackNotice({ compact = false }) {
-  if (compact) {
-    return (
-      <div className="mt-1.5 flex items-center gap-2 text-xs normal-case text-amber-200/90">
-        <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 font-semibold uppercase tracking-[0.12em] text-amber-300">Fallback</span>
-        <span className="text-slate-400">Download routed to encode.</span>
-      </div>
-    );
-  }
-
   return (
-    <div className="mt-2 flex items-center gap-2 text-xs text-amber-200/90">
+    <div className={`flex items-center gap-2 text-xs ${compact ? 'normal-case' : ''} text-amber-200/90`}>
       <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 font-semibold uppercase tracking-[0.12em] text-amber-300">Fallback</span>
       <span className="text-slate-400">Download routed to encode.</span>
     </div>
@@ -3787,11 +3778,11 @@ export default function App() {
                             <span>{year ?? '—'}</span>
                             <span>{libName}</span>
                           </div>
-                          {fallbackInfo && <FallbackNotice />}
                           <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
                             <span>{formatResolution(job.source_resolution)} · {formatHdrIndicator(job.source_is_hdr)}</span>
                             {job.encoder_used && <span>{job.encoder_used}{job.hwaccel_used ? ' (HW)' : ''}</span>}
                           </div>
+                          {fallbackInfo && <div className="mt-2"><FallbackNotice compact /></div>}
                           <p className="mt-2.5 text-xs text-slate-500">{completedDate}</p>
                           {job.status === 'failed' && job.error_message && (
                             <p className="mt-2.5 text-xs text-red-400">{job.error_message}</p>
@@ -3851,15 +3842,19 @@ export default function App() {
                               <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
                               <td className="px-4 py-3 text-sm capitalize">
                                 <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${job.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : job.status === 'failed' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{job.status}</span>
-                                {fallbackInfo && <FallbackNotice compact />}
                                 {job.status === 'failed' && job.error_message && (
                                   <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
                                 )}
                               </td>
                               <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
-                                <span>{formatResolution(job.source_resolution)}</span>
-                                <span className="mx-1.5 text-slate-600">·</span>
-                                <span>{formatHdrIndicator(job.source_is_hdr)}</span>
+                                <div className="space-y-1">
+                                  <div>
+                                    <span>{formatResolution(job.source_resolution)}</span>
+                                    <span className="mx-1.5 text-slate-600">·</span>
+                                    <span>{formatHdrIndicator(job.source_is_hdr)}</span>
+                                  </div>
+                                  {fallbackInfo && <FallbackNotice compact />}
+                                </div>
                               </td>
                               <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
                                 {job.encoder_used ? (
@@ -3873,8 +3868,8 @@ export default function App() {
                                   <span className="text-slate-600">—</span>
                                 )}
                               </td>
-                              <td className="px-4 py-3 text-xs text-slate-400">{completedDate}</td>
-                              <td className="px-4 py-3">
+                              <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">{completedDate}</td>
+                              <td className="whitespace-nowrap px-4 py-3">
                                 <div className="flex flex-wrap gap-1.5">
                                   {['failed', 'cancelled'].includes(job.status) && (
                                     <Btn size="sm" variant="primary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('retry', job.id)}>
@@ -3953,7 +3948,7 @@ export default function App() {
                         })}
                       </div>
                       <div className="hidden overflow-x-auto [scrollbar-gutter:stable] md:block">
-                        <table className="min-w-[860px] divide-y divide-slate-800">
+                        <table className="min-w-[1024px] divide-y divide-slate-800">
                           <thead className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur-sm">
                             <tr>
                               <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">ID</th>
@@ -3983,8 +3978,8 @@ export default function App() {
                                     <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${dj.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'failed' || dj.status === 'timed_out' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
                                     {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
                                   </td>
-                                  <td className="px-4 py-3 text-xs text-slate-400">{completedDate}</td>
-                                  <td className="px-4 py-3">
+                                  <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">{completedDate}</td>
+                                  <td className="whitespace-nowrap px-4 py-3">
                                     <div className="flex flex-wrap gap-1.5">
                                       {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
                                         <Btn size="sm" variant="primary" disabled={Boolean(downloadActionPending)} onClick={() => handleRetryDownloadJob(dj.id)}>
