@@ -913,12 +913,19 @@ function MobileActionMenu({ children, label = 'Actions' }) {
   );
 }
 
-function FallbackNotice({ compact = false }) {
+function FallbackIndicator() {
   return (
-    <div className={`flex items-center gap-2 text-xs ${compact ? 'normal-case' : ''} text-amber-200/90`}>
-      <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-300">Fallback</span>
-      <span className="text-slate-400">Download routed to encode.</span>
-    </div>
+    <span
+      title="Fallback route used. Download was attempted first; encode completed the job."
+      aria-label="Fallback route used"
+      className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-300"
+    >
+      <svg viewBox="0 0 16 16" className="h-2.5 w-2.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M3.5 4.5h4a2 2 0 0 1 2 2v5" />
+        <path d="M7.5 8.5 9.5 10.5 11.5 8.5" />
+        <path d="M3.5 11.5h3" />
+      </svg>
+    </span>
   );
 }
 
@@ -3902,10 +3909,10 @@ export default function App() {
                             <span>{libName}</span>
                           </div>
                           <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                            {fallbackInfo && <FallbackIndicator />}
                             <span>{formatResolution(job.source_resolution)} · {formatHdrIndicator(job.source_is_hdr)}</span>
                             {job.encoder_used && <span>{job.encoder_used}{job.hwaccel_used ? ' (HW)' : ''}</span>}
                           </div>
-                          {fallbackInfo && <div className="mt-2"><FallbackNotice compact /></div>}
                           <p className="mt-2.5 text-xs text-slate-500">{completedDate}</p>
                           {job.status === 'failed' && job.error_message && (
                             <p className="mt-2.5 text-xs text-red-400">{job.error_message}</p>
@@ -4010,12 +4017,12 @@ export default function App() {
                               </td>
                               <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
                                 <div className="space-y-1">
-                                  <div>
+                                  <div className="flex items-center gap-2">
+                                    {fallbackInfo && <FallbackIndicator />}
                                     <span>{formatResolution(job.source_resolution)}</span>
                                     <span className="mx-1.5 text-slate-600">·</span>
                                     <span>{formatHdrIndicator(job.source_is_hdr)}</span>
                                   </div>
-                                  {fallbackInfo && <FallbackNotice compact />}
                                 </div>
                               </td>
                               <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
