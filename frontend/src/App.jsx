@@ -198,8 +198,8 @@ export function mergeDownloadJobsWithUpdate(previousJobs, nextDownloadJob) {
   const previousStatus = String(previousJob?.status ?? '').toLowerCase();
 
   // Websocket events can arrive out of order around import completion.
-  // Never allow a completed row to regress back into an active download state.
-  if (previousStatus === 'complete' && ACTIVE_DL_STATUSES.has(nextStatus)) {
+  // Never allow a terminal row to regress back into an active download state.
+  if (TERMINAL_DL_STATUSES.has(previousStatus) && ACTIVE_DL_STATUSES.has(nextStatus)) {
     return previousJobs;
   }
 
@@ -325,6 +325,30 @@ function compareActiveJobsYearOldest(a, b) {
   if (yearA) return -1;
   if (yearB) return 1;
   return a.id - b.id;
+}
+
+export function compareDownloadHistoryJobsByOption(a, b, sortOption) {
+  if (sortOption === 'year_newest' || sortOption === 'year_oldest') {
+    const yearA = extractTitleYear(a.source_file_path).year;
+    const yearB = extractTitleYear(b.source_file_path).year;
+    if (yearA && yearB) {
+      return sortOption === 'year_newest'
+        ? Number(yearB) - Number(yearA)
+        : Number(yearA) - Number(yearB);
+    }
+    if (yearA) return -1;
+    if (yearB) return 1;
+  }
+
+  const completedA = Date.parse(a.completed_at || '') || 0;
+  const completedB = Date.parse(b.completed_at || '') || 0;
+  if (completedA !== completedB) return completedB - completedA;
+
+  const createdA = Date.parse(a.created_at || '') || 0;
+  const createdB = Date.parse(b.created_at || '') || 0;
+  if (createdA !== createdB) return createdB - createdA;
+
+  return b.id - a.id;
 }
 
 function formatResolution(height) {
@@ -1038,11 +1062,16 @@ export default function App() {
     [downloadJobs],
   );
 
-  const filteredTerminalDownloadHistoryJobs = useMemo(
-    () => terminalDownloadHistoryJobs.filter((dj) => downloadJobMatchesSearch(dj, historySearch, libraryById)),
-    [terminalDownloadHistoryJobs, historySearch, libraryById],
+  const sortedTerminalDownloadHistoryJobs = useMemo(
+    () => [...terminalDownloadHistoryJobs].sort((a, b) => compareDownloadHistoryJobsByOption(a, b, historySort)),
+    [terminalDownloadHistoryJobs, historySort],
   );
-  const totalHistoryCount = sortedHistoryJobs.length + terminalDownloadHistoryJobs.length;
+
+  const filteredTerminalDownloadHistoryJobs = useMemo(
+    () => sortedTerminalDownloadHistoryJobs.filter((dj) => downloadJobMatchesSearch(dj, historySearch, libraryById)),
+    [sortedTerminalDownloadHistoryJobs, historySearch, libraryById],
+  );
+  const totalHistoryCount = sortedHistoryJobs.length + sortedTerminalDownloadHistoryJobs.length;
   const visibleHistoryCount = filteredHistoryJobs.length + filteredTerminalDownloadHistoryJobs.length;
 
   const activeDlQueueItems = useMemo(
@@ -1733,7 +1762,9 @@ export default function App() {
       // Remove terminal download jobs from local state immediately — the server
       // endpoint now clears both encode history and terminal download jobs.
       setDownloadJobs((prev) => prev.filter((dj) => !TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())));
-      pushToast(`Purged ${result.removed_job_ids.length} history item(s).`, 'success');
+      const removedEncodeCount = result?.removed_job_ids?.length ?? 0;
+      const removedDownloadCount = result?.removed_download_job_ids?.length ?? 0;
+      pushToast(`Purged ${removedEncodeCount + removedDownloadCount} history item(s).`, 'success');
       await refreshAll();
     } catch (actionError) {
       pushToast(actionError.message || 'Purge history failed.', 'error');
@@ -3107,6 +3138,7 @@ export default function App() {
                       onChange={(e) => {
                         setHistorySort(e.target.value);
                         setEncodeHistoryPage(1);
+                        setDownloadHistoryPage(1);
                       }}
                       className="w-48 py-1.5 text-xs"
                     >

@@ -36,6 +36,36 @@ describe('buildUnifiedQueueItems', () => {
     expect(items.map((item) => item.id)).toEqual(expectedIds);
   });
 
+  it('uses created_at rather than id for date-added ordering', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 50, status: 'queued', source_path: '/media/Older.Created.mkv', created_at: '2026-03-01T09:00:00Z' },
+        { id: 1, status: 'queued', source_path: '/media/Newer.Created.mkv', created_at: '2026-03-01T10:00:00Z' },
+      ],
+      downloadItems: [],
+      sortOption: 'default',
+      extractTitleYear,
+      pinActiveFirst: false,
+    });
+
+    expect(items.map((item) => item.id)).toEqual([50, 1]);
+  });
+
+  it('uses created_at rather than id for newest ordering', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 50, status: 'queued', source_path: '/media/Older.Created.mkv', created_at: '2026-03-01T09:00:00Z' },
+        { id: 1, status: 'queued', source_path: '/media/Newer.Created.mkv', created_at: '2026-03-01T10:00:00Z' },
+      ],
+      downloadItems: [],
+      sortOption: 'newest',
+      extractTitleYear,
+      pinActiveFirst: false,
+    });
+
+    expect(items.map((item) => item.id)).toEqual([1, 50]);
+  });
+
   it('can optionally pin active items first and prefer active encodes', () => {
     const items = buildUnifiedQueueItems({
       encodeItems,

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildQrCodeDataUrl,
+  compareDownloadHistoryJobsByOption,
   downloadJobMatchesSearch,
   estimateDownloadEtaSeconds,
   getDownloadEtaSeconds,
@@ -82,6 +83,19 @@ describe('mergeDownloadJobsWithUpdate', () => {
     expect(merged[0].status).toBe('complete');
   });
 
+  it.each(['failed', 'timed_out', 'fallback_queued'])(
+    'ignores stale active update after a job is already %s',
+    (terminalStatus) => {
+      const previousJobs = [
+        { id: 7, status: terminalStatus, progress_percent: 100, completed_at: '2026-02-28T10:00:00Z' },
+      ];
+
+      const merged = mergeDownloadJobsWithUpdate(previousJobs, { id: 7, status: 'downloading', progress_percent: 55 });
+
+      expect(merged[0].status).toBe(terminalStatus);
+    },
+  );
+
   it('allows normal active progression updates', () => {
     const previousJobs = [
       { id: 8, status: 'downloading', progress_percent: 43 },
@@ -91,6 +105,31 @@ describe('mergeDownloadJobsWithUpdate', () => {
 
     expect(merged[0].status).toBe('moving');
     expect(merged[0].progress_percent).toBe(88);
+  });
+});
+
+describe('compareDownloadHistoryJobsByOption', () => {
+  it('sorts newest completed downloads first by default', () => {
+    const jobs = [
+      { id: 1, source_file_path: '/downloads/Older.2020.mkv', completed_at: '2026-03-01T10:00:00Z', created_at: '2026-03-01T09:00:00Z' },
+      { id: 2, source_file_path: '/downloads/Newer.2021.mkv', completed_at: '2026-03-01T12:00:00Z', created_at: '2026-03-01T11:00:00Z' },
+    ];
+
+    const sorted = [...jobs].sort((a, b) => compareDownloadHistoryJobsByOption(a, b, 'completed_desc'));
+
+    expect(sorted.map((job) => job.id)).toEqual([2, 1]);
+  });
+
+  it('sorts download history by release year when requested', () => {
+    const jobs = [
+      { id: 1, source_file_path: '/downloads/Older.2020.mkv', completed_at: '2026-03-01T12:00:00Z', created_at: '2026-03-01T11:00:00Z' },
+      { id: 2, source_file_path: '/downloads/Newest.2024.mkv', completed_at: '2026-03-01T10:00:00Z', created_at: '2026-03-01T09:00:00Z' },
+      { id: 3, source_file_path: '/downloads/Unknown.mkv', completed_at: '2026-03-01T13:00:00Z', created_at: '2026-03-01T08:00:00Z' },
+    ];
+
+    const sorted = [...jobs].sort((a, b) => compareDownloadHistoryJobsByOption(a, b, 'year_newest'));
+
+    expect(sorted.map((job) => job.id)).toEqual([2, 1, 3]);
   });
 });
 

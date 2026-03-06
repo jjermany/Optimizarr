@@ -679,6 +679,7 @@ class AbortAllJobsResponse(BaseModel):
 
 class RemoveAllJobsResponse(BaseModel):
     removed_job_ids: list[int]
+    removed_download_job_ids: list[int] = []
 
 
 class CancelAllQueuedResponse(BaseModel):
@@ -1605,9 +1606,16 @@ def remove_all_jobs_endpoint(_: None = Depends(require_ui_auth), db: Session = D
         DownloadJobStatus.timed_out.value,
         DownloadJobStatus.fallback_queued.value,
     }
-    db.query(DownloadJob).filter(DownloadJob.status.in_(_TERMINAL_DL)).delete(synchronize_session=False)
+    removed_download_job_ids = [
+        row[0] for row in db.query(DownloadJob.id).filter(DownloadJob.status.in_(_TERMINAL_DL)).all()
+    ]
+    if removed_download_job_ids:
+        db.query(DownloadJob).filter(DownloadJob.id.in_(removed_download_job_ids)).delete(synchronize_session=False)
     db.commit()
-    return RemoveAllJobsResponse(removed_job_ids=removed_job_ids)
+    return RemoveAllJobsResponse(
+        removed_job_ids=removed_job_ids,
+        removed_download_job_ids=removed_download_job_ids,
+    )
 
 
 @router.post('/jobs/cancel-all-queued', response_model=CancelAllQueuedResponse)

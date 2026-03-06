@@ -59,6 +59,14 @@ function compareById(left, right, direction = 'asc') {
   return queueItemPath(left).localeCompare(queueItemPath(right));
 }
 
+function compareByCreatedAt(left, right, direction = 'asc') {
+  const leftTs = Date.parse(left.created_at || '') || 0;
+  const rightTs = Date.parse(right.created_at || '') || 0;
+  const tsDelta = direction === 'desc' ? rightTs - leftTs : leftTs - rightTs;
+  if (tsDelta !== 0) return tsDelta;
+  return compareById(left, right, direction);
+}
+
 function queuePinRank(item) {
   if (item._itemType === 'encode' && ENCODE_ACTIVE_STATUSES.has(item.status?.toLowerCase())) return 0;
   if (item._itemType === 'download' && DOWNLOAD_ACTIVE_STATUSES.has(item.status)) return 1;
@@ -68,7 +76,7 @@ function queuePinRank(item) {
 
 export function compareQueueItemsBySortOption(left, right, sortOption, extractTitleYear) {
   if (sortOption === 'newest') {
-    return compareById(left, right, 'desc');
+    return compareByCreatedAt(left, right, 'desc');
   }
 
   if (sortOption === 'year_newest' || sortOption === 'year_oldest') {
@@ -81,10 +89,10 @@ export function compareQueueItemsBySortOption(left, right, sortOption, extractTi
     }
     if (leftYear) return -1;
     if (rightYear) return 1;
-    return compareById(left, right, sortOption === 'year_newest' ? 'desc' : 'asc');
+    return compareByCreatedAt(left, right, sortOption === 'year_newest' ? 'desc' : 'asc');
   }
 
-  return compareById(left, right, 'asc');
+  return compareByCreatedAt(left, right, 'asc');
 }
 
 export function isPinnedActiveQueueItem(item) {

@@ -1301,6 +1301,7 @@ def test_abort_all_jobs_endpoint():
 
 def test_remove_all_jobs_endpoint_removes_only_terminal_jobs():
     from app.core.database import SessionLocal
+    from app.models.download_job import DownloadJob
     from app.models.job import Job
 
     with TestClient(app) as client:
@@ -1318,17 +1319,27 @@ def test_remove_all_jobs_endpoint_removes_only_terminal_jobs():
             assert complete_job is not None
             assert queued_job is not None
             complete_job.status = 'skipped'
+            download_job = DownloadJob(
+                library_id=None,
+                source_file_path='/downloads/complete-remove.mkv',
+                status='failed',
+                progress_percent=100,
+            )
+            db.add(download_job)
             db.commit()
+            download_job_id = download_job.id
 
         response = client.post('/jobs/remove-all')
         assert response.status_code == 200
         payload = response.json()
         assert complete_id in payload['removed_job_ids']
         assert queued_id not in payload['removed_job_ids']
+        assert download_job_id in payload['removed_download_job_ids']
 
         with SessionLocal() as db:
             assert db.query(Job).filter(Job.id == complete_id).first() is None
             assert db.query(Job).filter(Job.id == queued_id).first() is not None
+            assert db.query(DownloadJob).filter(DownloadJob.id == download_job_id).first() is None
 
         cleanup = client.post('/jobs/abort-all')
         assert cleanup.status_code == 200
