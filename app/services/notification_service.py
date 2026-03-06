@@ -313,6 +313,28 @@ def enqueue_job_complete(job: Job) -> None:
     enqueue_email(subject='Optimizarr job complete', body=body)
 
 
+def enqueue_download_job_complete(download_job: DownloadJob) -> None:
+    db = SessionLocal()
+    try:
+        settings = get_or_create_notification_settings(db)
+        if not settings.notify_on_job_complete:
+            return
+        library_name = None
+        if download_job.library_id:
+            library = db.query(Library).filter(Library.id == download_job.library_id).first()
+            library_name = library.name if library else None
+    finally:
+        db.close()
+
+    file_name = format_display_name(download_job.source_file_path)
+    body = (
+        f'Library: {library_name or "unknown"}\n'
+        f'File: {file_name}\n'
+        f'Status: Download imported successfully.\n'
+    )
+    enqueue_email(subject='Optimizarr job complete', body=body)
+
+
 def enqueue_job_failed(job: Job) -> None:
     with _batch_lock:
         for batch in _batches:
@@ -342,6 +364,30 @@ def enqueue_job_failed(job: Job) -> None:
         file_name=file_name,
         reason=job.error_message or 'optimization_failed',
         suggested_action='Review the file and encoder settings, then retry the job.',
+    )
+    enqueue_email(subject='Optimizarr job failed', body=body)
+
+
+def enqueue_download_job_failed(download_job: DownloadJob) -> None:
+    file_name = format_display_name(download_job.source_file_path)
+
+    db = SessionLocal()
+    try:
+        settings = get_or_create_notification_settings(db)
+        if not settings.notify_on_job_failed:
+            return
+        library_name = None
+        if download_job.library_id:
+            library = db.query(Library).filter(Library.id == download_job.library_id).first()
+            library_name = library.name if library else None
+    finally:
+        db.close()
+
+    body = _format_notification_body(
+        library_name=library_name,
+        file_name=file_name,
+        reason=download_job.error_message or 'download_failed',
+        suggested_action='Review the download/import logs and retry the job.',
     )
     enqueue_email(subject='Optimizarr job failed', body=body)
 

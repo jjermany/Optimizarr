@@ -254,6 +254,31 @@ def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
         assert updated['notify_on']['job_interrupted'] is True
         assert updated['notify_on']['low_disk_pause'] is True
         assert updated['notify_on']['recovery_ran'] is True
+        assert updated['notify_on']['batch_complete'] is True
+
+        toggle_response = client.put(
+            '/notifications/settings',
+            json={
+                'smtp_tls': False,
+                'notify_on': {
+                    'job_complete': False,
+                    'job_failed': False,
+                    'job_interrupted': False,
+                    'low_disk_pause': False,
+                    'recovery_ran': False,
+                    'batch_complete': False,
+                },
+            },
+        )
+        assert toggle_response.status_code == 200
+        toggled = toggle_response.json()
+        assert toggled['smtp_tls'] is False
+        assert toggled['notify_on']['job_complete'] is False
+        assert toggled['notify_on']['job_failed'] is False
+        assert toggled['notify_on']['job_interrupted'] is False
+        assert toggled['notify_on']['low_disk_pause'] is False
+        assert toggled['notify_on']['recovery_ran'] is False
+        assert toggled['notify_on']['batch_complete'] is False
 
         test_response = client.post('/notifications/test')
         assert test_response.status_code == 202

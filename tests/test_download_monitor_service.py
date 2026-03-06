@@ -10,6 +10,7 @@ from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum
 from app.models.settings import QueueSortEnum, Settings
+from app.services import download_client_service, notification_service
 from app.services.download_monitor_service import (
     _build_prowlarr_query,
     _build_second_pass_search_query,
@@ -18,6 +19,7 @@ from app.services.download_monitor_service import (
     _build_search_query,
     _check_download_progress,
     _import_file,
+    _mark_failed,
     _process_searching_jobs,
     _release_matches_source_title,
     _release_title_matches_profile,
@@ -629,10 +631,7 @@ def test_download_job_exists_for_source_ignores_stale_complete_without_imported_
         db.commit()
 
         assert download_job_exists_for_source(db, source_path) is False
-
-
 from app.models.library import Library, LibraryProfile
-from app.services import download_client_service
 
 
 def _seed_library_with_profile(db):
@@ -2751,6 +2750,59 @@ def test_import_file_sab_falls_back_to_copy_when_rename_hits_cross_device(monkey
         assert replace_calls[0][0] == str(completed_video)
 
 
+def test_import_file_sends_completion_notification(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        source = tmp_path / 'library' / 'The Gorge (2025).mkv'
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b'source')
+
+        completed_dir = tmp_path / 'complete' / 'torrent' / 'The.Gorge.2025.1080p.WEB-DL'
+        completed_dir.mkdir(parents=True)
+        completed_video = completed_dir / 'The.Gorge.2025.1080p.WEB-DL.mkv'
+        completed_video.write_bytes(b'downloaded-video')
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path=str(source),
+            release_name='The.Gorge.2025.1080p.WEB-DL',
+            download_hash='deadbeef',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        queued = []
+        monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+        monkeypatch.setattr(download_client_service, 'remove_qbt_torrent', lambda *_args, **_kwargs: True)
+
+        _import_file(
+            db,
+            dj,
+            str(completed_dir),
+            library,
+            library.profile,
+            SimpleNamespace(enabled=True),
+            SimpleNamespace(enabled=False),
+        )
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.complete.value
+        assert queued == [
+            (
+                'Optimizarr job complete',
+                'Library: Movies\nFile: The Gorge (2025)\nStatus: Download imported successfully.\n',
+            )
+        ]
+
+
 def test_import_file_sab_no_video_retries_and_purges_completed_directory(monkeypatch, tmp_path):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
@@ -2808,3 +2860,39 @@ def test_import_file_sab_no_video_retries_and_purges_completed_directory(monkeyp
         assert dj.client_type is None
         assert not completed_dir.exists()
         assert removed_sab == [('SABNZBD_NZO_monkey1', True)]
+
+
+def test_mark_failed_sends_failure_notification(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Movies/The Gorge (2025).mkv',
+            release_name='The.Gorge.2025.1080p.WEB-DL',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        queued = []
+        monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+
+        _mark_failed(db, dj, 'Download timed out after 60 minutes')
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.failed.value
+        assert queued == [
+            (
+                'Optimizarr job failed',
+                'Library: Movies\n'
+                'File: The Gorge (2025)\n'
+                'Reason: Download timed out after 60 minutes\n'
+                'Suggested action: Review the download/import logs and retry the job.\n',
+            )
+        ]

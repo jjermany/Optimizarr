@@ -21,7 +21,7 @@ from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum, Library, LibraryProfile
 from app.models.settings import QueueSortEnum, Settings
-from app.services import download_client_service, prowlarr_service
+from app.services import download_client_service, notification_service, prowlarr_service
 from app.services.job_service import create_job
 from app.services.optimization_service import is_hdr_video, probe_video_height, stop_active_ffmpeg
 from app.services.realtime_service import broker
@@ -2359,6 +2359,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             db.commit()
             db.refresh(dj)
             _publish_download_job(dj)
+            notification_service.enqueue_download_job_complete(dj)
             _cleanup_download_client(dj, qbt, sab, save_path=save_path, delete_files=True)
             return
 
@@ -2444,6 +2445,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
+    notification_service.enqueue_download_job_complete(dj)
     _link_completed_downloads_to_waiting_jobs(db)
 
     # Clean up the download client entry after a successful import
@@ -2791,6 +2793,7 @@ def _mark_failed(db: Session, dj: DownloadJob, reason: str) -> None:
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
+    notification_service.enqueue_download_job_failed(dj)
     logger.warning('Download job %s failed: %s', dj.id, reason)
 
 
