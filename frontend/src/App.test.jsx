@@ -2,14 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildQrCodeDataUrl,
+  buildFallbackHistoryByEncodeJobId,
   compareDownloadHistoryJobsByOption,
   downloadJobMatchesSearch,
   estimateDownloadEtaSeconds,
   extractTitleYear,
+  getDisplayTitle,
   getDownloadEtaSeconds,
   libraryQueueCount,
   mergeDownloadJobsWithUpdate,
   mergeJobsWithUpdate,
+  shouldShowDownloadElapsed,
 } from './App';
 
 describe('buildQrCodeDataUrl', () => {
@@ -134,6 +137,20 @@ describe('compareDownloadHistoryJobsByOption', () => {
   });
 });
 
+describe('buildFallbackHistoryByEncodeJobId', () => {
+  it('indexes fallback_queued download rows by encode job id', () => {
+    const downloadJobs = [
+      { id: 1, status: 'fallback_queued', encode_job_id: 206, source_file_path: '/downloads/Euphoria.S01E07.mkv' },
+      { id: 2, status: 'complete', encode_job_id: 207, source_file_path: '/downloads/Other.Movie.2024.mkv' },
+      { id: 3, status: 'fallback_queued', encode_job_id: null, source_file_path: '/downloads/Unknown.mkv' },
+    ];
+
+    expect(buildFallbackHistoryByEncodeJobId(downloadJobs)).toEqual({
+      206: downloadJobs[0],
+    });
+  });
+});
+
 describe('extractTitleYear', () => {
   it('falls back to the show folder year for TV episode paths', () => {
     expect(extractTitleYear('/media/TV/Severance (2022)/Season 01/Severance.S01E03.2160p.mkv')).toEqual({
@@ -156,6 +173,20 @@ describe('extractTitleYear', () => {
       title: 'Fallout S01E07 The Radio 2024 1080p Amazon WEB-DL HEVC DDP5 1',
       year: '2024',
     });
+  });
+});
+
+describe('getDisplayTitle', () => {
+  it('uses show name and episode code for TV episode paths', () => {
+    expect(getDisplayTitle('/media/TV/Euphoria (2019)/Season 01/Euphoria.S01E07.The.Trials.and.Tribulations.of.Trying.to.Pee.While.Depressed.2160p.mkv')).toBe('Euphoria S01E07');
+  });
+
+  it('normalizes alternate TV episode markers', () => {
+    expect(getDisplayTitle('/media/TV/Severance (2022)/Season 01/Severance.1x03.2160p.WEB-DL.mkv')).toBe('Severance S01E03');
+  });
+
+  it('keeps movie titles unchanged', () => {
+    expect(getDisplayTitle('/media/Movies/Shadow.of.God.2025.2160p.mkv')).toBe('Shadow of God');
   });
 });
 
@@ -224,6 +255,32 @@ describe('libraryQueueCount', () => {
     ];
 
     expect(libraryQueueCount(library, jobs, downloadJobs)).toBe(2);
+  });
+
+  it('matches the visible queue count when queued encode placeholder and waiting_encode share a title', () => {
+    const library = { id: 7, path: '/data/media/tv' };
+    const jobs = [
+      { id: 209, status: 'running', library_id: 7, source_path: '/data/media/tv/Game of Thrones (2011)/Season 01/Game of Thrones.S01E01.mkv' },
+      { id: 220, status: 'queued', library_id: 7, source_path: '/downloads/Game.of.Thrones.2011.S01E02.1080p.WEB-DL.mkv' },
+      { id: 221, status: 'queued', library_id: 7, source_path: '/downloads/Game.of.Thrones.2011.S01E03.1080p.WEB-DL.mkv' },
+    ];
+    const downloadJobs = [
+      { id: 320, status: 'waiting_encode', library_id: 7, source_file_path: '/downloads/Game.of.Thrones.2011.S01E02.1080p.WEB-DL.mkv' },
+      { id: 321, status: 'waiting_encode', library_id: 7, source_file_path: '/downloads/Game.of.Thrones.2011.S01E03.1080p.WEB-DL.mkv' },
+    ];
+
+    expect(libraryQueueCount(library, jobs, downloadJobs)).toBe(3);
+  });
+});
+
+describe('shouldShowDownloadElapsed', () => {
+  it('hides elapsed time for waiting_encode placeholders', () => {
+    expect(shouldShowDownloadElapsed('waiting_encode')).toBe(false);
+  });
+
+  it('shows elapsed time for actively progressing download states', () => {
+    expect(shouldShowDownloadElapsed('downloading')).toBe(true);
+    expect(shouldShowDownloadElapsed('importing')).toBe(true);
   });
 });
 

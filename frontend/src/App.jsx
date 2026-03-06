@@ -270,8 +270,30 @@ function libraryDownloadQueueCount(library, downloadJobs, activeEncodeIdentities
 }
 
 export function libraryQueueCount(library, jobs, downloadJobs) {
-  const activeEncodeIdentities = buildLibraryActiveEncodeIdentitySet(library, jobs);
-  return libraryEncodeQueueCount(library, jobs) + libraryDownloadQueueCount(library, downloadJobs, activeEncodeIdentities);
+  const libraryEncodeItems = jobs.filter((job) => isActiveLibraryEncodeQueueJob(library, job));
+  const libraryDownloadItems = downloadJobs.filter((job) => {
+    const status = String(job.status ?? '').toLowerCase();
+    return ACTIVE_DL_STATUSES.has(status) && job.library_id === library.id;
+  });
+  const libraryDedupeSourcePaths = new Set(
+    downloadJobs
+      .filter((job) => job.library_id === library.id && QUEUE_DEDUPE_DL_STATUSES.has(String(job.status ?? '').toLowerCase()))
+      .map((job) => String(job.source_file_path ?? '').trim())
+      .filter(Boolean),
+  );
+
+  return buildUnifiedQueueItems({
+    encodeItems: libraryEncodeItems,
+    downloadItems: libraryDownloadItems,
+    sortOption: 'default',
+    extractTitleYear,
+    pinActiveFirst: true,
+    dedupeSourcePaths: libraryDedupeSourcePaths,
+  }).length;
+}
+
+export function shouldShowDownloadElapsed(status) {
+  return ['searching', 'downloading', 'moving', 'stalled', 'importing'].includes(String(status ?? '').toLowerCase());
 }
 
 function jobSortRank(job) {
@@ -445,6 +467,18 @@ export function downloadJobMatchesSearch(downloadJob, search, libraryById = {}) 
   );
 }
 
+export function buildFallbackHistoryByEncodeJobId(downloadJobs) {
+  const byEncodeJobId = {};
+  for (const dj of downloadJobs) {
+    if (String(dj?.status ?? '').toLowerCase() !== 'fallback_queued') continue;
+    if (dj?.encode_job_id == null) continue;
+    const encodeJobId = Number(dj?.encode_job_id);
+    if (!Number.isFinite(encodeJobId)) continue;
+    byEncodeJobId[encodeJobId] = dj;
+  }
+  return byEncodeJobId;
+}
+
 export async function buildQrCodeDataUrl(value) {
   const trimmed = String(value ?? '').trim();
   if (!trimmed) return '';
@@ -515,6 +549,18 @@ function looksLikeTvEpisodeSegment(value) {
     || /\b\d{1,2}x\d{1,3}\b/i.test(normalized);
 }
 
+function extractEpisodeCode(value) {
+  const normalized = normalizeTitleSegment(value);
+  const standardMatch = normalized.match(/\b(S\d{1,2}E\d{1,3})\b/i);
+  if (standardMatch) return standardMatch[1].toUpperCase();
+
+  const altMatch = normalized.match(/\b(\d{1,2})x(\d{1,3})\b/i);
+  if (!altMatch) return null;
+  const season = altMatch[1].padStart(2, '0');
+  const episode = altMatch[2].padStart(2, '0');
+  return `S${season}E${episode}`;
+}
+
 export function extractTitleYear(filePath) {
   const pathParts = String(filePath || '').split('/').filter(Boolean);
   const fileName = pathParts[pathParts.length - 1] || '';
@@ -541,6 +587,29 @@ export function extractTitleYear(filePath) {
   }
 
   return parsedFile;
+}
+
+export function getDisplayTitle(filePath) {
+  const pathParts = String(filePath || '').split('/').filter(Boolean);
+  const fileName = pathParts[pathParts.length - 1] || '';
+  const stem = fileName.replace(/\.[^.]+$/, '');
+  if (!looksLikeTvEpisodeSegment(stem)) {
+    return extractTitleYear(filePath).title || '—';
+  }
+
+  const directParent = pathParts[pathParts.length - 2] || '';
+  const showDirectory = looksLikeTvContainerSegment(directParent)
+    ? (pathParts[pathParts.length - 3] || '')
+    : directParent;
+  const parsedShow = parseYearFromSegment(showDirectory);
+  const episodeCode = extractEpisodeCode(stem);
+  if (parsedShow.title && episodeCode) {
+    return `${parsedShow.title} ${episodeCode}`;
+  }
+  if (parsedShow.title) {
+    return parsedShow.title;
+  }
+  return extractTitleYear(filePath).title || '—';
 }
 
 
@@ -1025,6 +1094,8 @@ export default function App() {
   const [jobsView, setJobsView] = useState(() => (jobsUiPrefs.jobsView === 'history' ? 'history' : 'queue'));
   const [nowHour, setNowHour] = useState(() => new Date().getHours());
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [pendingJobActions, setPendingJobActions] = useState({});
+  const [pendingDownloadActions, setPendingDownloadActions] = useState({});
 
   const wsRef = useRef();
   const downloadReconcileInFlightRef = useRef(false);
@@ -1098,8 +1169,16 @@ export default function App() {
     [sortedHistoryJobs, historySearch, libraryById],
   );
 
+  const fallbackHistoryByEncodeJobId = useMemo(
+    () => buildFallbackHistoryByEncodeJobId(downloadJobs),
+    [downloadJobs],
+  );
+
   const terminalDownloadHistoryJobs = useMemo(
-    () => downloadJobs.filter((dj) => TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())),
+    () => downloadJobs.filter((dj) => {
+      const status = String(dj.status ?? '').toLowerCase();
+      return TERMINAL_DL_STATUSES.has(status) && status !== 'fallback_queued';
+    }),
     [downloadJobs],
   );
 
@@ -1778,6 +1857,8 @@ export default function App() {
   }, [authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
   async function handleJobAction(action, jobId) {
+    if (pendingJobActions[jobId]) return;
+    setPendingJobActions((prev) => ({ ...prev, [jobId]: action }));
     try {
       if (action === 'cancel') mergeJobUpdate(await cancelJob(jobId));
       else if (action === 'requeue') mergeJobUpdate(await requeueJob(jobId));
@@ -1791,6 +1872,12 @@ export default function App() {
       else if (action === 'remove') { await deleteJob(jobId); setJobs((prev) => prev.filter((j) => j.id !== jobId)); }
     } catch (actionError) {
       pushToast(actionError.message || 'Job action failed.', 'error');
+    } finally {
+      setPendingJobActions((prev) => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
     }
   }
 
@@ -2300,36 +2387,62 @@ export default function App() {
   }
 
   async function handleCancelDownloadJob(jobId) {
+    if (pendingDownloadActions[jobId]) return;
+    setPendingDownloadActions((prev) => ({ ...prev, [jobId]: 'remove_reset' }));
     try {
       await removeAndResetDownloadJob(jobId);
-      const updated = await fetchDownloadJobs();
-      setDownloadJobs((updated ?? []).map(normalizeDownloadJob));
-      await refreshAll();
+      const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
+      setJobs(nextJobs ?? []);
+      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
       pushToast('Download removed from client, files deleted, and reset to pending.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not remove/reset download job.', 'error');
+    } finally {
+      setPendingDownloadActions((prev) => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
     }
   }
 
   async function handleRetryDownloadJob(jobId) {
+    if (pendingDownloadActions[jobId]) return;
+    setPendingDownloadActions((prev) => ({ ...prev, [jobId]: 'retry' }));
     try {
       await retryDownloadJob(jobId);
-      const updated = await fetchDownloadJobs();
-      setDownloadJobs((updated ?? []).map(normalizeDownloadJob));
+      const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
+      setJobs(nextJobs ?? []);
+      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
       pushToast('Download job re-queued for search.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not retry download job.', 'error');
+    } finally {
+      setPendingDownloadActions((prev) => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
     }
   }
 
   async function handleDeleteDownloadJob(jobId) {
+    if (pendingDownloadActions[jobId]) return;
+    setPendingDownloadActions((prev) => ({ ...prev, [jobId]: 'delete' }));
     try {
       await deleteDownloadJob(jobId);
-      const updated = await fetchDownloadJobs();
-      setDownloadJobs((updated ?? []).map(normalizeDownloadJob));
+      const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
+      setJobs(nextJobs ?? []);
+      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
       pushToast('Download job removed.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not remove download job.', 'error');
+    } finally {
+      setPendingDownloadActions((prev) => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
     }
   }
 
@@ -3226,12 +3339,15 @@ export default function App() {
                     {pagedJobs.map((item) => {
                       if (item._itemType === 'download') {
                         const dj = item;
-                        const { title, year } = extractTitleYear(dj.source_file_path);
+                        const { year } = extractTitleYear(dj.source_file_path);
+                        const title = getDisplayTitle(dj.source_file_path);
                         const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
+                        const downloadActionPending = pendingDownloadActions[dj.id];
                         const elapsedStart = dj.download_started_at ?? dj.created_at;
                         const elapsedSeconds = getElapsedSeconds(elapsedStart, nowMs);
                         const elapsedLabel = formatElapsed(elapsedSeconds);
                         const showEta = ['searching', 'downloading', 'moving', 'importing'].includes(dj.status);
+                        const showElapsed = shouldShowDownloadElapsed(dj.status);
                         const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
                         const speedLabel = formatDownloadSpeed(dj.download_speed_bps);
                         const retryLabel = formatDownloadRetry(dj);
@@ -3256,7 +3372,7 @@ export default function App() {
                             </div>
                             <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
                               {showEta && <span>ETA: {etaLabel}</span>}
-                              {dj.status !== 'pending' && <span>Elapsed: {elapsedLabel}</span>}
+                              {showElapsed && <span>Elapsed: {elapsedLabel}</span>}
                               {speedLabel && <span>Speed: {speedLabel}</span>}
                               {retryLabel && <span>{retryLabel}</span>}
                               {clientLabel && <span>Client: {clientLabel}</span>}
@@ -3273,22 +3389,30 @@ export default function App() {
                             {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
                             <MobileActionMenu>
                               {['searching', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
-                                <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Remove + Reset</Btn>
+                                <Btn size="sm" variant="danger" disabled={Boolean(downloadActionPending)} onClick={() => handleCancelDownloadJob(dj.id)}>
+                                  {downloadActionPending === 'remove_reset' ? 'Working…' : 'Remove + Reset'}
+                                </Btn>
                               )}
                               {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
-                                <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
+                                <Btn size="sm" variant="primary" disabled={Boolean(downloadActionPending)} onClick={() => handleRetryDownloadJob(dj.id)}>
+                                  {downloadActionPending === 'retry' ? 'Working…' : 'Retry'}
+                                </Btn>
                               )}
-                              <Btn size="sm" variant="secondary" onClick={() => handleDeleteDownloadJob(dj.id)}>Delete</Btn>
+                              <Btn size="sm" variant="secondary" disabled={Boolean(downloadActionPending)} onClick={() => handleDeleteDownloadJob(dj.id)}>
+                                {downloadActionPending === 'delete' ? 'Working…' : 'Delete'}
+                              </Btn>
                             </MobileActionMenu>
                           </div>
                         );
                       }
 
                       const job = item;
+                      const jobActionPending = pendingJobActions[job.id];
                       const progress = progressFromJob(job);
                       const isRunning = job.status === 'running';
                       const eta = formatEta(job.eta_seconds);
-                      const { title, year } = extractTitleYear(job.source_path);
+                      const { year } = extractTitleYear(job.source_path);
+                      const title = getDisplayTitle(job.source_path);
                       const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
                       const activeDj = downloadJobBySource[job.source_path];
                       const djIsActive = activeDj && ['searching', 'downloading', 'moving', 'importing'].includes(activeDj.status);
@@ -3347,18 +3471,18 @@ export default function App() {
                             <div className="mt-1 text-xs text-slate-500">{progress}%</div>
                           </div>
                           <MobileActionMenu>
-                            {job.status === 'running' && <Btn size="sm" variant="warning" onClick={() => handleJobAction('pause', job.id)}>Pause</Btn>}
-                            {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
-                            {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && !jobDownloadEnabled && <Btn size="sm" variant="success" onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>Start</Btn>}
-                            {job.status === 'interrupted' && <Btn size="sm" variant="primary" onClick={() => handleJobAction('requeue', job.id)}>Requeue</Btn>}
+                            {job.status === 'running' && <Btn size="sm" variant="warning" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('pause', job.id)}>{jobActionPending === 'pause' ? 'Working…' : 'Pause'}</Btn>}
+                            {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('resume', job.id)}>{jobActionPending === 'resume' ? 'Working…' : 'Resume'}</Btn>}
+                            {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && !jobDownloadEnabled && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>{jobActionPending === 'start' || jobActionPending === 'start_paused' ? 'Working…' : 'Start'}</Btn>}
+                            {job.status === 'interrupted' && <Btn size="sm" variant="primary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('requeue', job.id)}>{jobActionPending === 'requeue' ? 'Working…' : 'Requeue'}</Btn>}
                             {(ACTIVE_STATUSES.has(job.status) || (job.status === 'paused' && progress > 0)) && (
-                              <Btn size="sm" variant="secondary" onClick={() => handleJobAction('discard', job.id)}>
-                                {jobDownloadEnabled ? 'Search Again' : 'Restart'}
+                              <Btn size="sm" variant="secondary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('discard', job.id)}>
+                                {jobActionPending === 'discard' ? 'Working…' : (jobDownloadEnabled ? 'Search Again' : 'Restart')}
                               </Btn>
                             )}
                             {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
-                              <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>
-                                Abort
+                              <Btn size="sm" variant="danger" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('abort', job.id)}>
+                                {jobActionPending === 'abort' ? 'Working…' : 'Abort'}
                               </Btn>
                             )}
                           </MobileActionMenu>
@@ -3393,8 +3517,10 @@ export default function App() {
                           // Download job row
                           if (item._itemType === 'download') {
                             const dj = item;
-                            const { title, year } = extractTitleYear(dj.source_file_path);
+                            const { year } = extractTitleYear(dj.source_file_path);
+                            const title = getDisplayTitle(dj.source_file_path);
                             const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
+                            const downloadActionPending = pendingDownloadActions[dj.id];
                             const statusColor =
                               dj.status === 'downloading' ? 'text-cyan-400' :
                               dj.status === 'moving' ? 'text-indigo-400' :
@@ -3407,6 +3533,7 @@ export default function App() {
                             const elapsedSeconds = getElapsedSeconds(elapsedStart, nowMs);
                             const elapsedLabel = formatElapsed(elapsedSeconds);
                             const showEta = ['searching', 'downloading', 'moving', 'importing'].includes(dj.status);
+                            const showElapsed = shouldShowDownloadElapsed(dj.status);
                             const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
                             const speedLabel = formatDownloadSpeed(dj.download_speed_bps);
                             const retryLabel = formatDownloadRetry(dj);
@@ -3431,7 +3558,7 @@ export default function App() {
                                   {retryLabel && <p className="mt-0.5 text-xs text-amber-300">{retryLabel}</p>}
                                   {clientLabel && <p className="mt-0.5 text-xs text-slate-500">Client: {clientLabel}</p>}
                                   {indexerLabel && <p className="mt-0.5 text-xs text-slate-500">Indexer: {indexerLabel}</p>}
-                                  {dj.status !== 'pending' && (
+                                  {showElapsed && (
                                     <p className="mt-0.5 text-xs text-slate-500" title={elapsedSeconds == null ? 'Missing created_at timestamp' : `${elapsedSeconds}s elapsed`}>
                                       Elapsed: {elapsedLabel}
                                     </p>
@@ -3455,12 +3582,18 @@ export default function App() {
                                 <td className="px-4 py-3">
                                   <div className="flex flex-wrap gap-1.5">
                                     {['searching', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
-                                      <Btn size="sm" variant="danger" onClick={() => handleCancelDownloadJob(dj.id)}>Remove + Reset</Btn>
+                                      <Btn size="sm" variant="danger" disabled={Boolean(downloadActionPending)} onClick={() => handleCancelDownloadJob(dj.id)}>
+                                        {downloadActionPending === 'remove_reset' ? 'Working…' : 'Remove + Reset'}
+                                      </Btn>
                                     )}
                                     {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
-                                      <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
+                                      <Btn size="sm" variant="primary" disabled={Boolean(downloadActionPending)} onClick={() => handleRetryDownloadJob(dj.id)}>
+                                        {downloadActionPending === 'retry' ? 'Working…' : 'Retry'}
+                                      </Btn>
                                     )}
-                                    <Btn size="sm" variant="secondary" onClick={() => handleDeleteDownloadJob(dj.id)}>Delete</Btn>
+                                    <Btn size="sm" variant="secondary" disabled={Boolean(downloadActionPending)} onClick={() => handleDeleteDownloadJob(dj.id)}>
+                                      {downloadActionPending === 'delete' ? 'Working…' : 'Delete'}
+                                    </Btn>
                                   </div>
                                 </td>
                               </tr>
@@ -3469,10 +3602,12 @@ export default function App() {
 
                           // Encoding job row
                           const job = item;
+                          const jobActionPending = pendingJobActions[job.id];
                           const progress = progressFromJob(job);
                           const isRunning = job.status === 'running';
                           const eta = formatEta(job.eta_seconds);
-                          const { title, year } = extractTitleYear(job.source_path);
+                          const { year } = extractTitleYear(job.source_path);
+                          const title = getDisplayTitle(job.source_path);
                           const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
                           const activeDj = downloadJobBySource[job.source_path];
                           const djIsActive = activeDj && ['searching', 'downloading', 'moving', 'importing'].includes(activeDj.status);
@@ -3559,18 +3694,18 @@ export default function App() {
                               </td>
                               <td className="px-4 py-3">
                                 <div className="flex flex-wrap gap-1.5">
-                                  {job.status === 'running' && <Btn size="sm" variant="warning" onClick={() => handleJobAction('pause', job.id)}>Pause</Btn>}
-                                  {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" onClick={() => handleJobAction('resume', job.id)}>Resume</Btn>}
-                                  {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && !jobDownloadEnabled && <Btn size="sm" variant="success" onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>Start</Btn>}
-                                  {job.status === 'interrupted' && <Btn size="sm" variant="primary" onClick={() => handleJobAction('requeue', job.id)}>Requeue</Btn>}
+                                  {job.status === 'running' && <Btn size="sm" variant="warning" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('pause', job.id)}>{jobActionPending === 'pause' ? 'Working…' : 'Pause'}</Btn>}
+                                  {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('resume', job.id)}>{jobActionPending === 'resume' ? 'Working…' : 'Resume'}</Btn>}
+                                  {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && !jobDownloadEnabled && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>{jobActionPending === 'start' || jobActionPending === 'start_paused' ? 'Working…' : 'Start'}</Btn>}
+                                  {job.status === 'interrupted' && <Btn size="sm" variant="primary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('requeue', job.id)}>{jobActionPending === 'requeue' ? 'Working…' : 'Requeue'}</Btn>}
                                   {(ACTIVE_STATUSES.has(job.status) || (job.status === 'paused' && progress > 0)) && (
-                                    <Btn size="sm" variant="secondary" onClick={() => handleJobAction('discard', job.id)}>
-                                      {jobDownloadEnabled ? 'Search Again' : 'Restart'}
+                                    <Btn size="sm" variant="secondary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('discard', job.id)}>
+                                      {jobActionPending === 'discard' ? 'Working…' : (jobDownloadEnabled ? 'Search Again' : 'Restart')}
                                     </Btn>
                                   )}
                                   {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
-                                    <Btn size="sm" variant="danger" onClick={() => handleJobAction('abort', job.id)}>
-                                      Abort
+                                    <Btn size="sm" variant="danger" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('abort', job.id)}>
+                                      {jobActionPending === 'abort' ? 'Working…' : 'Abort'}
                                     </Btn>
                                   )}
                                 </div>
@@ -3611,9 +3746,12 @@ export default function App() {
                       </div>
                     )}
                     {pagedHistoryJobs.map((job) => {
-                      const { title, year } = extractTitleYear(job.source_path);
+                      const { year } = extractTitleYear(job.source_path);
+                      const title = getDisplayTitle(job.source_path);
                       const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
+                      const jobActionPending = pendingJobActions[job.id];
                       const histJobDownloadEnabled = !!libraryProfiles[job.library_id]?.download_enabled;
+                      const fallbackInfo = fallbackHistoryByEncodeJobId[job.id];
                       const completedDate = job.completed_at
                         ? new Date(job.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZoneName: 'short' })
                         : '—';
@@ -3631,6 +3769,11 @@ export default function App() {
                             <span>{year ?? '—'}</span>
                             <span>{libName}</span>
                           </div>
+                          {fallbackInfo && (
+                            <div className="mt-2 rounded-xl border border-amber-500/30 bg-amber-950/25 px-3 py-2 text-xs text-amber-200">
+                              Fallback used. Download attempt did not complete, so this title finished through encode instead.
+                            </div>
+                          )}
                           <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
                             <span>{formatResolution(job.source_resolution)} · {formatHdrIndicator(job.source_is_hdr)}</span>
                             {job.encoder_used && <span>{job.encoder_used}{job.hwaccel_used ? ' (HW)' : ''}</span>}
@@ -3641,11 +3784,13 @@ export default function App() {
                           )}
                           <MobileActionMenu>
                             {['failed', 'cancelled'].includes(job.status) && (
-                              <Btn size="sm" variant="primary" onClick={() => handleJobAction('retry', job.id)}>
-                                {histJobDownloadEnabled ? 'Search Again' : 'Retry'}
+                              <Btn size="sm" variant="primary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('retry', job.id)}>
+                                {jobActionPending === 'retry' ? 'Working…' : (histJobDownloadEnabled ? 'Search Again' : 'Retry')}
                               </Btn>
                             )}
-                            <Btn size="sm" variant="secondary" onClick={() => handleJobAction('remove', job.id)}>Remove</Btn>
+                            <Btn size="sm" variant="secondary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('remove', job.id)}>
+                              {jobActionPending === 'remove' ? 'Working…' : 'Remove'}
+                            </Btn>
                           </MobileActionMenu>
                         </div>
                       );
@@ -3675,9 +3820,12 @@ export default function App() {
                           </tr>
                         )}
                         {pagedHistoryJobs.map((job) => {
-                          const { title, year } = extractTitleYear(job.source_path);
+                          const { year } = extractTitleYear(job.source_path);
+                          const title = getDisplayTitle(job.source_path);
                           const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
+                          const jobActionPending = pendingJobActions[job.id];
                           const histJobDownloadEnabled = !!libraryProfiles[job.library_id]?.download_enabled;
+                          const fallbackInfo = fallbackHistoryByEncodeJobId[job.id];
                           const completedDate = job.completed_at
                             ? new Date(job.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZoneName: 'short' })
                             : '—';
@@ -3689,6 +3837,11 @@ export default function App() {
                               <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
                               <td className="px-4 py-3 text-sm capitalize">
                                 <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${job.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : job.status === 'failed' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{job.status}</span>
+                                {fallbackInfo && (
+                                  <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-950/25 px-2.5 py-1.5 text-xs normal-case text-amber-200">
+                                    Fallback used. Download attempt rolled over to encode.
+                                  </p>
+                                )}
                                 {job.status === 'failed' && job.error_message && (
                                   <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
                                 )}
@@ -3714,11 +3867,13 @@ export default function App() {
                               <td className="px-4 py-3">
                                 <div className="flex flex-wrap gap-1.5">
                                   {['failed', 'cancelled'].includes(job.status) && (
-                                    <Btn size="sm" variant="primary" onClick={() => handleJobAction('retry', job.id)}>
-                                      {histJobDownloadEnabled ? 'Search Again' : 'Retry'}
+                                    <Btn size="sm" variant="primary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('retry', job.id)}>
+                                      {jobActionPending === 'retry' ? 'Working…' : (histJobDownloadEnabled ? 'Search Again' : 'Retry')}
                                     </Btn>
                                   )}
-                                  <Btn size="sm" variant="secondary" onClick={() => handleJobAction('remove', job.id)}>Remove</Btn>
+                                  <Btn size="sm" variant="secondary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('remove', job.id)}>
+                                    {jobActionPending === 'remove' ? 'Working…' : 'Remove'}
+                                  </Btn>
                                 </div>
                               </td>
                             </tr>
@@ -3751,8 +3906,10 @@ export default function App() {
                       <div className="space-y-3 px-3 pb-3 md:hidden">
                         {pagedTerminalDownloadHistoryJobs.map((dj) => {
                           const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
-                          const { title, year } = extractTitleYear(dj.source_file_path);
-                          const displayName = title ? `${title}${year ? ` (${year})` : ''}` : '—';
+                          const downloadActionPending = pendingDownloadActions[dj.id];
+                          const { year } = extractTitleYear(dj.source_file_path);
+                          const title = getDisplayTitle(dj.source_file_path);
+                          const displayName = title || '—';
                           const completedDate = dj.completed_at
                             ? new Date(dj.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
                             : '—';
@@ -3773,9 +3930,13 @@ export default function App() {
                               {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
                               <MobileActionMenu>
                                 {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
-                                  <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
+                                  <Btn size="sm" variant="primary" disabled={Boolean(downloadActionPending)} onClick={() => handleRetryDownloadJob(dj.id)}>
+                                    {downloadActionPending === 'retry' ? 'Working…' : 'Retry'}
+                                  </Btn>
                                 )}
-                                <Btn size="sm" variant="secondary" onClick={() => handleDeleteDownloadJob(dj.id)}>Delete</Btn>
+                                <Btn size="sm" variant="secondary" disabled={Boolean(downloadActionPending)} onClick={() => handleDeleteDownloadJob(dj.id)}>
+                                  {downloadActionPending === 'delete' ? 'Working…' : 'Delete'}
+                                </Btn>
                               </MobileActionMenu>
                             </div>
                           );
@@ -3796,8 +3957,10 @@ export default function App() {
                           <tbody className="divide-y divide-slate-800/60">
                             {pagedTerminalDownloadHistoryJobs.map((dj) => {
                               const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
-                              const { title, year } = extractTitleYear(dj.source_file_path);
-                              const displayName = title ? `${title}${year ? ` (${year})` : ''}` : '—';
+                              const downloadActionPending = pendingDownloadActions[dj.id];
+                              const { year } = extractTitleYear(dj.source_file_path);
+                              const title = getDisplayTitle(dj.source_file_path);
+                              const displayName = title || '—';
                               const completedDate = dj.completed_at
                                 ? new Date(dj.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
                                 : '—';
@@ -3814,9 +3977,13 @@ export default function App() {
                                   <td className="px-4 py-3">
                                     <div className="flex flex-wrap gap-1.5">
                                       {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
-                                        <Btn size="sm" variant="primary" onClick={() => handleRetryDownloadJob(dj.id)}>Retry</Btn>
+                                        <Btn size="sm" variant="primary" disabled={Boolean(downloadActionPending)} onClick={() => handleRetryDownloadJob(dj.id)}>
+                                          {downloadActionPending === 'retry' ? 'Working…' : 'Retry'}
+                                        </Btn>
                                       )}
-                                      <Btn size="sm" variant="secondary" onClick={() => handleDeleteDownloadJob(dj.id)}>Delete</Btn>
+                                      <Btn size="sm" variant="secondary" disabled={Boolean(downloadActionPending)} onClick={() => handleDeleteDownloadJob(dj.id)}>
+                                        {downloadActionPending === 'delete' ? 'Working…' : 'Delete'}
+                                      </Btn>
                                     </div>
                                   </td>
                                 </tr>
