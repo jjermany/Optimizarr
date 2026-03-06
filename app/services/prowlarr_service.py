@@ -6,6 +6,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.core import secrets_store
+from app.core.security import normalize_http_origin_with_optional_port
 from app.models.prowlarr_settings import ProwlarrSettings
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,8 @@ def update_settings(db: Session, data: dict) -> ProwlarrSettings:
             if secrets_store.is_masked_secret(value):
                 continue
             value = secrets_store.encrypt_secret(value or '')
+        elif key == 'host' and value is not None:
+            value = normalize_http_origin_with_optional_port(value)
         setattr(settings, key, value)
     db.commit()
     db.refresh(settings)

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.core import secrets_store
+from app.core.security import normalize_http_host_without_port
 from app.models.library import LibraryProfile
 from app.models.plex_settings import PlexSettings
 
@@ -41,7 +42,10 @@ def update_settings(db: Session, payload: dict) -> PlexSettings:
 
     for key in ['enabled', 'host', 'port']:
         if key in payload:
-            setattr(settings, key, payload[key])
+            value = payload[key]
+            if key == 'host' and value is not None:
+                value = normalize_http_host_without_port(value)
+            setattr(settings, key, value)
     if 'token' in payload:
         raw = payload['token'] or ''
         if not secrets_store.is_masked_secret(raw):
@@ -53,7 +57,7 @@ def update_settings(db: Session, payload: dict) -> PlexSettings:
 
 
 def _build_base_url(settings: PlexSettings) -> str:
-    host = (settings.host or 'http://localhost').rstrip('/')
+    host = normalize_http_host_without_port(settings.host or 'http://localhost').rstrip('/')
     port = int(settings.port or 32400)
     return f'{host}:{port}'
 

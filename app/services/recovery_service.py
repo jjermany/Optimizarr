@@ -7,6 +7,7 @@ import subprocess
 
 from sqlalchemy.orm import Session
 
+from app.core.security import coerce_workspace_root
 from app.models.job import Job
 from app.models.settings import Settings
 
@@ -70,7 +71,7 @@ def _get_or_create_settings(db: Session) -> Settings:
 
 
 def _workspace_path(settings: Settings, job_id: int) -> Path:
-    return Path(settings.workspace_root) / str(job_id)
+    return Path(coerce_workspace_root(settings.workspace_root)) / str(job_id)
 
 
 def _probe_partial_duration(workspace: Path) -> float | None:
@@ -218,7 +219,7 @@ def requeue_interrupted_job(db: Session, job_id: int) -> Job | None:
 
 def run_workspace_cleanup(db: Session) -> dict[str, int | list[int]]:
     settings = _get_or_create_settings(db)
-    workspace_root = Path(settings.workspace_root)
+    workspace_root = Path(coerce_workspace_root(settings.workspace_root))
     if not workspace_root.exists():
         return {'cleaned_workspaces': 0, 'cleaned_workspace_job_ids': []}
 

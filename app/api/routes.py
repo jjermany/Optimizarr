@@ -5,6 +5,7 @@ from pathlib import Path
 from threading import Lock
 import time
 import secrets
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import FileResponse
@@ -12,6 +13,18 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal, get_db
+from app.core.security import (
+    BOOTSTRAP_TOKEN_HEADER_NAME,
+    get_bootstrap_token,
+    is_safe_same_origin,
+    media_root,
+    normalize_http_host_without_port,
+    normalize_http_origin_with_optional_port,
+    normalize_path_within_root,
+    normalize_smtp_host,
+    normalize_workspace_root,
+    workspace_root_base,
+)
 from app.models.auth import AdminUser
 from app.models.library import (
     AudioModeEnum,
@@ -66,7 +79,8 @@ from app.services.recovery_service import requeue_interrupted_job, run_startup_r
 from app.workers import queue as worker_queue
 
 router = APIRouter()
-MEDIA_ROOT = Path(os.getenv('MEDIA_ROOT', '/media'))
+MEDIA_ROOT = media_root()
+WORKSPACE_ROOT_BASE = workspace_root_base()
 BRANDING_ROOTS = (
     MEDIA_ROOT / 'Logo',
     Path(__file__).resolve().parents[2] / 'media' / 'Logo',
@@ -116,6 +130,38 @@ def _csrf_required(request: Request) -> bool:
     if normalized in {'/auth/login', '/auth/bootstrap'}:
         return False
     return True
+
+
+def _request_origin(request: Request) -> str:
+    origin = (request.headers.get('origin') or '').strip()
+    if origin:
+        return origin.rstrip('/')
+    referer = (request.headers.get('referer') or '').strip()
+    if not referer:
+        return ''
+    parsed = urlsplit(referer)
+    if not parsed.scheme or not parsed.netloc:
+        return ''
+    return f'{parsed.scheme}://{parsed.netloc}'.rstrip('/')
+
+
+def _expected_origin(request: Request) -> str:
+    return f'{request.url.scheme}://{request.url.netloc}'.rstrip('/')
+
+
+def _require_same_origin_browser_request(request: Request) -> None:
+    origin = _request_origin(request)
+    if not origin:
+        return
+    if not is_safe_same_origin(origin, _expected_origin(request)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Cross-origin request rejected')
+
+
+def _require_bootstrap_token(request: Request, provided_token: str | None) -> None:
+    expected = get_bootstrap_token()
+    candidate = (provided_token or request.headers.get(BOOTSTRAP_TOKEN_HEADER_NAME) or '').strip()
+    if not candidate or not secrets.compare_digest(candidate, expected):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Valid setup token required')
 
 
 def _session_cookie_secure(request: Request) -> bool:
@@ -315,6 +361,7 @@ class AuthBootstrapRequest(BaseModel):
     enable_two_factor: bool = False
     totp_secret: str | None = None
     totp_code: str | None = None
+    bootstrap_token: str = Field(..., min_length=1)
 
 
 class AuthLoginRequest(BaseModel):
@@ -367,6 +414,8 @@ def bootstrap_auth(
 ) -> AuthUserResponse:
     if auth_service.has_admin_user(db):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail='Admin user already configured')
+    _require_same_origin_browser_request(request)
+    _require_bootstrap_token(request, payload.bootstrap_token)
 
     try:
         if payload.enable_two_factor:
@@ -656,6 +705,13 @@ class SettingsUpdateRequest(BaseModel):
     cleanup_workspaces_on_startup: bool | None = None
     min_free_gb: int | None = Field(default=None, ge=1)
 
+    @field_validator('workspace_root')
+    @classmethod
+    def validate_workspace_root(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_workspace_root(value)
+
 
 
 class RecoveryResponse(BaseModel):
@@ -721,6 +777,13 @@ class NotificationSettingsUpdateRequest(BaseModel):
     to_emails: list[str] | None = None
     notify_on: NotificationTriggerSettings | None = None
 
+    @field_validator('smtp_host')
+    @classmethod
+    def validate_smtp_host(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_smtp_host(value)
+
 
 class PlexSettingsResponse(BaseModel):
     enabled: bool
@@ -734,6 +797,13 @@ class PlexSettingsUpdateRequest(BaseModel):
     host: str | None = None
     port: int | None = Field(default=None, ge=1, le=65535)
     token: str | None = None
+
+    @field_validator('host')
+    @classmethod
+    def validate_host(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_http_host_without_port(value)
 
 
 class PlexLibrarySection(BaseModel):
@@ -753,6 +823,13 @@ class ProwlarrSettingsUpdateRequest(BaseModel):
     host: str | None = None
     api_key: str | None = None
 
+    @field_validator('host')
+    @classmethod
+    def validate_host(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_http_origin_with_optional_port(value)
+
 
 class QBittorrentSettingsResponse(BaseModel):
     enabled: bool
@@ -769,6 +846,13 @@ class QBittorrentSettingsUpdateRequest(BaseModel):
     username: str | None = None
     password: str | None = None
 
+    @field_validator('host')
+    @classmethod
+    def validate_host(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_http_host_without_port(value)
+
 
 class SabnzbdSettingsResponse(BaseModel):
     enabled: bool
@@ -782,6 +866,13 @@ class SabnzbdSettingsUpdateRequest(BaseModel):
     host: str | None = None
     port: int | None = Field(default=None, ge=1, le=65535)
     api_key: str | None = None
+
+    @field_validator('host')
+    @classmethod
+    def validate_host(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_http_host_without_port(value)
 
 
 class DownloadJobResponse(BaseModel):
@@ -849,13 +940,12 @@ class LibraryBaseRequest(BaseModel):
     @field_validator('path')
     @classmethod
     def validate_media_path(cls, value: str) -> str:
-        candidate = Path(value)
-        if not candidate.is_absolute():
-            raise ValueError('path must be an absolute path')
-        if not candidate.exists():
-            raise ValueError('path must exist')
-
-        return str(candidate)
+        return normalize_path_within_root(
+            value,
+            root=MEDIA_ROOT,
+            must_exist=True,
+            must_be_dir=True,
+        )
 
 
 class LibraryCreateRequest(LibraryBaseRequest):
@@ -1062,20 +1152,26 @@ def list_dirs(
     path: str | None = Query(default=None),
     _: None = Depends(require_ui_auth),
 ) -> DirListResponse:
-    fs_root = Path('/')
-    target = Path(path).resolve() if path else MEDIA_ROOT.resolve()
-
-    if not target.is_dir():
-        # Requested path doesn't exist — fall back to MEDIA_ROOT, then /
-        target = MEDIA_ROOT.resolve()
-        if not target.is_dir():
-            target = fs_root
+    target = MEDIA_ROOT.resolve()
+    if path:
+        try:
+            candidate = normalize_path_within_root(
+                path,
+                root=MEDIA_ROOT,
+                must_exist=True,
+                must_be_dir=True,
+            )
+            target = Path(candidate)
+        except ValueError:
+            target = MEDIA_ROOT.resolve()
 
     dirs = sorted(
         p.name for p in target.iterdir()
         if p.is_dir() and not p.name.startswith('.')
     )
-    parent = str(target.parent) if target != fs_root else None
+    parent = None
+    if target != MEDIA_ROOT.resolve():
+        parent = str(target.parent)
     return DirListResponse(path=str(target), parent=parent, dirs=dirs)
 
 

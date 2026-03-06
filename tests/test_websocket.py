@@ -9,6 +9,7 @@ from app.models.job import Job
 from app.services.realtime_service import RealtimeBroker
 from app.services import auth_service
 
+BOOTSTRAP_TOKEN = 'test-bootstrap-token'
 
 
 
@@ -55,6 +56,7 @@ def test_ws_requires_session_when_admin_configured():
             '/auth/bootstrap',
             json={
                 'username': 'admin',
+                'bootstrap_token': BOOTSTRAP_TOKEN,
                 'password': 'VeryStrongPassword123',
                 'enable_two_factor': True,
                 'totp_secret': secret,

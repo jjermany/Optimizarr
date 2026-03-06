@@ -110,13 +110,16 @@ Key environment variables:
 | `QSV_DEVICE` | `/dev/dri/renderD128` | DRM render node for QSV |
 | `OPTIMIZARR_VERSION` | `0.1.0` | Reported by `GET /version` |
 | `OPTIMIZARR_SESSION_COOKIE_SECURE` | `auto` | Session cookie `Secure` policy (`auto`, `true`, `false`) |
+| `OPTIMIZARR_BOOTSTRAP_TOKEN` | _(auto-generated)_ | Required one-time token for first admin setup; if unset, Optimizarr prints a generated token to the logs |
 | `OPTIMIZARR_SECRETS_KEY` | _(unset)_ | Optional base64url 32-byte key for secrets encryption at rest |
 | `OPTIMIZARR_SECRETS_KEY_PATH` | `/config/optimizarr.secrets.key` | Path to persisted encryption key file when env key is unset |
+| `OPTIMIZARR_WORKSPACE_ROOT_BASE` | `/cache` | Allowed parent directory for `workspace_root` |
 | `OPTIMIZARR_LOG_MAX_BYTES` | `5242880` | Max size per log file before rotation (5 MiB default) |
 | `OPTIMIZARR_LOG_BACKUP_COUNT` | `10` | Number of rotated log files to keep (`.1`, `.2`, etc.) |
 
 Authentication:
 - On first startup (or first startup after upgrading from legacy basic-auth builds), Optimizarr prompts you to create an admin account.
+- Initial admin setup requires the bootstrap token from `OPTIMIZARR_BOOTSTRAP_TOKEN` or the one-time token printed in the backend logs.
 - During setup you can enable dual-factor authentication (TOTP) or skip it.
 - After setup, API/UI access requires a login session cookie.
 - Before admin setup is completed, non-setup API routes are blocked.
@@ -126,6 +129,11 @@ Authentication:
 Secrets at rest:
 - Sensitive integration fields (SMTP password, Plex token, Prowlarr API key, qBittorrent password, SABnzbd API key) are stored encrypted in the database.
 - If `OPTIMIZARR_SECRETS_KEY` is unset, Optimizarr auto-generates and persists a key at `OPTIMIZARR_SECRETS_KEY_PATH`.
+
+Filesystem boundaries:
+- Library paths must stay under `MEDIA_ROOT`.
+- The directory browser only lists folders under `MEDIA_ROOT`.
+- `workspace_root` must stay under `OPTIMIZARR_WORKSPACE_ROOT_BASE`.
 
 ---
 

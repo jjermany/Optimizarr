@@ -12,6 +12,8 @@ from threading import Event, Lock, Thread
 import time
 from typing import Any, Callable
 
+from app.core.security import coerce_workspace_root
+
 logger = logging.getLogger(__name__)
 
 FPS_REGEX = re.compile(r"fps\s*=\s*(?P<fps>[0-9]*\.?[0-9]+)")
@@ -128,7 +130,7 @@ def _container_from_profile(profile: dict[str, Any]) -> str:
 
 def _workspace_root_from_settings(settings: Any) -> Path:
     configured = str(getattr(settings, 'workspace_root', '/cache/workspaces') or '/cache/workspaces')
-    return Path(configured)
+    return Path(coerce_workspace_root(configured))
 
 
 def _job_workspace_path(settings: Any, job_id: int | None) -> Path:

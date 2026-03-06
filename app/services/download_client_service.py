@@ -9,6 +9,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.core import secrets_store
+from app.core.security import normalize_http_host_without_port
 from app.models.qbittorrent_settings import QBittorrentSettings
 from app.models.sabnzbd_settings import SabnzbdSettings
 
@@ -59,6 +60,8 @@ def update_qbt_settings(db: Session, data: dict) -> QBittorrentSettings:
             if secrets_store.is_masked_secret(value):
                 continue
             value = secrets_store.encrypt_secret(value or '')
+        elif key == 'host' and value is not None:
+            value = normalize_http_host_without_port(value)
         setattr(settings, key, value)
     db.commit()
     db.refresh(settings)
@@ -80,7 +83,8 @@ def qbt_settings_to_payload(s: QBittorrentSettings) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _qbt_base_url(s: QBittorrentSettings) -> str:
-    return f"{s.host.rstrip('/')}:{s.port}"
+    host = normalize_http_host_without_port(s.host or 'http://localhost').rstrip('/')
+    return f"{host}:{s.port}"
 
 
 def _qbt_session(s: QBittorrentSettings) -> httpx.Client:
@@ -338,6 +342,8 @@ def update_sab_settings(db: Session, data: dict) -> SabnzbdSettings:
             if secrets_store.is_masked_secret(value):
                 continue
             value = secrets_store.encrypt_secret(value or '')
+        elif key == 'host' and value is not None:
+            value = normalize_http_host_without_port(value)
         setattr(settings, key, value)
     db.commit()
     db.refresh(settings)
@@ -358,7 +364,8 @@ def sab_settings_to_payload(s: SabnzbdSettings) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _sab_base_url(s: SabnzbdSettings) -> str:
-    return f"{s.host.rstrip('/')}:{s.port}"
+    host = normalize_http_host_without_port(s.host or 'http://localhost').rstrip('/')
+    return f"{host}:{s.port}"
 
 
 def _sab_api(s: SabnzbdSettings, **params) -> dict:

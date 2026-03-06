@@ -12,6 +12,7 @@ import time
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.core.security import coerce_workspace_root
 from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
@@ -118,7 +119,7 @@ def _preflight_output_path(job: Job, snapshot: dict) -> str:
 
 def _cache_free_bytes(settings: Settings) -> int:
     workspace_root = str(getattr(settings, 'workspace_root', '') or '').strip()
-    workspace_path = Path(workspace_root).expanduser() if workspace_root else None
+    workspace_path = Path(coerce_workspace_root(workspace_root)) if workspace_root else None
 
     probe_path = workspace_path
     while probe_path and not probe_path.exists():

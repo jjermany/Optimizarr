@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.core import secrets_store
+from app.core.security import normalize_smtp_host
 from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import Library
@@ -190,7 +191,10 @@ def update_settings(db: Session, payload: dict) -> NotificationSettings:
 
     for key in ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_tls', 'from_email']:
         if key in payload:
-            setattr(settings, key, payload[key])
+            value = payload[key]
+            if key == 'smtp_host' and value is not None:
+                value = normalize_smtp_host(value)
+            setattr(settings, key, value)
     if 'smtp_password' in payload:
         raw = payload['smtp_password'] or ''
         if not secrets_store.is_masked_secret(raw):
@@ -233,7 +237,8 @@ def _send_via_smtp(event: EmailEvent, settings: NotificationSettings) -> None:
     html_body = _format_notification_html(subject=event.subject, body=event.body)
     message.add_alternative(html_body, subtype='html')
 
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=20) as smtp:
+    smtp_host = normalize_smtp_host(settings.smtp_host)
+    with smtplib.SMTP(smtp_host, settings.smtp_port, timeout=20) as smtp:
         if settings.smtp_tls:
             smtp.starttls()
         if settings.smtp_user:

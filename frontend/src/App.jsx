@@ -948,6 +948,7 @@ export default function App() {
   const [authStatus, setAuthStatus] = useState({ loading: true, setup_required: false, authenticated: false, username: null, two_factor_enabled: false });
   const [setupForm, setSetupForm] = useState({
     username: 'admin',
+    bootstrapToken: '',
     password: '',
     confirmPassword: '',
     enableTwoFactor: false,
@@ -1313,6 +1314,10 @@ export default function App() {
       setSetupError('Passwords do not match.');
       return;
     }
+    if (!setupForm.bootstrapToken.trim()) {
+      setSetupError('Enter the setup token from your server logs or OPTIMIZARR_BOOTSTRAP_TOKEN.');
+      return;
+    }
     if (setupForm.password.length < 12) {
       setSetupError('Password must be at least 12 characters.');
       return;
@@ -1330,6 +1335,7 @@ export default function App() {
     try {
       await bootstrapAuth({
         username: setupForm.username.trim(),
+        bootstrap_token: setupForm.bootstrapToken.trim(),
         password: setupForm.password,
         enable_two_factor: setupForm.enableTwoFactor,
         totp_secret: setupForm.enableTwoFactor ? setupForm.totpSecret.trim() : null,
@@ -2342,6 +2348,14 @@ export default function App() {
             <SectionTitle>Initial Admin Setup</SectionTitle>
             <p className="text-sm text-slate-300">Create the first admin account to secure Optimizarr. Dual-factor authentication is optional and can be skipped.</p>
             <form className="space-y-3" onSubmit={handleBootstrapSubmit}>
+              <FormField label="Setup Token" hint="Use OPTIMIZARR_BOOTSTRAP_TOKEN or the one-time token printed in the server logs.">
+                <TextInput
+                  type="password"
+                  value={setupForm.bootstrapToken}
+                  onChange={(event) => setSetupForm((prev) => ({ ...prev, bootstrapToken: event.target.value }))}
+                  autoComplete="off"
+                />
+              </FormField>
               <FormField label="Admin Username">
                 <TextInput
                   value={setupForm.username}

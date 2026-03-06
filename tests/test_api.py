@@ -1,4 +1,5 @@
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -7,6 +8,8 @@ from app.core.database import SessionLocal
 from app.models.auth import AdminUser, AuthSession
 from app.services import discovery_service
 from app.main import app
+
+BOOTSTRAP_TOKEN = 'test-bootstrap-token'
 
 
 def _clear_auth_state() -> None:
@@ -154,7 +157,7 @@ def test_get_and_update_settings():
                 'discovery_method': 'watcher',
                 'discovery_interval_minutes': 15,
                 'queue_sort': 'newest',
-                'workspace_root': '/cache/workspaces',
+                'workspace_root': '/tmp/optimizarr-cache-settings/workspaces',
                 'requeue_interrupted_jobs': False,
                 'cleanup_workspaces_on_startup': False,
                 'min_free_gb': 32,
@@ -168,7 +171,7 @@ def test_get_and_update_settings():
         assert updated['discovery_method'] == 'watcher'
         assert updated['discovery_interval_minutes'] == 15
         assert updated['queue_sort'] == 'newest'
-        assert updated['workspace_root'] == '/cache/workspaces'
+        assert updated['workspace_root'] == '/tmp/optimizarr-cache-settings/workspaces'
         assert updated['requeue_interrupted_jobs'] is False
         assert updated['cleanup_workspaces_on_startup'] is False
         assert updated['min_free_gb'] == 32
@@ -240,6 +243,7 @@ def test_auth_bootstrap_and_login_flow():
             '/auth/bootstrap',
             json={
                 'username': 'admin',
+                'bootstrap_token': BOOTSTRAP_TOKEN,
                 'password': 'VeryStrongPassword123',
                 'enable_two_factor': False,
             },
@@ -281,6 +285,7 @@ def test_auth_login_requires_totp_when_enabled():
             '/auth/bootstrap',
             json={
                 'username': 'admin',
+                'bootstrap_token': BOOTSTRAP_TOKEN,
                 'password': 'VeryStrongPassword123',
                 'enable_two_factor': True,
                 'totp_secret': secret,
@@ -319,6 +324,7 @@ def test_auth_account_update_and_enable_two_factor():
             '/auth/bootstrap',
             json={
                 'username': 'admin',
+                'bootstrap_token': BOOTSTRAP_TOKEN,
                 'password': 'VeryStrongPassword123',
                 'enable_two_factor': False,
             },
@@ -381,6 +387,7 @@ def test_auth_account_update_and_enable_two_factor():
             '/auth/bootstrap',
             json={
                 'username': 'admin',
+                'bootstrap_token': BOOTSTRAP_TOKEN,
                 'password': 'VeryStrongPassword123',
                 'enable_two_factor': True,
                 'totp_secret': secret,
@@ -409,6 +416,43 @@ def test_auth_account_update_and_enable_two_factor():
         assert ok.cookies.get('optimizarr_session')
 
     _clear_auth_state()
+
+
+def test_auth_bootstrap_requires_valid_setup_token():
+    _clear_auth_state()
+
+    with TestClient(app) as client:
+        response = client.post(
+            '/auth/bootstrap',
+            json={
+                'username': 'admin',
+                'bootstrap_token': 'wrong-token',
+                'password': 'VeryStrongPassword123',
+                'enable_two_factor': False,
+            },
+        )
+
+    assert response.status_code == 403
+    assert 'setup token' in response.text.lower()
+
+
+def test_auth_bootstrap_rejects_cross_origin_requests():
+    _clear_auth_state()
+
+    with TestClient(app) as client:
+        response = client.post(
+            '/auth/bootstrap',
+            headers={'Origin': 'https://evil.example'},
+            json={
+                'username': 'admin',
+                'bootstrap_token': BOOTSTRAP_TOKEN,
+                'password': 'VeryStrongPassword123',
+                'enable_two_factor': False,
+            },
+        )
+
+    assert response.status_code == 403
+    assert 'cross-origin' in response.text.lower()
 
 
 def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_path):
@@ -473,6 +517,67 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
 
         delete_response = client.delete(f'/libraries/{library_id}')
         assert delete_response.status_code == 204
+
+
+def test_create_library_rejects_paths_outside_media_root(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+
+    with TestClient(app) as client:
+        response = client.post(
+            '/libraries',
+            json={'name': 'Outside', 'path': str(outside), 'enabled': True},
+        )
+
+    assert response.status_code == 422
+    assert 'within' in response.text.lower()
+
+
+def test_fs_dirs_stays_within_media_root(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    (media_root / 'movies').mkdir(parents=True)
+    (media_root / '.hidden').mkdir()
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+
+    with TestClient(app) as client:
+        response = client.get('/fs/dirs', params={'path': str(outside)})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        'path': str(media_root.resolve()),
+        'parent': None,
+        'dirs': ['movies'],
+    }
+
+
+def test_update_settings_rejects_workspace_root_outside_allowed_base():
+    with TestClient(app) as client:
+        response = client.post('/settings', json={'workspace_root': '/etc/optimizarr-workspaces'})
+
+    assert response.status_code == 422
+    assert 'within' in response.text.lower()
+
+
+def test_integration_settings_reject_hosts_with_paths():
+    with TestClient(app) as client:
+        plex_response = client.put('/plex/settings', json={'host': 'http://plex.local/admin', 'port': 32400})
+        prowlarr_response = client.put('/prowlarr/settings', json={'host': 'http://prowlarr.local/api/v1'})
+        qbt_response = client.put('/download-client/qbittorrent', json={'host': 'http://qbt.local/ui', 'port': 8080})
+        sab_response = client.put('/download-client/sabnzbd', json={'host': 'http://sab.local/api', 'port': 8081})
+        smtp_response = client.put('/notifications/settings', json={'smtp_host': 'smtp://mail.local'})
+
+    assert plex_response.status_code == 422
+    assert prowlarr_response.status_code == 422
+    assert qbt_response.status_code == 422
+    assert sab_response.status_code == 422
+    assert smtp_response.status_code == 422
 
 
 def test_create_and_fetch_job():
