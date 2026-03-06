@@ -373,6 +373,52 @@ export function compareDownloadHistoryJobsByOption(a, b, sortOption) {
   return b.id - a.id;
 }
 
+function historyItemPath(item) {
+  return item._historyType === 'download' ? item.source_file_path : item.source_path;
+}
+
+function historyItemYear(item) {
+  return extractTitleYear(historyItemPath(item)).year;
+}
+
+function historyItemCompletedTimestamp(item) {
+  return Date.parse(item.completed_at || '') || 0;
+}
+
+function historyItemCreatedTimestamp(item) {
+  return Date.parse(item.created_at || '') || 0;
+}
+
+export function compareHistoryItemsByOption(a, b, sortOption) {
+  if (sortOption === 'year_newest' || sortOption === 'year_oldest') {
+    const yearA = historyItemYear(a);
+    const yearB = historyItemYear(b);
+    if (yearA && yearB) {
+      return sortOption === 'year_newest'
+        ? Number(yearB) - Number(yearA)
+        : Number(yearA) - Number(yearB);
+    }
+    if (yearA) return -1;
+    if (yearB) return 1;
+  }
+
+  const completedDelta = historyItemCompletedTimestamp(b) - historyItemCompletedTimestamp(a);
+  if (completedDelta !== 0) return completedDelta;
+
+  const createdDelta = historyItemCreatedTimestamp(b) - historyItemCreatedTimestamp(a);
+  if (createdDelta !== 0) return createdDelta;
+
+  if (a._historyType !== b._historyType) return a._historyType.localeCompare(b._historyType);
+  return b.id - a.id;
+}
+
+export function buildUnifiedHistoryItems(encodeJobs, downloadJobs) {
+  return [
+    ...encodeJobs.map((job) => ({ ...job, _historyType: 'encode' })),
+    ...downloadJobs.map((job) => ({ ...job, _historyType: 'download' })),
+  ];
+}
+
 function formatResolution(height) {
   return Number.isInteger(height) ? `${height}p` : 'Unknown';
 }
@@ -415,6 +461,20 @@ function formatDownloadClient(clientType) {
   if (clientType === 'qbittorrent') return 'qBittorrent';
   if (clientType === 'sabnzbd') return 'SABnzbd';
   return null;
+}
+
+function formatHistoryCompletedAt(value) {
+  if (!value) return '—';
+  return new Date(value).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+    timeZoneName: 'short',
+  });
 }
 
 export function getElapsedSeconds(createdAt, nowMs = Date.now()) {
@@ -856,9 +916,23 @@ function MobileActionMenu({ children, label = 'Actions' }) {
 function FallbackNotice({ compact = false }) {
   return (
     <div className={`flex items-center gap-2 text-xs ${compact ? 'normal-case' : ''} text-amber-200/90`}>
-      <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 font-semibold uppercase tracking-[0.12em] text-amber-300">Fallback</span>
+      <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-amber-300">Fallback</span>
       <span className="text-slate-400">Download routed to encode.</span>
     </div>
+  );
+}
+
+function HistoryTypeBadge({ type }) {
+  const isEncode = type === 'encode';
+  return (
+    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${
+      isEncode
+        ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300'
+        : 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300'
+    }`}
+    >
+      {isEncode ? 'Encode' : 'Download'}
+    </span>
   );
 }
 
@@ -1086,8 +1160,7 @@ export default function App() {
   const [loginError, setLoginError] = useState(null);
   const [availableEncodersByCodec, setAvailableEncodersByCodec] = useState({});
   const [jobsPage, setJobsPage] = useState(1);
-  const [encodeHistoryPage, setEncodeHistoryPage] = useState(1);
-  const [downloadHistoryPage, setDownloadHistoryPage] = useState(1);
+  const [historyPage, setHistoryPage] = useState(1);
   const [queueSearch, setQueueSearch] = useState(() => String(jobsUiPrefs.queueSearch ?? ''));
   const [historySearch, setHistorySearch] = useState(() => String(jobsUiPrefs.historySearch ?? ''));
   const [queueSort, setQueueSort] = useState(() => {
@@ -1099,6 +1172,10 @@ export default function App() {
     if (val === 'year_desc') return 'year_newest';
     if (val === 'year_asc') return 'year_oldest';
     return val;
+  });
+  const [historyTypeFilter, setHistoryTypeFilter] = useState(() => {
+    const val = String(jobsUiPrefs.historyTypeFilter ?? 'all');
+    return ['all', 'encode', 'download'].includes(val) ? val : 'all';
   });
   const [jobsView, setJobsView] = useState(() => (jobsUiPrefs.jobsView === 'history' ? 'history' : 'queue'));
   const [nowHour, setNowHour] = useState(() => new Date().getHours());
@@ -1146,14 +1223,6 @@ export default function App() {
     [activeJobs, queueSort],
   );
 
-  const sortedHistoryJobs = useMemo(
-    () => sortJobsByOption(historyJobs, historySort, (a, b) => {
-      if (a.completed_at && b.completed_at) return b.completed_at.localeCompare(a.completed_at);
-      return b.id - a.id;
-    }),
-    [historyJobs, historySort],
-  );
-
   function jobMatchesSearch(job, search) {
     if (!search) return true;
     const lower = search.toLowerCase();
@@ -1173,11 +1242,6 @@ export default function App() {
     [sortedActiveJobs, queueSearch, libraryById],
   );
 
-  const filteredHistoryJobs = useMemo(
-    () => sortedHistoryJobs.filter((job) => jobMatchesSearch(job, historySearch)),
-    [sortedHistoryJobs, historySearch, libraryById],
-  );
-
   const fallbackHistoryByEncodeJobId = useMemo(
     () => buildFallbackHistoryByEncodeJobId(downloadJobs),
     [downloadJobs],
@@ -1191,17 +1255,28 @@ export default function App() {
     [downloadJobs],
   );
 
-  const sortedTerminalDownloadHistoryJobs = useMemo(
-    () => [...terminalDownloadHistoryJobs].sort((a, b) => compareDownloadHistoryJobsByOption(a, b, historySort)),
-    [terminalDownloadHistoryJobs, historySort],
+  const allHistoryItems = useMemo(
+    () => buildUnifiedHistoryItems(historyJobs, terminalDownloadHistoryJobs),
+    [historyJobs, terminalDownloadHistoryJobs],
   );
 
-  const filteredTerminalDownloadHistoryJobs = useMemo(
-    () => sortedTerminalDownloadHistoryJobs.filter((dj) => downloadJobMatchesSearch(dj, historySearch, libraryById)),
-    [sortedTerminalDownloadHistoryJobs, historySearch, libraryById],
+  const filteredHistoryItems = useMemo(() => {
+    return allHistoryItems
+      .filter((item) => historyTypeFilter === 'all' || item._historyType === historyTypeFilter)
+      .filter((item) => (
+        item._historyType === 'download'
+          ? downloadJobMatchesSearch(item, historySearch, libraryById)
+          : jobMatchesSearch(item, historySearch)
+      ));
+  }, [allHistoryItems, historyTypeFilter, historySearch, libraryById]);
+
+  const sortedHistoryItems = useMemo(
+    () => [...filteredHistoryItems].sort((a, b) => compareHistoryItemsByOption(a, b, historySort)),
+    [filteredHistoryItems, historySort],
   );
-  const totalHistoryCount = sortedHistoryJobs.length + sortedTerminalDownloadHistoryJobs.length;
-  const visibleHistoryCount = filteredHistoryJobs.length + filteredTerminalDownloadHistoryJobs.length;
+
+  const totalHistoryCount = allHistoryItems.length;
+  const visibleHistoryCount = sortedHistoryItems.length;
 
   const activeDlQueueItems = useMemo(
     () => downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())),
@@ -1272,14 +1347,9 @@ export default function App() {
     [paginatedQueueItems.length],
   );
 
-  const totalEncodeHistoryPages = useMemo(
-    () => Math.max(1, Math.ceil(filteredHistoryJobs.length / HISTORY_PAGE_SIZE)),
-    [filteredHistoryJobs.length],
-  );
-
-  const totalDownloadHistoryPages = useMemo(
-    () => Math.max(1, Math.ceil(filteredTerminalDownloadHistoryJobs.length / HISTORY_PAGE_SIZE)),
-    [filteredTerminalDownloadHistoryJobs.length],
+  const totalHistoryPages = useMemo(
+    () => Math.max(1, Math.ceil(sortedHistoryItems.length / HISTORY_PAGE_SIZE)),
+    [sortedHistoryItems.length],
   );
 
   const pagedJobs = useMemo(() => {
@@ -1287,15 +1357,10 @@ export default function App() {
     return paginatedQueueItems.slice(start, start + JOBS_PAGE_SIZE);
   }, [paginatedQueueItems, jobsPage]);
 
-  const pagedHistoryJobs = useMemo(() => {
-    const start = (encodeHistoryPage - 1) * HISTORY_PAGE_SIZE;
-    return filteredHistoryJobs.slice(start, start + HISTORY_PAGE_SIZE);
-  }, [filteredHistoryJobs, encodeHistoryPage]);
-
-  const pagedTerminalDownloadHistoryJobs = useMemo(() => {
-    const start = (downloadHistoryPage - 1) * HISTORY_PAGE_SIZE;
-    return filteredTerminalDownloadHistoryJobs.slice(start, start + HISTORY_PAGE_SIZE);
-  }, [filteredTerminalDownloadHistoryJobs, downloadHistoryPage]);
+  const pagedHistoryItems = useMemo(() => {
+    const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
+    return sortedHistoryItems.slice(start, start + HISTORY_PAGE_SIZE);
+  }, [sortedHistoryItems, historyPage]);
 
   useEffect(() => {
     if (jobsPage > totalJobPages) setJobsPage(totalJobPages);
@@ -1306,12 +1371,8 @@ export default function App() {
   }, [queueSort]);
 
   useEffect(() => {
-    if (encodeHistoryPage > totalEncodeHistoryPages) setEncodeHistoryPage(totalEncodeHistoryPages);
-  }, [encodeHistoryPage, totalEncodeHistoryPages]);
-
-  useEffect(() => {
-    if (downloadHistoryPage > totalDownloadHistoryPages) setDownloadHistoryPage(totalDownloadHistoryPages);
-  }, [downloadHistoryPage, totalDownloadHistoryPages]);
+    if (historyPage > totalHistoryPages) setHistoryPage(totalHistoryPages);
+  }, [historyPage, totalHistoryPages]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1322,10 +1383,11 @@ export default function App() {
         historySearch,
         queueSort,
         historySort,
+        historyTypeFilter,
         jobsView,
       }),
     );
-  }, [queueSearch, historySearch, queueSort, historySort, jobsView]);
+  }, [queueSearch, historySearch, queueSort, historySort, historyTypeFilter, jobsView]);
 
   const selectedLibrary = useMemo(
     () => libraries.find((library) => library.id === selectedLibraryId) ?? null,
@@ -3307,14 +3369,36 @@ export default function App() {
                 )}
                 {jobsView === 'history' && (
                   <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex gap-1 rounded-xl border border-slate-700/70 bg-slate-950/60 p-1">
+                      {[
+                        ['all', 'All'],
+                        ['encode', 'Encodes'],
+                        ['download', 'Downloads'],
+                      ].map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() => {
+                            setHistoryTypeFilter(value);
+                            setHistoryPage(1);
+                          }}
+                          className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all duration-200 ${
+                            historyTypeFilter === value
+                              ? 'bg-slate-800 text-slate-100 shadow-sm shadow-slate-950/40'
+                              : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                     <TextInput
                       type="text"
                       placeholder="Search history…"
                       value={historySearch}
                       onChange={(e) => {
                         setHistorySearch(e.target.value);
-                        setEncodeHistoryPage(1);
-                        setDownloadHistoryPage(1);
+                        setHistoryPage(1);
                       }}
                       className="w-48 py-1.5 text-xs"
                     />
@@ -3322,8 +3406,7 @@ export default function App() {
                       value={historySort}
                       onChange={(e) => {
                         setHistorySort(e.target.value);
-                        setEncodeHistoryPage(1);
-                        setDownloadHistoryPage(1);
+                        setHistoryPage(1);
                       }}
                       className="w-48 py-1.5 text-xs"
                     >
@@ -3749,25 +3832,65 @@ export default function App() {
               {jobsView === 'history' && (
                 <>
                   <div className="space-y-3 p-3 md:hidden">
-                    {pagedHistoryJobs.length === 0 && filteredTerminalDownloadHistoryJobs.length === 0 && (
+                    {pagedHistoryItems.length === 0 && (
                       <div className="rounded-xl border border-slate-700/70 bg-slate-900/60 px-4 py-10 text-center text-sm text-slate-500">
                         {historySearch ? 'No matching history.' : 'No completed jobs yet.'}
                       </div>
                     )}
-                    {pagedHistoryJobs.map((job) => {
+                    {pagedHistoryItems.map((item) => {
+                      if (item._historyType === 'download') {
+                        const dj = item;
+                        const { year } = extractTitleYear(dj.source_file_path);
+                        const title = getDisplayTitle(dj.source_file_path);
+                        const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
+                        const downloadActionPending = pendingDownloadActions[dj.id];
+                        const completedDate = formatHistoryCompletedAt(dj.completed_at);
+                        const clientLabel = formatDownloadClient(dj.client_type);
+                        return (
+                          <div key={`hist-mobile-download-${dj.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
+                            <div className="mb-2 flex items-center justify-between">
+                              <HistoryTypeBadge type="download" />
+                              <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-400">ID {dj.id}</span>
+                            </div>
+                            <div className="flex items-start justify-between gap-2">
+                              <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={dj.source_file_path}>{title || 'Unknown Title'}</p>
+                              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'failed' || dj.status === 'timed_out' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
+                            </div>
+                            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
+                              <span>{year ?? '—'}</span>
+                              <span>{libName}</span>
+                            </div>
+                            <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                              <span>{clientLabel ? `Client: ${clientLabel}` : '—'}</span>
+                            </div>
+                            <p className="mt-2.5 text-xs text-slate-500">{completedDate}</p>
+                            {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
+                            <MobileActionMenu>
+                              {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
+                                <Btn size="sm" variant="primary" disabled={Boolean(downloadActionPending)} onClick={() => handleRetryDownloadJob(dj.id)}>
+                                  {downloadActionPending === 'retry' ? 'Working…' : 'Retry'}
+                                </Btn>
+                              )}
+                              <Btn size="sm" variant="secondary" disabled={Boolean(downloadActionPending)} onClick={() => handleDeleteDownloadJob(dj.id)}>
+                                {downloadActionPending === 'delete' ? 'Working…' : 'Remove'}
+                              </Btn>
+                            </MobileActionMenu>
+                          </div>
+                        );
+                      }
+
+                      const job = item;
                       const { year } = extractTitleYear(job.source_path);
                       const title = getDisplayTitle(job.source_path);
                       const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
                       const jobActionPending = pendingJobActions[job.id];
                       const histJobDownloadEnabled = !!libraryProfiles[job.library_id]?.download_enabled;
                       const fallbackInfo = fallbackHistoryByEncodeJobId[job.id];
-                      const completedDate = job.completed_at
-                        ? new Date(job.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZoneName: 'short' })
-                        : '—';
+                      const completedDate = formatHistoryCompletedAt(job.completed_at);
                       return (
-                        <div key={`hist-mobile-${job.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
+                        <div key={`hist-mobile-encode-${job.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
                           <div className="mb-2 flex items-center justify-between">
-                            <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">History</span>
+                            <HistoryTypeBadge type="encode" />
                             <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-400">ID {job.id}</span>
                           </div>
                           <div className="flex items-start justify-between gap-2">
@@ -3802,9 +3925,10 @@ export default function App() {
                     })}
                   </div>
                   <div className="hidden overflow-x-auto [scrollbar-gutter:stable] md:block">
-                    <table className="min-w-[1024px] divide-y divide-slate-800">
+                    <table className="min-w-[1120px] divide-y divide-slate-800">
                       <thead className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur-sm">
                         <tr>
+                          <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Type</th>
                           <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">ID</th>
                           <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Title</th>
                           <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Year</th>
@@ -3817,25 +3941,63 @@ export default function App() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60">
-                        {pagedHistoryJobs.length === 0 && filteredTerminalDownloadHistoryJobs.length === 0 && (
+                        {pagedHistoryItems.length === 0 && (
                           <tr>
-                            <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
+                            <td colSpan={10} className="px-4 py-10 text-center text-sm text-slate-500">
                               {historySearch ? 'No matching history.' : 'No completed jobs yet.'}
                             </td>
                           </tr>
                         )}
-                        {pagedHistoryJobs.map((job) => {
+                        {pagedHistoryItems.map((item) => {
+                          if (item._historyType === 'download') {
+                            const dj = item;
+                            const { year } = extractTitleYear(dj.source_file_path);
+                            const title = getDisplayTitle(dj.source_file_path);
+                            const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
+                            const downloadActionPending = pendingDownloadActions[dj.id];
+                            const clientLabel = formatDownloadClient(dj.client_type);
+                            const completedDate = formatHistoryCompletedAt(dj.completed_at);
+                            return (
+                              <tr key={`hist-download-${dj.id}`} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
+                                <td className="px-4 py-3 text-sm"><HistoryTypeBadge type="download" /></td>
+                                <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{dj.id}</td>
+                                <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
+                                <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
+                                <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
+                                <td className="px-4 py-3 text-sm">
+                                  <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${dj.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'failed' || dj.status === 'timed_out' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
+                                  {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
+                                </td>
+                                <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">{clientLabel ? `Client: ${clientLabel}` : '—'}</td>
+                                <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">—</td>
+                                <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">{completedDate}</td>
+                                <td className="whitespace-nowrap px-4 py-3">
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
+                                      <Btn size="sm" variant="primary" disabled={Boolean(downloadActionPending)} onClick={() => handleRetryDownloadJob(dj.id)}>
+                                        {downloadActionPending === 'retry' ? 'Working…' : 'Retry'}
+                                      </Btn>
+                                    )}
+                                    <Btn size="sm" variant="secondary" disabled={Boolean(downloadActionPending)} onClick={() => handleDeleteDownloadJob(dj.id)}>
+                                      {downloadActionPending === 'delete' ? 'Working…' : 'Remove'}
+                                    </Btn>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          }
+
+                          const job = item;
                           const { year } = extractTitleYear(job.source_path);
                           const title = getDisplayTitle(job.source_path);
                           const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
                           const jobActionPending = pendingJobActions[job.id];
                           const histJobDownloadEnabled = !!libraryProfiles[job.library_id]?.download_enabled;
                           const fallbackInfo = fallbackHistoryByEncodeJobId[job.id];
-                          const completedDate = job.completed_at
-                            ? new Date(job.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', second: '2-digit', hour12: true, timeZoneName: 'short' })
-                            : '—';
+                          const completedDate = formatHistoryCompletedAt(job.completed_at);
                           return (
-                            <tr key={job.id} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
+                            <tr key={`hist-encode-${job.id}`} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
+                              <td className="px-4 py-3 text-sm"><HistoryTypeBadge type="encode" /></td>
                               <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{job.id}</td>
                               <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={job.source_path}>{title}</td>
                               <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
@@ -3887,133 +4049,21 @@ export default function App() {
                       </tbody>
                     </table>
                   </div>
-                  {totalEncodeHistoryPages > 1 && (
+                  {totalHistoryPages > 1 && (
                     <div className="flex items-center justify-between border-t border-slate-700/70 px-5 py-3 text-sm text-slate-400">
-                      <p>Encode Page {encodeHistoryPage} of {totalEncodeHistoryPages}</p>
+                      <p>Page {historyPage} of {totalHistoryPages}</p>
                       <div className="flex items-center gap-1">
-                        {Array.from({ length: totalEncodeHistoryPages }, (_, i) => i + 1).map((pageNum) => (
+                        {Array.from({ length: totalHistoryPages }, (_, i) => i + 1).map((pageNum) => (
                           <button
                             key={pageNum}
                             type="button"
-                            onClick={() => setEncodeHistoryPage(pageNum)}
-                            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${encodeHistoryPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                            onClick={() => setHistoryPage(pageNum)}
+                            className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${historyPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
                           >
                             {pageNum}
                           </button>
                         ))}
                       </div>
-                    </div>
-                  )}
-                  {/* Terminal download jobs in history */}
-                  {filteredTerminalDownloadHistoryJobs.length > 0 && (
-                    <div className="border-t border-slate-700/70">
-                      <div className="px-5 py-2 text-xs font-semibold uppercase tracking-wider text-slate-500">Downloads</div>
-                      <div className="space-y-3 px-3 pb-3 md:hidden">
-                        {pagedTerminalDownloadHistoryJobs.map((dj) => {
-                          const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
-                          const downloadActionPending = pendingDownloadActions[dj.id];
-                          const { year } = extractTitleYear(dj.source_file_path);
-                          const title = getDisplayTitle(dj.source_file_path);
-                          const displayName = title || '—';
-                          const completedDate = dj.completed_at
-                            ? new Date(dj.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
-                            : '—';
-                          return (
-                            <div key={`dl-hist-mobile-${dj.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
-                              <div className="mb-2 flex items-center justify-between">
-                                <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-400">Download</span>
-                                <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-400">ID {dj.id}</span>
-                              </div>
-                              <div className="flex items-start justify-between gap-2">
-                                <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={dj.source_file_path}>{displayName}</p>
-                                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'failed' || dj.status === 'timed_out' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
-                              </div>
-                              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
-                                <span>{libName}</span>
-                              </div>
-                              <p className="mt-2.5 text-xs text-slate-500">{completedDate}</p>
-                              {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
-                              <MobileActionMenu>
-                                {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
-                                  <Btn size="sm" variant="primary" disabled={Boolean(downloadActionPending)} onClick={() => handleRetryDownloadJob(dj.id)}>
-                                    {downloadActionPending === 'retry' ? 'Working…' : 'Retry'}
-                                  </Btn>
-                                )}
-                                <Btn size="sm" variant="secondary" disabled={Boolean(downloadActionPending)} onClick={() => handleDeleteDownloadJob(dj.id)}>
-                                  {downloadActionPending === 'delete' ? 'Working…' : 'Delete'}
-                                </Btn>
-                              </MobileActionMenu>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div className="hidden overflow-x-auto [scrollbar-gutter:stable] md:block">
-                        <table className="min-w-[1024px] divide-y divide-slate-800">
-                          <thead className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur-sm">
-                            <tr>
-                              <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">ID</th>
-                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Title</th>
-                              <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Library</th>
-                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
-                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Completed</th>
-                              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-800/60">
-                            {pagedTerminalDownloadHistoryJobs.map((dj) => {
-                              const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
-                              const downloadActionPending = pendingDownloadActions[dj.id];
-                              const { year } = extractTitleYear(dj.source_file_path);
-                              const title = getDisplayTitle(dj.source_file_path);
-                              const displayName = title || '—';
-                              const completedDate = dj.completed_at
-                                ? new Date(dj.completed_at).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true })
-                                : '—';
-                              return (
-                                <tr key={dj.id} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
-                                  <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{dj.id}</td>
-                                  <td className="max-w-[200px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{displayName}</td>
-                                  <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
-                                  <td className="px-4 py-3 text-sm">
-                                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${dj.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'failed' || dj.status === 'timed_out' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
-                                    {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
-                                  </td>
-                                  <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">{completedDate}</td>
-                                  <td className="whitespace-nowrap px-4 py-3">
-                                    <div className="flex flex-wrap gap-1.5">
-                                      {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
-                                        <Btn size="sm" variant="primary" disabled={Boolean(downloadActionPending)} onClick={() => handleRetryDownloadJob(dj.id)}>
-                                          {downloadActionPending === 'retry' ? 'Working…' : 'Retry'}
-                                        </Btn>
-                                      )}
-                                      <Btn size="sm" variant="secondary" disabled={Boolean(downloadActionPending)} onClick={() => handleDeleteDownloadJob(dj.id)}>
-                                        {downloadActionPending === 'delete' ? 'Working…' : 'Delete'}
-                                      </Btn>
-                                    </div>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                      {totalDownloadHistoryPages > 1 && (
-                        <div className="flex items-center justify-between border-t border-slate-700/70 px-5 py-3 text-sm text-slate-400">
-                          <p>Download Page {downloadHistoryPage} of {totalDownloadHistoryPages}</p>
-                          <div className="flex items-center gap-1">
-                            {Array.from({ length: totalDownloadHistoryPages }, (_, i) => i + 1).map((pageNum) => (
-                              <button
-                                key={pageNum}
-                                type="button"
-                                onClick={() => setDownloadHistoryPage(pageNum)}
-                                className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${downloadHistoryPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
-                              >
-                                {pageNum}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                     </div>
                   )}
                 </>

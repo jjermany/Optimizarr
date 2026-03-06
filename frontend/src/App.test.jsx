@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   buildQrCodeDataUrl,
   buildFallbackHistoryByEncodeJobId,
+  buildUnifiedHistoryItems,
+  compareHistoryItemsByOption,
   compareDownloadHistoryJobsByOption,
   downloadJobMatchesSearch,
   estimateDownloadEtaSeconds,
@@ -134,6 +136,31 @@ describe('compareDownloadHistoryJobsByOption', () => {
     const sorted = [...jobs].sort((a, b) => compareDownloadHistoryJobsByOption(a, b, 'year_newest'));
 
     expect(sorted.map((job) => job.id)).toEqual([2, 1, 3]);
+  });
+});
+
+describe('compareHistoryItemsByOption', () => {
+  it('sorts mixed history items by completed time newest first', () => {
+    const items = [
+      { id: 1, _historyType: 'encode', source_path: '/media/Movies/Older.2020.mkv', completed_at: '2026-03-01T10:00:00Z', created_at: '2026-03-01T09:00:00Z' },
+      { id: 2, _historyType: 'download', source_file_path: '/downloads/Newer.2021.mkv', completed_at: '2026-03-01T12:00:00Z', created_at: '2026-03-01T11:00:00Z' },
+    ];
+
+    const sorted = [...items].sort((a, b) => compareHistoryItemsByOption(a, b, 'completed_desc'));
+
+    expect(sorted.map((item) => item.id)).toEqual([2, 1]);
+  });
+});
+
+describe('buildUnifiedHistoryItems', () => {
+  it('tags encode and download history entries for unified rendering', () => {
+    const encodeJobs = [{ id: 1, source_path: '/media/Movies/Movie.2024.mkv' }];
+    const downloadJobs = [{ id: 2, source_file_path: '/downloads/Movie.2024.mkv' }];
+
+    expect(buildUnifiedHistoryItems(encodeJobs, downloadJobs)).toEqual([
+      { ...encodeJobs[0], _historyType: 'encode' },
+      { ...downloadJobs[0], _historyType: 'download' },
+    ]);
   });
 });
 
