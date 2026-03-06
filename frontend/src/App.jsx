@@ -1944,7 +1944,6 @@ export default function App() {
       else if (action === 'pause') mergeJobUpdate(await pauseJob(jobId));
       else if (action === 'resume') mergeJobUpdate(await resumeJob(jobId));
       else if (action === 'start') mergeJobUpdate(await startJob(jobId));
-      else if (action === 'start_paused') { await resumeJob(jobId); mergeJobUpdate(await startJob(jobId)); }
       else if (action === 'abort') mergeJobUpdate(await abortJob(jobId));
       else if (action === 'discard') mergeJobUpdate(await discardJobProgress(jobId));
       else if (action === 'remove') { await deleteJob(jobId); setJobs((prev) => prev.filter((j) => j.id !== jobId)); }
@@ -3303,8 +3302,8 @@ export default function App() {
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
                     {jobsView === 'queue' && (
-                      <span aria-label={`Queue status: ${queuePaused ? 'paused' : 'running'}`} className={`rounded-full border px-2.5 py-1 text-xs ${queuePaused ? 'border-amber-500/40 bg-amber-950/40 text-amber-300' : 'border-emerald-500/40 bg-emerald-950/40 text-emerald-300'}`}>
-                        {queuePaused ? 'Queue Paused' : 'Queue Running'}
+                      <span aria-label={`Queue status: ${queuePaused ? 'new jobs paused' : 'accepting new jobs'}`} className={`rounded-full border px-2.5 py-1 text-xs ${queuePaused ? 'border-amber-500/40 bg-amber-950/40 text-amber-300' : 'border-emerald-500/40 bg-emerald-950/40 text-emerald-300'}`}>
+                        {queuePaused ? 'New Jobs Paused' : 'Queue Active'}
                       </span>
                     )}
                   </div>
@@ -3370,8 +3369,11 @@ export default function App() {
                     <Btn size="sm" variant="secondary" onClick={handleClearQueue}>Clear Queue</Btn>
                     <Btn size="sm" variant="danger" onClick={handleAbortAllJobs}>Abort All</Btn>
                     <Btn size="sm" variant="warning" onClick={() => handleQueueAction(queuePaused ? 'resume' : 'pause')}>
-                      {queuePaused ? 'Start Queue' : 'Pause Queue'}
+                      {queuePaused ? 'Resume New Jobs' : 'Pause New Jobs'}
                     </Btn>
+                    <p className="text-xs text-slate-500">
+                      Current encodes keep running. This only stops new queue starts.
+                    </p>
                   </div>
                 )}
                 {jobsView === 'history' && (
@@ -3524,7 +3526,7 @@ export default function App() {
                           || (job.status === 'paused' && progress === 0)
                         );
                       const jobModeLabel = jobDownloadEnabled ? 'Auto' : 'Encode';
-                      const jobStatusLabel = queueWaitingForRoute ? 'awaiting route' : job.status;
+                      const jobStatusLabel = queueWaitingForRoute ? 'awaiting download route' : job.status;
                       return (
                         <div key={`job-mobile-${job.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
                           <div className="mb-2 flex items-center justify-between">
@@ -3570,13 +3572,13 @@ export default function App() {
                             <div className="mt-1 text-xs text-slate-500">{progress}%</div>
                           </div>
                           <MobileActionMenu>
-                            {job.status === 'running' && <Btn size="sm" variant="warning" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('pause', job.id)}>{jobActionPending === 'pause' ? 'Working…' : 'Pause'}</Btn>}
-                            {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('resume', job.id)}>{jobActionPending === 'resume' ? 'Working…' : 'Resume'}</Btn>}
-                            {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && !jobDownloadEnabled && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>{jobActionPending === 'start' || jobActionPending === 'start_paused' ? 'Working…' : 'Start'}</Btn>}
+                            {job.status === 'running' && <Btn size="sm" variant="warning" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('pause', job.id)}>{jobActionPending === 'pause' ? 'Working…' : 'Pause Encode'}</Btn>}
+                            {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('resume', job.id)}>{jobActionPending === 'resume' ? 'Working…' : 'Resume Encode'}</Btn>}
+                            {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && !jobDownloadEnabled && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('start', job.id)}>{jobActionPending === 'start' ? 'Working…' : 'Start Now'}</Btn>}
                             {job.status === 'interrupted' && <Btn size="sm" variant="primary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('requeue', job.id)}>{jobActionPending === 'requeue' ? 'Working…' : 'Requeue'}</Btn>}
                             {(ACTIVE_STATUSES.has(job.status) || (job.status === 'paused' && progress > 0)) && (
                               <Btn size="sm" variant="secondary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('discard', job.id)}>
-                                {jobActionPending === 'discard' ? 'Working…' : (jobDownloadEnabled ? 'Search Again' : 'Restart')}
+                                {jobActionPending === 'discard' ? 'Working…' : (jobDownloadEnabled ? 'Search Instead' : 'Restart From Beginning')}
                               </Btn>
                             )}
                             {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (
@@ -3718,7 +3720,7 @@ export default function App() {
                               ['queued', 'pending', 'created', 'starting', 'preflight'].includes(job.status)
                               || (job.status === 'paused' && progress === 0)
                             );
-                          const jobStatusLabel = queueWaitingForRoute ? 'awaiting route' : job.status;
+                          const jobStatusLabel = queueWaitingForRoute ? 'awaiting download route' : job.status;
                           return (
                             <tr key={job.id} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
                               <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{job.id}</td>
@@ -3793,13 +3795,13 @@ export default function App() {
                               </td>
                               <td className="px-4 py-3">
                                 <div className="flex flex-wrap gap-1.5">
-                                  {job.status === 'running' && <Btn size="sm" variant="warning" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('pause', job.id)}>{jobActionPending === 'pause' ? 'Working…' : 'Pause'}</Btn>}
-                                  {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('resume', job.id)}>{jobActionPending === 'resume' ? 'Working…' : 'Resume'}</Btn>}
-                                  {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && !jobDownloadEnabled && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction(job.status === 'paused' ? 'start_paused' : 'start', job.id)}>{jobActionPending === 'start' || jobActionPending === 'start_paused' ? 'Working…' : 'Start'}</Btn>}
+                                  {job.status === 'running' && <Btn size="sm" variant="warning" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('pause', job.id)}>{jobActionPending === 'pause' ? 'Working…' : 'Pause Encode'}</Btn>}
+                                  {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('resume', job.id)}>{jobActionPending === 'resume' ? 'Working…' : 'Resume Encode'}</Btn>}
+                                  {(job.status === 'queued' || (job.status === 'paused' && progress === 0)) && !jobDownloadEnabled && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('start', job.id)}>{jobActionPending === 'start' ? 'Working…' : 'Start Now'}</Btn>}
                                   {job.status === 'interrupted' && <Btn size="sm" variant="primary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('requeue', job.id)}>{jobActionPending === 'requeue' ? 'Working…' : 'Requeue'}</Btn>}
                                   {(ACTIVE_STATUSES.has(job.status) || (job.status === 'paused' && progress > 0)) && (
                                     <Btn size="sm" variant="secondary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('discard', job.id)}>
-                                      {jobActionPending === 'discard' ? 'Working…' : (jobDownloadEnabled ? 'Search Again' : 'Restart')}
+                                      {jobActionPending === 'discard' ? 'Working…' : (jobDownloadEnabled ? 'Search Instead' : 'Restart From Beginning')}
                                     </Btn>
                                   )}
                                   {['queued', 'starting', 'running', 'paused', 'preflight'].includes(job.status) && (

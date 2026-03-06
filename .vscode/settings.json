@@ -1,9 +1,11 @@
 {
+    "python.defaultInterpreterPath": "C:\\Users\\jalon\\AppData\\Local\\Microsoft\\WindowsApps\\PythonSoftwareFoundation.Python.3.11_qbz5n2kfra8p0\\python.exe",
     "python.testing.pytestArgs": [
         "tests"
     ],
+    "python.testing.cwd": "${workspaceFolder}",
     "python.testing.unittestEnabled": false,
     "python.testing.pytestEnabled": true,
-    "python.testing.pytestPath": "/home/jalon/.local/bin/pytest",
+    "python.testing.autoTestDiscoverOnSaveEnabled": true,
     "python-envs.defaultEnvManager": "ms-python.python:system"
 }

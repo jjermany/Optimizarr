@@ -883,6 +883,20 @@ def _extract_tagged_ids(source_path: str) -> dict[str, str]:
     return extracted
 
 
+def _format_prowlarr_token(field: str, value: object) -> str:
+    field_map = {
+        'imdbid': 'ImdbId',
+        'tmdbid': 'TmdbId',
+        'tvdbid': 'TvdbId',
+        'tvmazeid': 'TvMazeId',
+        'rid': 'Rid',
+        'season': 'Season',
+        'episode': 'Episode',
+        'year': 'Year',
+    }
+    return f'{{{field_map.get(field, field)}:{value}}}'
+
+
 def _extract_tv_episode_details(source_path: str) -> dict[str, object]:
     stem = _strip_bracketed_metadata(Path(source_path or '').stem)
     clean_stem = re.sub(r'[._-]+', ' ', stem)
@@ -947,11 +961,11 @@ def _build_prowlarr_query(
             for key in ('imdbid', 'rid', 'tvdbid', 'tmdbid', 'tvmazeid'):
                 value = ids.get(key) if isinstance(ids, dict) else None
                 if value:
-                    token_parts.append(f'{{{key}:{value}}}')
-            token_parts.append(f'{{season:{season}}}')
-            token_parts.append(f'{{episode:{episode}}}')
+                    token_parts.append(_format_prowlarr_token(key, value))
+            token_parts.append(_format_prowlarr_token('season', season))
+            token_parts.append(_format_prowlarr_token('episode', episode))
             if isinstance(year, int):
-                token_parts.append(f'{{year:{year}}}')
+                token_parts.append(_format_prowlarr_token('year', year))
 
             return {
                 'query': f'{" ".join(dict.fromkeys(filter(None, query_terms)))} {"".join(token_parts)}'.strip(),
@@ -966,9 +980,9 @@ def _build_prowlarr_query(
         for key in ('imdbid', 'tmdbid'):
             value = ids.get(key)
             if value:
-                token_parts.append(f'{{{key}:{value}}}')
+                token_parts.append(_format_prowlarr_token(key, value))
         if isinstance(year, int):
-            token_parts.append(f'{{year:{year}}}')
+            token_parts.append(_format_prowlarr_token('year', year))
         if token_parts:
             return {
                 'query': f'{query} {"".join(token_parts)}'.strip(),

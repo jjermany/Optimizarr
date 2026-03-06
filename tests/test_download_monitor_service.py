@@ -934,7 +934,7 @@ def test_build_prowlarr_query_uses_tvsearch_tokens_for_episode_sources():
 
     assert payload['categories'] == [5000]
     assert payload['search_type'] == 'tvsearch'
-    assert payload['query'] == 'Fallout 1080p WEB-DL HEVC SDR {imdbid:tt12637874}{season:1}{episode:7}{year:2024}'
+    assert payload['query'] == 'Fallout 1080p WEB-DL HEVC SDR {ImdbId:tt12637874}{Season:1}{Episode:7}{Year:2024}'
 
 
 def test_build_prowlarr_query_uses_movie_tokens_for_movie_sources():
@@ -954,7 +954,7 @@ def test_build_prowlarr_query_uses_movie_tokens_for_movie_sources():
 
     assert payload['categories'] == [2000]
     assert payload['search_type'] == 'movie'
-    assert payload['query'] == 'Doctor Strange 2016 1080p WEB-DL HEVC SDR {imdbid:tt1211837}{tmdbid:284052}{year:2016}'
+    assert payload['query'] == 'Doctor Strange 2016 1080p WEB-DL HEVC SDR {ImdbId:tt1211837}{TmdbId:284052}{Year:2016}'
 
 
 def test_release_matches_source_title_accepts_matching_tv_episode_release():

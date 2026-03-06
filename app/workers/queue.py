@@ -336,6 +336,16 @@ def _process_job(job_id: int) -> None:
             db.commit()
             _publish_job(job, throttle_progress=False)
             return
+        if job.status == 'queued':
+            # A manual action re-queued this item while the current worker was
+            # still winding down after FFmpeg stop (for example "restart from
+            # beginning" or cancel-to-queue). Preserve that newer queue state
+            # instead of letting the stale worker overwrite it as cancelled.
+            job.fps = None
+            job.eta_seconds = None
+            db.commit()
+            _publish_job(job, throttle_progress=False)
+            return
         # If an abort/cancel request landed while optimize_video was running,
         # never allow final metrics to overwrite it as complete.
         if job.cancel_requested or job.status in {'aborting', 'cancelled'}:

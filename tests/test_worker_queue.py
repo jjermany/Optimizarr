@@ -836,6 +836,56 @@ def test_process_job_does_not_mark_complete_when_abort_requested_mid_encode(monk
         assert updated.output_path is None
 
 
+def test_process_job_preserves_manual_requeue_state_when_worker_stops(monkeypatch):
+    queue.resume_queue()
+    queue.stop_event.clear()
+
+    monkeypatch.setattr(queue, 'preflight_job', lambda *_: True)
+    monkeypatch.setattr(queue, '_publish_job', lambda *_args, **_kwargs: None)
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, global_quiet_enabled=False))
+        job = Job(input_path='/media/restart-race.mkv', status='queued', progress_percent=0)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+    def fake_optimize_video(_input_path, _settings, **kwargs):
+        progress_callback = kwargs['progress_callback']
+        progress_callback({'progress_percent': 38, 'fps': 18.0, 'eta_seconds': 9})
+
+        with SessionLocal() as db:
+            restarted_job = db.query(Job).filter(Job.id == job_id).first()
+            assert restarted_job is not None
+            restarted_job.status = 'queued'
+            restarted_job.progress_percent = 0
+            restarted_job.resume_position_seconds = None
+            restarted_job.error_message = None
+            restarted_job.output_path = None
+            db.commit()
+
+        return OptimizationMetrics(
+            input_path='/media/restart-race.mkv',
+            output_path='/media/restart-race-1080p.mkv',
+            status='cancelled',
+            processed_seconds=44.0,
+        )
+
+    monkeypatch.setattr(queue, 'optimize_video', fake_optimize_video)
+
+    queue._process_job(job_id)
+
+    with SessionLocal() as db:
+        updated = db.query(Job).filter(Job.id == job_id).first()
+        assert updated is not None
+        assert updated.status == 'queued'
+        assert updated.progress_percent == 0
+        assert updated.output_path is None
+        assert updated.completed_at is None
+
+
 def test_start_queued_job_manual_pauses_running_job(monkeypatch):
     queue.resume_queue()
     published = []
