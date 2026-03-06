@@ -938,6 +938,32 @@ def test_scan_library_endpoint_allows_disabled_library_when_requested_manually(m
         assert created_jobs[0]['source_path'] == str(library_path / 'movie.mkv')
 
 
+def test_scan_library_endpoint_resumes_queue_after_manual_scan(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'library'
+    library_path.mkdir()
+    (library_path / 'episode.mkv').write_text('video')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: True)
+
+    queue_events = []
+    monkeypatch.setattr(routes.worker_queue, 'pause_queue', lambda reason='manual': queue_events.append(('pause', reason)))
+    monkeypatch.setattr(routes.worker_queue, 'resume_queue', lambda reason='manual': queue_events.append(('resume', reason)))
+
+    with TestClient(app) as client:
+        create_library = client.post('/libraries', json={'name': 'Resume Scan', 'path': str(library_path), 'enabled': True})
+        assert create_library.status_code == 201
+        library_id = create_library.json()['id']
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+
+    assert queue_events == [('pause', 'manual_scan'), ('resume', 'manual_scan')]
+
+
 def test_profile_update_rejects_min_resolution_equal_or_lower_than_target(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()

@@ -1532,19 +1532,25 @@ def delete_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
 def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
     library = _get_library_or_404(db, library_id)
     worker_queue.pause_queue(reason='manual_scan')
-    jobs = scan_library(db, library, include_disabled=True)
-    payload = [JobResponse.from_orm_job(job) for job in jobs]
-    notification_service.register_scan_batch([job.id for job in jobs], library_name=library.name)
-    return ScanResponse(created_jobs=payload)
+    try:
+        jobs = scan_library(db, library, include_disabled=True)
+        payload = [JobResponse.from_orm_job(job) for job in jobs]
+        notification_service.register_scan_batch([job.id for job in jobs], library_name=library.name)
+        return ScanResponse(created_jobs=payload)
+    finally:
+        worker_queue.resume_queue(reason='manual_scan')
 
 
 @router.post('/scan', response_model=ScanResponse)
 def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
     worker_queue.pause_queue(reason='manual_scan')
-    created_jobs = scan_enabled_libraries(db)
-    payload = [JobResponse.from_orm_job(job) for job in created_jobs]
-    notification_service.register_scan_batch([job.id for job in created_jobs])
-    return ScanResponse(created_jobs=payload)
+    try:
+        created_jobs = scan_enabled_libraries(db)
+        payload = [JobResponse.from_orm_job(job) for job in created_jobs]
+        notification_service.register_scan_batch([job.id for job in created_jobs])
+        return ScanResponse(created_jobs=payload)
+    finally:
+        worker_queue.resume_queue(reason='manual_scan')
 
 
 def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = False) -> bool:
