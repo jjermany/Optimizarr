@@ -370,7 +370,7 @@ def abort_all_jobs(db: Session) -> list[Job]:
     for job in targets:
         optimization_service.stop_active_ffmpeg(job.id)
         optimization_service.delete_workspace(settings, job.id)
-        job.status = 'failed'
+        job.status = 'cancelled'
         job.progress_percent = 0
         job.fps = None
         job.eta_seconds = None

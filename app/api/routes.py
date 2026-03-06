@@ -1749,7 +1749,9 @@ def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
     from app.services.optimization_service import stop_active_ffmpeg
     from app.models.job import Job
 
-    worker_queue.pause_queue(reason='manual')
+    queue_was_paused = worker_queue.is_queue_paused()
+    if not queue_was_paused:
+        worker_queue.pause_queue(reason='manual')
     settings = _get_settings(db)
 
     active_encode_statuses = {'queued', 'starting', 'preflight', 'running', 'paused', 'paused_schedule', 'interrupted', 'aborting'}
@@ -1783,6 +1785,9 @@ def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
         broker.publish_system_event('job_removed', job_id=job_id)
     for download_job_id in removed_download_job_ids:
         broker.publish_system_event('download_job_removed', download_job_id=download_job_id)
+
+    if not queue_was_paused:
+        worker_queue.resume_queue(reason='manual')
 
     return ClearQueueResponse(
         removed_job_ids=removed_job_ids,

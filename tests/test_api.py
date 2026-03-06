@@ -1263,7 +1263,7 @@ def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):
         db.query(Job).delete()
         db.commit()
 
-        encode = Job(input_path='/media/clear-me.mkv', status='running', progress_percent=63, error_message='x')
+        encode = Job(input_path='/media/clear-me.mkv', status='queued', progress_percent=63, error_message='x')
         interrupted = Job(input_path='/media/clear-me-interrupted.mkv', status='interrupted')
         download = DownloadJob(
             source_file_path='/media/clear-me-download.mkv',
@@ -1284,8 +1284,10 @@ def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):
         download_id = download.id
 
     paused_reasons = []
+    resumed_reasons = []
     from app.workers import queue as worker_queue
     monkeypatch.setattr(worker_queue, 'pause_queue', lambda reason='manual': paused_reasons.append(reason))
+    monkeypatch.setattr(worker_queue, 'resume_queue', lambda reason='manual': resumed_reasons.append(reason))
 
     with TestClient(app) as client:
         response = client.post('/queue/clear')
@@ -1303,6 +1305,7 @@ def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):
         assert updated_download is None
 
     assert paused_reasons == ['manual']
+    assert resumed_reasons == ['manual']
 
 
 def test_recovery_endpoint_marks_interrupted_requeues_and_cleans_workspace(tmp_path):
@@ -1476,7 +1479,7 @@ def test_abort_all_jobs_endpoint():
             jobs = db.query(Job).filter(Job.id.in_(payload['aborted_job_ids'])).all()
             assert len(jobs) == len(payload['aborted_job_ids'])
             for job in jobs:
-                assert job.status == 'failed'
+                assert job.status == 'cancelled'
                 assert job.error_message == 'Aborted by user'
                 assert job.progress_percent == 0
                 assert job.fps is None
