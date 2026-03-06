@@ -976,7 +976,7 @@ export default function App() {
   const [profileErrors, setProfileErrors] = useState({});
   const [selectedPreset, setSelectedPreset] = useState('balanced');
   const [savingProfile, setSavingProfile] = useState(false);
-  const [libraryDraft, setLibraryDraft] = useState({ name: '', path: '/data/media/', enabled: true });
+  const [libraryDraft, setLibraryDraft] = useState({ name: '', path: '/data/', enabled: true });
   const [libraryFormErrors, setLibraryFormErrors] = useState({});
   const [savingLibrary, setSavingLibrary] = useState(false);
   const [deletingLibraryId, setDeletingLibraryId] = useState(null);
@@ -1861,7 +1861,7 @@ export default function App() {
       const created = await createLibrary({ name: libraryDraft.name.trim(), path: libraryDraft.path.trim(), enabled: libraryDraft.enabled });
       await refreshLibrariesAndProfiles();
       setSelectedLibraryId(created.id);
-      setLibraryDraft({ name: '', path: '/data/media/', enabled: true });
+      setLibraryDraft({ name: '', path: '/data/', enabled: true });
       setLibraryFormErrors({});
       pushToast(`Added library ${created.name}.`, 'success');
     } catch (createError) {
@@ -2664,7 +2664,7 @@ export default function App() {
                         type="text"
                         value={libraryDraft.path}
                         onChange={(e) => setLibraryDraft((prev) => ({ ...prev, path: e.target.value }))}
-                        placeholder="/data/media/movies"
+                        placeholder="/data/movies"
                       />
                       <button
                         type="button"

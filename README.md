@@ -4,7 +4,7 @@ Optimizarr is an automated media optimization service with a web UI. It discover
 
 ## Features
 
-- Library management for media folders under `MEDIA_ROOT` (recommended: `/data/media`)
+- Library management for media folders under `MEDIA_ROOT` (recommended: `/data`)
 - Configurable per-library encoding profiles (codec, CRF/CBR, resolution, schedule)
 - Job queue with pause / resume / cancel / retry / abort controls
 - Manual and automatic library scanning
@@ -64,7 +64,7 @@ docker run -d \
   -v /path/to/data:/data \
   -v /path/to/config:/config \
   -v /path/to/cache:/cache \
-  -e MEDIA_ROOT=/data/media \
+  -e MEDIA_ROOT=/data \
   -e LIBVA_DRIVER_NAME=iHD \
   -e QSV_DEVICE=/dev/dri/renderD128 \
   ghcr.io/jjermany/optimizarr:latest
@@ -109,7 +109,7 @@ Key environment variables:
 |---|---|---|
 | `LIBVA_DRIVER_NAME` | `iHD` | VA-API driver. Use `iHD` for Intel Gen 8+ / Arc |
 | `QSV_DEVICE` | `/dev/dri/renderD128` | DRM render node for QSV |
-| `MEDIA_ROOT` | `/data/media` | Root folder shown by the library picker; set this to your final media-library path |
+| `MEDIA_ROOT` | `/data` | Root folder shown by the library picker; set this to the shared data mount that contains both completed downloads and final libraries |
 | `OPTIMIZARR_VERSION` | `0.1.0` | Reported by `GET /version` |
 | `OPTIMIZARR_SESSION_COOKIE_SECURE` | `auto` | Session cookie `Secure` policy (`auto`, `true`, `false`) |
 | `OPTIMIZARR_BOOTSTRAP_TOKEN` | _(auto-generated)_ | Required one-time token for first admin setup; if unset, Optimizarr prints a generated token to the logs |
@@ -139,9 +139,9 @@ Filesystem boundaries:
 
 Recommended layout:
 - Mount your full data tree into the container at `/data`.
-- Set `MEDIA_ROOT=/data/media`.
+- Set `MEDIA_ROOT=/data`.
 - Keep completed downloads under `/data/complete/...`.
-- Keep final libraries under `/data/media/...`.
+- Keep final libraries somewhere under `/data/...`.
 
 ---
 
