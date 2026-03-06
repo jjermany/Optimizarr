@@ -4217,10 +4217,10 @@ export default function App() {
                   <TextInput type="number" min={1} value={settings.discovery_interval_minutes} onChange={(e) => setSettings((prev) => ({ ...prev, discovery_interval_minutes: Number(e.target.value) }))} />
                 </FormField>
 
-                <FormField label="Discovery Method" hint="When to scan libraries for new media.">
+                <FormField label="Discovery Method" hint="How Optimizarr discovers new media files. Watcher mode avoids repeated full-library rescans.">
                   <SelectInput value={settings.discovery_method} onChange={(e) => setSettings((prev) => ({ ...prev, discovery_method: e.target.value }))}>
                     <option value="interval">On Interval</option>
-                    <option value="startup">On Startup Only</option>
+                    <option value="watcher">Watcher</option>
                   </SelectInput>
                 </FormField>
 
@@ -4229,7 +4229,17 @@ export default function App() {
                 </FormField>
 
                 <FormField label="Scan Probe Workers" hint="Parallel metadata probes during discovery scans. Values above available CPU cores are clamped automatically.">
-                  <TextInput type="number" min={1} value={settings.scan_probe_workers} onChange={(e) => setSettings((prev) => ({ ...prev, scan_probe_workers: Number(e.target.value) }))} />
+                  <TextInput
+                    type="number"
+                    min={1}
+                    value={settings.scan_probe_workers}
+                    disabled={settings.discovery_method === 'watcher'}
+                    className={settings.discovery_method === 'watcher' ? 'cursor-not-allowed border-slate-700/70 bg-slate-900/40 text-slate-500' : ''}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, scan_probe_workers: Number(e.target.value) }))}
+                  />
+                  {settings.discovery_method === 'watcher' && (
+                    <p className="text-xs text-slate-500">Watcher mode probes new files one at a time, so probe workers are not used.</p>
+                  )}
                 </FormField>
 
                 <FormField label="Minimum Free Disk (GB)" hint="Pause the queue when free disk drops below this threshold.">
