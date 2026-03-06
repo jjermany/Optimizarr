@@ -195,4 +195,22 @@ describe('buildUnifiedQueueItems', () => {
       'encode-202',
     ]);
   });
+
+  it('keeps only the preferred encode row when duplicate source paths exist', () => {
+    const source = '/movies/War Machine (2026).mkv';
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 210, status: 'running', source_path: source, created_at: '2026-03-06T10:00:00Z' },
+        { id: 257, status: 'queued', source_path: source, created_at: '2026-03-06T10:05:00Z' },
+      ],
+      downloadItems: [],
+      sortOption: 'default',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
+      'encode-210',
+    ]);
+  });
 });

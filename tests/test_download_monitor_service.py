@@ -853,7 +853,7 @@ def test_build_search_query_does_not_include_quality_keyword():
     assert 'webdl' not in query.lower()
     assert 'The Gorge' in query
     assert '2025' in query
-    assert '1080p' in query
+    assert '1080p' not in query
 
 
 def test_build_search_query_excludes_quality_for_all_profiles():
@@ -900,7 +900,7 @@ def test_build_second_pass_search_query_adds_profile_hints():
 
     query = _build_second_pass_search_query('/media/The Gorge (2025).mkv', profile)
 
-    assert query == 'The Gorge 2025 1080p WEB-DL HEVC SDR'
+    assert query == 'The Gorge 2025 WEB-DL HEVC SDR'
 
 
 def test_build_second_pass_search_query_does_not_add_hdr_hint_for_hdr_only():
@@ -914,7 +914,7 @@ def test_build_second_pass_search_query_does_not_add_hdr_hint_for_hdr_only():
 
     query = _build_second_pass_search_query('/media/The Gorge (2025).mkv', profile)
 
-    assert query == 'The Gorge 2025 1080p WEB-DL HEVC'
+    assert query == 'The Gorge 2025 WEB-DL HEVC'
 
 
 def test_build_prowlarr_query_uses_tvsearch_tokens_for_episode_sources():
@@ -954,7 +954,16 @@ def test_build_prowlarr_query_uses_movie_tokens_for_movie_sources():
 
     assert payload['categories'] == [2000]
     assert payload['search_type'] == 'movie'
-    assert payload['query'] == 'Doctor Strange 2016 1080p WEB-DL HEVC SDR {ImdbId:tt1211837}{TmdbId:284052}{Year:2016}'
+    assert payload['query'] == 'Doctor Strange 2016 WEB-DL HEVC SDR {ImdbId:tt1211837}{TmdbId:284052}{Year:2016}'
+
+
+def test_build_search_query_keeps_resolution_for_tv_sources():
+    profile = _full_profile(DownloadQualityProfileEnum.web_dl)
+
+    query = _build_search_query('/media/Shows/Season 01/Severance.S01E03.2160p.mkv', profile)
+
+    assert 'Severance S01E03' in query
+    assert '1080p' in query
 
 
 def test_release_matches_source_title_accepts_matching_tv_episode_release():

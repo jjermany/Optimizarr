@@ -835,7 +835,12 @@ def _detect_release_codecs(release: dict) -> set[str]:
 # Search query construction
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_search_query(source_path: str, profile: LibraryProfile) -> str:
+def _build_search_query(
+    source_path: str,
+    profile: LibraryProfile,
+    *,
+    include_resolution: bool | None = None,
+) -> str:
     stem = Path(source_path).stem
     # Normalize dots/underscores to spaces
     clean = re.sub(r'[._]', ' ', stem)
@@ -849,7 +854,9 @@ def _build_search_query(source_path: str, profile: LibraryProfile) -> str:
     else:
         year = ''
         title = clean.strip()
-    resolution = f"{profile.target_resolution}p"
+    if include_resolution is None:
+        include_resolution = _infer_search_categories(source_path) != [2000]
+    resolution = f"{profile.target_resolution}p" if include_resolution else ''
     # Quality term is intentionally excluded from the Prowlarr search so that
     # broad indexer results are returned.  Client-side filtering in
     # _select_best_release() then applies the exact quality class match.

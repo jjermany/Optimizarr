@@ -67,6 +67,14 @@ function compareByCreatedAt(left, right, direction = 'asc') {
   return compareById(left, right, direction);
 }
 
+function encodeStatusRank(statusValue) {
+  const status = String(statusValue || '').toLowerCase();
+  if (ENCODE_ACTIVE_STATUSES.has(status)) return 0;
+  if (status === 'paused') return 1;
+  if (status === 'queued') return 2;
+  return 3;
+}
+
 function queuePinRank(item) {
   if (item._itemType === 'encode' && ENCODE_ACTIVE_STATUSES.has(item.status?.toLowerCase())) return 0;
   if (item._itemType === 'download' && DOWNLOAD_ACTIVE_STATUSES.has(item.status)) return 1;
@@ -128,8 +136,41 @@ export function buildUnifiedQueueItems({
     if (titleYearKey) activeEncodeTitleYearKeys.add(titleYearKey);
   }
 
+  const preferredEncodeByPath = new Map();
+  for (const item of encodeItems) {
+    const sourcePath = String(item.source_path || '').trim();
+    if (!sourcePath) continue;
+    const normalizedSourcePath = normalizedPath(sourcePath);
+    const existing = preferredEncodeByPath.get(normalizedSourcePath);
+    if (!existing) {
+      preferredEncodeByPath.set(normalizedSourcePath, item);
+      continue;
+    }
+
+    const statusDelta = encodeStatusRank(item.status) - encodeStatusRank(existing.status);
+    if (statusDelta < 0) {
+      preferredEncodeByPath.set(normalizedSourcePath, item);
+      continue;
+    }
+    if (statusDelta > 0) continue;
+
+    const createdDelta = compareByCreatedAt(item, existing, 'desc');
+    if (createdDelta < 0) {
+      preferredEncodeByPath.set(normalizedSourcePath, item);
+      continue;
+    }
+
+    if (createdDelta === 0 && item.id > existing.id) {
+      preferredEncodeByPath.set(normalizedSourcePath, item);
+    }
+  }
+
   const dedupedEncodeItems = encodeItems.filter((item) => {
     const sourcePath = String(item.source_path || '').trim();
+    if (sourcePath) {
+      const preferred = preferredEncodeByPath.get(normalizedPath(sourcePath));
+      if (preferred && preferred.id !== item.id) return false;
+    }
     if (!sourcePath || !dedupeSources.has(sourcePath)) return true;
     // Keep truly active encode rows visible even if a download row exists.
     return ENCODE_ACTIVE_STATUSES.has(String(item.status || '').toLowerCase());

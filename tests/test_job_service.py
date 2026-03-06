@@ -5,7 +5,7 @@ from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
 from app.services import optimization_service
-from app.services.job_service import abort_job, cancel_job, create_job, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
+from app.services.job_service import abort_job, cancel_job, create_job, job_exists_for_source, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
 
 
 def test_create_job_stores_profile_snapshot():
@@ -33,8 +33,6 @@ def test_create_job_stores_profile_snapshot():
 
 
 def test_job_exists_for_source_ignores_stale_complete_without_output(tmp_path):
-    from app.services.job_service import job_exists_for_source
-
     with SessionLocal() as db:
         db.query(Job).delete()
         db.commit()
@@ -49,6 +47,67 @@ def test_job_exists_for_source_ignores_stale_complete_without_output(tmp_path):
         db.commit()
 
         assert job_exists_for_source(db, '/media/stale-complete.mkv', library_id=1) is False
+
+
+def test_job_exists_for_source_matches_existing_job_even_when_library_differs():
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        job = Job(
+            input_path='/media/shared-source.mkv',
+            library_id=None,
+            status='queued',
+        )
+        db.add(job)
+        db.commit()
+
+        assert job_exists_for_source(db, '/media/shared-source.mkv', library_id=7) is True
+
+
+def test_create_job_reuses_existing_source_and_enriches_missing_metadata():
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, codec='hevc', output_suffix='-opt')
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        existing = Job(
+            input_path='/media/movies/shared-title.mkv',
+            status='queued',
+            library_id=None,
+        )
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+
+        reused = create_job(
+            db,
+            '/media/movies/shared-title.mkv',
+            library_id=library.id,
+            profile=profile,
+            source_resolution=2160,
+            source_is_hdr=True,
+        )
+
+        db.refresh(existing)
+
+        assert reused.id == existing.id
+        assert existing.library_id == library.id
+        assert existing.profile_snapshot_json is not None
+        assert existing.source_resolution == 2160
+        assert existing.source_is_hdr is True
+        assert db.query(Job).filter(Job.input_path == '/media/movies/shared-title.mkv').count() == 1
 
 
 def test_prune_job_history_removes_stale_terminal_jobs():

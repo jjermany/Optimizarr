@@ -51,6 +51,26 @@ def create_job(
     source_is_hdr: bool | None = None,
     status: str = 'queued',
 ) -> Job:
+    existing = get_existing_job_for_source(db, source_path)
+    if existing is not None:
+        changed = False
+        if existing.library_id is None and library_id is not None:
+            existing.library_id = library_id
+            changed = True
+        if existing.profile_snapshot_json is None and profile is not None:
+            existing.profile_snapshot_json = _profile_snapshot(profile)
+            changed = True
+        if existing.source_resolution is None and source_resolution is not None:
+            existing.source_resolution = source_resolution
+            changed = True
+        if existing.source_is_hdr is None and source_is_hdr is not None:
+            existing.source_is_hdr = source_is_hdr
+            changed = True
+        if changed:
+            db.commit()
+            db.refresh(existing)
+        return existing
+
     job = Job(
         input_path=source_path,
         status=status,
@@ -88,22 +108,26 @@ def refresh_queued_job_snapshots(db: Session, library_id: int, profile: LibraryP
 
 
 def job_exists_for_source(db: Session, source_path: str, library_id: int | None = None) -> bool:
+    return get_existing_job_for_source(db, source_path) is not None
+
+
+def get_existing_job_for_source(db: Session, source_path: str) -> Job | None:
     # Completed jobs normally block re-queuing, but stale "complete" rows whose
     # output no longer exists are treated as retryable.
     _RETRYABLE_STATUSES = {'failed', 'skipped', 'cancelled'}
-    query = db.query(Job).filter(Job.input_path == source_path, ~Job.status.in_(_RETRYABLE_STATUSES))
-    if library_id is None:
-        query = query.filter(Job.library_id.is_(None))
-    else:
-        query = query.filter(Job.library_id == library_id)
-    candidates = query.all()
+    candidates = (
+        db.query(Job)
+        .filter(Job.input_path == source_path, ~Job.status.in_(_RETRYABLE_STATUSES))
+        .order_by(Job.created_at.asc(), Job.id.asc())
+        .all()
+    )
     for job in candidates:
         if job.status != 'complete':
-            return True
+            return job
         output = Path(job.output_path) if job.output_path else None
         if output and output.exists():
-            return True
-    return False
+            return job
+    return None
 
 
 def get_job(db: Session, job_id: int) -> Job | None:
