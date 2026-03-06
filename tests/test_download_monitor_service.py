@@ -9,6 +9,7 @@ from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum
 from app.models.settings import QueueSortEnum, Settings
 from app.services.download_monitor_service import (
+    _build_second_pass_search_query,
     _extract_hash_from_release,
     _find_completed_download_match,
     _build_search_query,
@@ -342,32 +343,32 @@ def test_select_best_release_parses_string_boolean_flags():
     assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-SDR'
 
 
-def test_select_best_release_resolves_conflicting_hdr_policy_by_prioritizing_tonemap_filter():
+def test_select_best_release_ignores_hdr_only_for_download_selection():
     releases = [
-        {
-            'title': 'Movie.2024.1080p.WEB-DL.HDR10.x265-HDR',
-            'seeders': 500,
-            'size': 1400,
-            'protocol': 'torrent',
-        },
         {
             'title': 'Movie.2024.1080p.WEB-DL.x265-SDR',
             'seeders': 50,
             'size': 1500,
             'protocol': 'torrent',
         },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.HDR10.x265-HDR',
+            'seeders': 500,
+            'size': 1400,
+            'protocol': 'torrent',
+        },
     ]
     profile = SimpleNamespace(
         target_resolution=1080,
         download_quality_profile='web_dl',
-        tone_map_hdr=True,
+        tone_map_hdr=False,
         hdr_only=True,
     )
 
     selected = _select_best_release(releases, profile, qbt_enabled=True, sab_enabled=True)
 
     assert selected is not None
-    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-SDR'
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.HDR10.x265-HDR'
 
 
 def test_select_best_release_rejects_sing_along_variant():
@@ -832,7 +833,13 @@ def test_check_download_progress_recovers_hash_when_qbit_title_is_renamed(monkey
 
 def _full_profile(quality: DownloadQualityProfileEnum):
     """A profile stub with all fields _build_search_query reads."""
-    return SimpleNamespace(target_resolution=1080, download_quality_profile=quality.value)
+    return SimpleNamespace(
+        target_resolution=1080,
+        download_quality_profile=quality.value,
+        tone_map_hdr=False,
+        hdr_only=False,
+        codec='hevc',
+    )
 
 
 def test_build_search_query_does_not_include_quality_keyword():
@@ -878,6 +885,34 @@ def test_infer_search_categories_leaves_ambiguous_titles_unbounded():
     from app.services.download_monitor_service import _infer_search_categories
 
     assert _infer_search_categories('/media/Heat.mkv') is None
+
+
+def test_build_second_pass_search_query_adds_profile_hints():
+    profile = SimpleNamespace(
+        target_resolution=1080,
+        download_quality_profile=DownloadQualityProfileEnum.web_dl.value,
+        tone_map_hdr=True,
+        hdr_only=False,
+        codec='hevc',
+    )
+
+    query = _build_second_pass_search_query('/media/The Gorge (2025).mkv', profile)
+
+    assert query == 'The Gorge 2025 1080p WEB-DL HEVC SDR'
+
+
+def test_build_second_pass_search_query_does_not_add_hdr_hint_for_hdr_only():
+    profile = SimpleNamespace(
+        target_resolution=1080,
+        download_quality_profile=DownloadQualityProfileEnum.web_dl.value,
+        tone_map_hdr=False,
+        hdr_only=True,
+        codec='hevc',
+    )
+
+    query = _build_second_pass_search_query('/media/The Gorge (2025).mkv', profile)
+
+    assert query == 'The Gorge 2025 1080p WEB-DL HEVC'
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2223,7 +2258,128 @@ def test_do_search_uses_tv_category_when_source_looks_like_episode(monkeypatch):
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
 
-        assert search_calls == [{'query': 'Severance S01E03 2160p 1080p', 'categories': [5000]}]
+        assert search_calls == [
+            {'query': 'Severance S01E03 2160p 1080p', 'categories': [5000]},
+            {'query': 'Severance S01E03 2160p 1080p HEVC', 'categories': [5000]},
+        ]
+
+
+def test_do_search_stops_after_first_pass_when_candidate_matches(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/The Gorge (2025).mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+        search_calls = []
+
+        def _fake_search(_settings, query, categories=None):
+            search_calls.append({'query': query, 'categories': categories})
+            return [{
+                'title': 'The.Gorge.2025.1080p.WEB-DL.HEVC',
+                'seeders': 50,
+                'size': 1000,
+                'protocol': 'usenet',
+                'guid': 'first-pass-guid',
+                'indexerId': 1,
+            }]
+
+        monkeypatch.setattr(prowlarr_service, 'search', _fake_search)
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
+        monkeypatch.setattr(prowlarr_service, 'grab', lambda *_args, **_kwargs: {'downloadId': 'NZO12345'})
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+
+        assert search_calls == [{'query': 'The Gorge 2025 1080p', 'categories': [2000]}]
+
+
+def test_do_search_uses_second_pass_with_profile_hints_when_first_pass_has_no_match(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        profile = db.query(LibraryProfile).filter_by(library_id=library.id).first()
+        profile.download_quality_profile = DownloadQualityProfileEnum.web_dl.value
+        profile.tone_map_hdr = True
+        profile.codec = 'hevc'
+        db.commit()
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/The Gorge (2025).mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+        search_calls = []
+        grabbed = []
+
+        def _fake_search(_settings, query, categories=None):
+            search_calls.append({'query': query, 'categories': categories})
+            if len(search_calls) == 1:
+                return [{
+                    'title': 'The.Gorge.2025.1080p.HDR.BluRay.x264',
+                    'seeders': 100,
+                    'size': 1000,
+                    'protocol': 'usenet',
+                    'guid': 'bad-first-pass-guid',
+                    'indexerId': 1,
+                }]
+            return [{
+                'title': 'The.Gorge.2025.1080p.WEB-DL.HEVC.SDR',
+                'seeders': 5,
+                'size': 1200,
+                'protocol': 'usenet',
+                'guid': 'good-second-pass-guid',
+                'indexerId': 1,
+            }]
+
+        monkeypatch.setattr(prowlarr_service, 'search', _fake_search)
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
+        monkeypatch.setattr(
+            prowlarr_service,
+            'grab',
+            lambda *_args, **_kwargs: (grabbed.append(_args[1]) or {'downloadId': 'NZO12345'}),
+        )
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+        db.refresh(dj)
+
+        assert search_calls == [
+            {'query': 'The Gorge 2025 1080p', 'categories': [2000]},
+            {'query': 'The Gorge 2025 1080p WEB-DL HEVC SDR', 'categories': [2000]},
+        ]
+        assert grabbed == ['good-second-pass-guid']
+        assert dj.search_query == 'The Gorge 2025 1080p WEB-DL HEVC SDR'
 
 
 def test_do_search_skips_previously_failed_release_keys(monkeypatch):

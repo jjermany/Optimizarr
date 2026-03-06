@@ -758,25 +758,6 @@ def _coerce_bool(value: object) -> bool:
     return bool(value)
 
 
-def _normalize_hdr_download_policy(
-    *,
-    hdr_only: bool,
-    tone_map_hdr: bool,
-    context: str,
-) -> tuple[bool, bool]:
-    # For download selection, tone_map_hdr means "prefer an already-SDR source"
-    # so we should exclude HDR grabs. If hdr_only is also true, keep queue-side
-    # hdr_only semantics elsewhere but prioritize tone_map_hdr for downloads.
-    if hdr_only and tone_map_hdr:
-        logger.warning(
-            'Conflicting HDR download policy in %s (hdr_only=true + tone_map_hdr=true); '
-            'prioritizing tone_map_hdr for download selection (hdr_only ignored here)',
-            context,
-        )
-        return False, True
-    return hdr_only, tone_map_hdr
-
-
 def _release_matches_target_resolution(release: dict, target_resolution: int) -> bool:
     title_lower = str(release.get('title', '') or '').lower()
     target = int(target_resolution)
@@ -877,6 +858,48 @@ def _build_search_query(source_path: str, profile: LibraryProfile) -> str:
     return ' '.join(filter(None, [title, year, resolution]))
 
 
+def _quality_hint_tokens(profile: LibraryProfile) -> list[str]:
+    quality_val = _quality_profile_value(profile)
+    if quality_val == DownloadQualityProfileEnum.web_dl.value:
+        return ['WEB-DL']
+    if quality_val == DownloadQualityProfileEnum.webrip.value:
+        return ['WEBRip']
+    if quality_val == DownloadQualityProfileEnum.bluray.value:
+        return ['BluRay']
+    if quality_val == DownloadQualityProfileEnum.remux.value:
+        return ['REMUX']
+    if quality_val == DownloadQualityProfileEnum.hdtv.value:
+        return ['HDTV']
+    return []
+
+
+def _codec_hint_tokens(profile: LibraryProfile) -> list[str]:
+    codec = _profile_codec_value(profile)
+    if codec == 'hevc':
+        return ['HEVC']
+    if codec == 'av1':
+        return ['AV1']
+    if codec == 'h264':
+        return ['H264']
+    return []
+
+
+def _hdr_hint_tokens(profile: LibraryProfile) -> list[str]:
+    tone_map_hdr = _coerce_bool(getattr(profile, 'tone_map_hdr', False))
+    if tone_map_hdr:
+        return ['SDR']
+    return []
+
+
+def _build_second_pass_search_query(source_path: str, profile: LibraryProfile) -> str:
+    base = _build_search_query(source_path, profile)
+    tokens = [base]
+    tokens.extend(_quality_hint_tokens(profile))
+    tokens.extend(_codec_hint_tokens(profile))
+    tokens.extend(_hdr_hint_tokens(profile))
+    return ' '.join(filter(None, tokens))
+
+
 def _infer_search_categories(source_path: str) -> list[int] | None:
     normalized_path = re.sub(r'[._-]+', ' ', str(source_path or '')).lower()
     tv_patterns = (
@@ -896,6 +919,19 @@ def _infer_search_categories(source_path: str) -> list[int] | None:
         return [2000]
 
     return None
+
+
+def _search_passes_for_job(dj: DownloadJob, profile: LibraryProfile) -> list[dict[str, object]]:
+    categories = _infer_search_categories(dj.source_file_path)
+    base_query = _build_search_query(dj.source_file_path, profile)
+    second_pass_query = _build_second_pass_search_query(dj.source_file_path, profile)
+
+    search_passes: list[dict[str, object]] = [
+        {'name': 'broad', 'query': base_query, 'categories': categories}
+    ]
+    if second_pass_query != base_query:
+        search_passes.append({'name': 'profile_hint', 'query': second_pass_query, 'categories': categories})
+    return search_passes
 
 
 def _extract_source_title_and_year(source_path: str) -> tuple[str, int | None]:
@@ -1048,7 +1084,6 @@ def _select_best_release(
     configured quality profile filter, tone-map/HDR policy, and enabled client.
 
     If tone_map_hdr is enabled, HDR releases are rejected.
-    If hdr_only is enabled, non-HDR releases are rejected.
     If a specific quality profile is set only releases whose title contains
     a matching keyword are accepted.
     Torrent releases require qBittorrent to be enabled; usenet releases
@@ -1058,15 +1093,8 @@ def _select_best_release(
     indexer_by_id = indexer_by_id or {}
     candidates: list[dict] = []
     tone_map_hdr = _coerce_bool(getattr(profile, 'tone_map_hdr', False))
-    hdr_only = _coerce_bool(getattr(profile, 'hdr_only', False))
-    hdr_only, tone_map_hdr = _normalize_hdr_download_policy(
-        hdr_only=hdr_only,
-        tone_map_hdr=tone_map_hdr,
-        context='_select_best_release',
-    )
     filtered_by_resolution = 0
     filtered_by_tonemap_hdr = 0
-    filtered_by_hdr_only = 0
     filtered_by_quality = 0
     filtered_by_client = 0
     filtered_by_variant = 0
@@ -1086,9 +1114,6 @@ def _select_best_release(
         is_hdr = _is_hdr_release(title_lower)
         if tone_map_hdr and is_hdr:
             filtered_by_tonemap_hdr += 1
-            continue
-        if hdr_only and not is_hdr:
-            filtered_by_hdr_only += 1
             continue
 
         if _is_unwanted_variant_release(title, source_path):
@@ -1149,21 +1174,19 @@ def _select_best_release(
 
     logger.info(
         'Download filtering produced no candidates: total=%d filtered_resolution=%d '
-        'filtered_tone_map_hdr=%d filtered_hdr_only=%d filtered_quality=%d '
+        'filtered_tone_map_hdr=%d filtered_quality=%d '
         'filtered_variant=%d filtered_codec=%d '
-        'filtered_client=%d profile={target_resolution=%s quality=%s hdr_only=%s tone_map_hdr=%s} '
+        'filtered_client=%d profile={target_resolution=%s quality=%s tone_map_hdr=%s} '
         'clients={qbt=%s sab=%s}',
         len(releases),
         filtered_by_resolution,
         filtered_by_tonemap_hdr,
-        filtered_by_hdr_only,
         filtered_by_quality,
         filtered_by_variant,
         filtered_by_codec,
         filtered_by_client,
         getattr(profile, 'target_resolution', None),
         quality_val,
-        hdr_only,
         tone_map_hdr,
         qbt_enabled,
         sab_enabled,
@@ -1569,21 +1592,11 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         return
 
     profile = library.profile
-    query = _build_search_query(dj.source_file_path, profile)
-    dj.search_query = query
+    search_passes = _search_passes_for_job(dj, profile)
+    dj.search_query = str(search_passes[0]['query'])
     dj.indexer_id = None
     dj.indexer_name = None
     db.commit()
-
-    logger.info('Download job %s searching Prowlarr for %r', dj.id, query)
-    categories = _infer_search_categories(dj.source_file_path)
-    releases = prowlarr_service.search(prowlarr, query, categories=categories)
-
-    # None means a connection/HTTP error — leave the job in 'searching' so the
-    # monitor retries on the next poll cycle instead of immediately failing.
-    if releases is None:
-        logger.warning('Download job %s: Prowlarr search failed (connection error); will retry', dj.id)
-        return
     indexers = prowlarr_service.get_indexers(prowlarr)
     indexer_by_id: dict[int, dict] = {}
     for idx in indexers:
@@ -1595,71 +1608,110 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         except (TypeError, ValueError):
             continue
         indexer_by_id[idx_id] = idx
-    protocol_counts = Counter(
-        str(release.get('protocol', '') or '').strip().lower() or 'unknown'
-        for release in releases
-    )
-    logger.info(
-        'Download job %s: Prowlarr returned %d release(s) by protocol: %s',
-        dj.id,
-        len(releases),
-        dict(protocol_counts),
-    )
     failed_release_keys = _load_failed_release_keys(dj)
-    if failed_release_keys:
-        pre_filter_count = len(releases)
-        releases = [
-            release
-            for release in releases
-            if _release_selection_key_from_release(release) not in failed_release_keys
-        ]
-        logger.info(
-            'Download job %s: excluded %d previously failed release(s); remaining=%d',
-            dj.id,
-            max(0, pre_filter_count - len(releases)),
-            len(releases),
-        )
     excluded_protocols = _load_excluded_protocols(dj)
-    if excluded_protocols:
-        pre_protocol_filter_count = len(releases)
-        releases = [
-            release
-            for release in releases
-            if str(release.get('protocol') or '').strip().lower() not in excluded_protocols
-        ]
+    best = None
+    matched_query = dj.search_query
+    for pass_index, search_pass in enumerate(search_passes, start=1):
+        query = str(search_pass['query'])
+        categories = search_pass.get('categories')
+        dj.search_query = query
+        db.commit()
+
         logger.info(
-            'Download job %s: excluded protocol(s) %s; removed=%d remaining=%d',
+            'Download job %s searching Prowlarr for %r (pass=%d/%d strategy=%s categories=%s)',
             dj.id,
-            sorted(excluded_protocols),
-            max(0, pre_protocol_filter_count - len(releases)),
-            len(releases),
+            query,
+            pass_index,
+            len(search_passes),
+            search_pass.get('name'),
+            categories,
         )
-    pre_title_filter_count = len(releases)
-    releases = [
-        release for release in releases
-        if _release_matches_source_title(str(release.get('title') or ''), dj.source_file_path)
-    ]
-    if pre_title_filter_count != len(releases):
-        logger.info(
-            'Download job %s: excluded %d release(s) by source-title relevance; remaining=%d',
-            dj.id,
-            pre_title_filter_count - len(releases),
-            len(releases),
+        releases = prowlarr_service.search(
+            prowlarr,
+            query,
+            categories=categories if isinstance(categories, list) else None,
         )
 
-    best = _select_best_release(
-        releases,
-        profile,
-        qbt_enabled=qbt.enabled,
-        sab_enabled=sab.enabled,
-        indexer_by_id=indexer_by_id,
-        source_path=dj.source_file_path,
-    )
+        # None means a connection/HTTP error — leave the job in 'searching' so the
+        # monitor retries on the next poll cycle instead of immediately failing.
+        if releases is None:
+            logger.warning('Download job %s: Prowlarr search failed on pass %d (connection error); will retry', dj.id, pass_index)
+            return
+
+        protocol_counts = Counter(
+            str(release.get('protocol', '') or '').strip().lower() or 'unknown'
+            for release in releases
+        )
+        logger.info(
+            'Download job %s: Prowlarr returned %d release(s) by protocol on pass %d: %s',
+            dj.id,
+            len(releases),
+            pass_index,
+            dict(protocol_counts),
+        )
+        if failed_release_keys:
+            pre_filter_count = len(releases)
+            releases = [
+                release
+                for release in releases
+                if _release_selection_key_from_release(release) not in failed_release_keys
+            ]
+            logger.info(
+                'Download job %s: excluded %d previously failed release(s) on pass %d; remaining=%d',
+                dj.id,
+                max(0, pre_filter_count - len(releases)),
+                pass_index,
+                len(releases),
+            )
+        if excluded_protocols:
+            pre_protocol_filter_count = len(releases)
+            releases = [
+                release
+                for release in releases
+                if str(release.get('protocol') or '').strip().lower() not in excluded_protocols
+            ]
+            logger.info(
+                'Download job %s: excluded protocol(s) %s on pass %d; removed=%d remaining=%d',
+                dj.id,
+                sorted(excluded_protocols),
+                pass_index,
+                max(0, pre_protocol_filter_count - len(releases)),
+                len(releases),
+            )
+        pre_title_filter_count = len(releases)
+        releases = [
+            release for release in releases
+            if _release_matches_source_title(str(release.get('title') or ''), dj.source_file_path)
+        ]
+        if pre_title_filter_count != len(releases):
+            logger.info(
+                'Download job %s: excluded %d release(s) by source-title relevance on pass %d; remaining=%d',
+                dj.id,
+                pre_title_filter_count - len(releases),
+                pass_index,
+                len(releases),
+            )
+
+        best = _select_best_release(
+            releases,
+            profile,
+            qbt_enabled=qbt.enabled,
+            sab_enabled=sab.enabled,
+            indexer_by_id=indexer_by_id,
+            source_path=dj.source_file_path,
+        )
+        if best is not None:
+            matched_query = query
+            break
 
     if best is None:
         logger.info('Download job %s: no matching release found; skipping grab and falling back to encode', dj.id)
         _fallback_to_encode(db, dj, library, profile)
         return
+    if dj.search_query != matched_query:
+        dj.search_query = matched_query
+        db.commit()
 
     # Safety check: refuse to grab if another download is already active.
     # Guards against any state inconsistency that slips past the outer check.
@@ -2457,23 +2509,10 @@ def _release_title_matches_profile(title: str, profile: LibraryProfile) -> bool:
     release = {'title': title}
     title_lower = title.lower()
     tone_map_hdr = _coerce_bool(getattr(profile, 'tone_map_hdr', False))
-    hdr_only = _coerce_bool(getattr(profile, 'hdr_only', False))
-    hdr_only, tone_map_hdr = _normalize_hdr_download_policy(
-        hdr_only=hdr_only,
-        tone_map_hdr=tone_map_hdr,
-        context='_release_title_matches_profile',
-    )
-    if hdr_only:
-        if not _is_hdr_release(title_lower):
-            return False
-        minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
-        if not _release_matches_target_resolution(release, minimum_source_resolution):
-            return False
-    else:
-        if not _release_matches_target_resolution(release, profile.target_resolution):
-            return False
-        if tone_map_hdr and _is_hdr_release(title_lower):
-            return False
+    if not _release_matches_target_resolution(release, profile.target_resolution):
+        return False
+    if tone_map_hdr and _is_hdr_release(title_lower):
+        return False
 
     target_codec = _profile_codec_value(profile)
     detected_codecs = _detect_release_codecs(release)
