@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
+import errno
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2679,6 +2681,74 @@ def test_import_file_sab_removes_source_video_from_completed_directory(monkeypat
         assert not completed_video.exists()
         assert not completed_dir.exists()
         assert removed_sab == [('SABNZBD_NZO_abc123', True)]
+
+
+def test_import_file_sab_falls_back_to_copy_when_rename_hits_cross_device(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        source = tmp_path / 'library' / 'Fallout.S01E07.mkv'
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b'source')
+
+        completed_dir = tmp_path / 'complete' / 'nzb' / 'Fallout.S01E07'
+        completed_dir.mkdir(parents=True)
+        completed_video = completed_dir / 'Fallout.S01E07.2024.1080p.Amazon.WEB-DL.HEVC.DDP5.1-DBTV.mkv'
+        completed_video.write_bytes(b'downloaded-video')
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path=str(source),
+            release_name='Fallout.S01E07.2024.1080p.Amazon.WEB-DL.HEVC.DDP5.1-DBTV',
+            download_hash='SABNZBD_NZO_fallout7',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        original_replace = os.replace
+        replace_calls: list[tuple[str, str]] = []
+
+        def _fake_replace(src, dst):
+            src_str = str(src)
+            dst_str = str(dst)
+            replace_calls.append((src_str, dst_str))
+            if src_str == str(completed_video):
+                raise OSError(errno.EXDEV, 'Invalid cross-device link')
+            return original_replace(src, dst)
+
+        removed_sab = []
+        monkeypatch.setattr(os, 'replace', _fake_replace)
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_sab_job',
+            lambda _sab, nzo_id, delete_files=False: removed_sab.append((nzo_id, delete_files)) or True,
+        )
+
+        _import_file(
+            db,
+            dj,
+            str(completed_dir),
+            library,
+            library.profile,
+            SimpleNamespace(enabled=False),
+            SimpleNamespace(enabled=True),
+        )
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.complete.value
+        assert dj.imported_file_path is not None
+        assert Path(dj.imported_file_path).exists()
+        assert Path(dj.imported_file_path).read_bytes() == b'downloaded-video'
+        assert not completed_video.exists()
+        assert removed_sab == [('SABNZBD_NZO_fallout7', True)]
+        assert replace_calls[0][0] == str(completed_video)
 
 
 def test_import_file_sab_no_video_retries_and_purges_completed_directory(monkeypatch, tmp_path):

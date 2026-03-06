@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import math
@@ -2387,7 +2388,21 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
                             dj.id, str(video_file), str(dest))
         else:
             if _is_same_filesystem(video_file, dest.parent):
-                os.replace(video_file, dest)
+                try:
+                    os.replace(video_file, dest)
+                except OSError as exc:
+                    if exc.errno != errno.EXDEV:
+                        raise
+                    temp_dest = dest.parent / f'.optimizarr-import-{dj.id}-{int(time.time() * 1000)}{dest.suffix}'
+                    shutil.copy2(video_file, temp_dest)
+                    os.replace(temp_dest, dest)
+                    video_file.unlink(missing_ok=True)
+                    logger.info(
+                        'Download job %s: copied %r → %r after cross-device rename failure',
+                        dj.id,
+                        str(video_file),
+                        str(dest),
+                    )
             else:
                 temp_dest = dest.parent / f'.optimizarr-import-{dj.id}-{int(time.time() * 1000)}{dest.suffix}'
                 shutil.copy2(video_file, temp_dest)
