@@ -2316,6 +2316,8 @@ def test_do_search_uses_tv_category_when_source_looks_like_episode(monkeypatch):
         assert search_calls == [
             {'query': 'Severance 1080p {season:1}{episode:3}', 'categories': [5000], 'search_type': 'tvsearch'},
             {'query': 'Severance 1080p HEVC {season:1}{episode:3}', 'categories': [5000], 'search_type': 'tvsearch'},
+            {'query': 'Severance S01E03 1080p', 'categories': [5000], 'search_type': None},
+            {'query': 'Severance S01E03 1080p HEVC', 'categories': [5000], 'search_type': None},
         ]
 
 

@@ -978,6 +978,39 @@ def _build_prowlarr_query(
     return {'query': query, 'categories': categories, 'search_type': None}
 
 
+def _build_generic_tv_search_query(
+    source_path: str,
+    profile: LibraryProfile,
+    *,
+    include_profile_hints: bool = False,
+) -> dict[str, object]:
+    details = _extract_tv_episode_details(source_path)
+    title = str(details.get('title') or '').strip()
+    season = details.get('season')
+    episode = details.get('episode')
+    year = details.get('year')
+    if not title or not isinstance(season, int) or not isinstance(episode, int):
+        base_query = _build_second_pass_search_query(source_path, profile) if include_profile_hints else _build_search_query(source_path, profile)
+        return {'query': base_query, 'categories': [5000], 'search_type': None}
+
+    query_terms = [title]
+    if isinstance(year, int):
+        query_terms.append(str(year))
+    query_terms.append(f'S{season:02d}E{episode:02d}')
+    query_terms.append(f'{profile.target_resolution}p')
+
+    if include_profile_hints:
+        query_terms.extend(_quality_hint_tokens(profile))
+        query_terms.extend(_codec_hint_tokens(profile))
+        query_terms.extend(_hdr_hint_tokens(profile))
+
+    return {
+        'query': ' '.join(filter(None, query_terms)),
+        'categories': [5000],
+        'search_type': None,
+    }
+
+
 def _quality_hint_tokens(profile: LibraryProfile) -> list[str]:
     quality_val = _quality_profile_value(profile)
     if quality_val == DownloadQualityProfileEnum.web_dl.value:
@@ -1050,6 +1083,15 @@ def _search_passes_for_job(dj: DownloadJob, profile: LibraryProfile) -> list[dic
     ]
     if hinted_search.get('query') != base_search.get('query'):
         search_passes.append({'name': 'profile_hint', **hinted_search})
+
+    if base_search.get('categories') == [5000] and base_search.get('search_type') == 'tvsearch':
+        generic_tv_search = _build_generic_tv_search_query(dj.source_file_path, profile, include_profile_hints=False)
+        if generic_tv_search.get('query') != base_search.get('query'):
+            search_passes.append({'name': 'title_fallback', **generic_tv_search})
+
+        generic_tv_hinted_search = _build_generic_tv_search_query(dj.source_file_path, profile, include_profile_hints=True)
+        if generic_tv_hinted_search.get('query') not in {base_search.get('query'), hinted_search.get('query'), generic_tv_search.get('query')}:
+            search_passes.append({'name': 'title_fallback_profile_hint', **generic_tv_hinted_search})
     return search_passes
 
 
