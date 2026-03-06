@@ -148,6 +148,15 @@ describe('extractTitleYear', () => {
       year: null,
     });
   });
+
+  it('preserves TV episode markers when the filename also contains a release year', () => {
+    expect(
+      extractTitleYear('/data/media/tv/Fallout (2024) {imdb-tt12637874}/Season 01/Fallout.S01E07.The.Radio.2024.1080p.Amazon.WEB-DL.HEVC.DDP5.1.mkv')
+    ).toEqual({
+      title: 'Fallout S01E07 The Radio 2024 1080p Amazon WEB-DL HEVC DDP5 1',
+      year: '2024',
+    });
+  });
 });
 
 describe('getDownloadEtaSeconds', () => {

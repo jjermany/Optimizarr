@@ -509,12 +509,19 @@ function looksLikeTvContainerSegment(value) {
     || normalized === 'specials';
 }
 
+function looksLikeTvEpisodeSegment(value) {
+  const normalized = normalizeTitleSegment(value).toLowerCase();
+  return /\bs\d{1,2}e\d{1,3}\b/i.test(normalized)
+    || /\b\d{1,2}x\d{1,3}\b/i.test(normalized);
+}
+
 export function extractTitleYear(filePath) {
   const pathParts = String(filePath || '').split('/').filter(Boolean);
   const fileName = pathParts[pathParts.length - 1] || '';
   const stem = fileName.replace(/\.[^.]+$/, '');
+  const isTvEpisodeFile = looksLikeTvEpisodeSegment(stem);
   const parsedFile = parseYearFromSegment(stem);
-  if (parsedFile.year) {
+  if (parsedFile.year && !isTvEpisodeFile) {
     return parsedFile;
   }
 
@@ -525,8 +532,12 @@ export function extractTitleYear(filePath) {
   if (showDirectory) {
     const parsedParent = parseYearFromSegment(showDirectory);
     if (parsedParent.year) {
-      return { title: parsedFile.title, year: parsedParent.year };
+      return { title: isTvEpisodeFile ? normalizeTitleSegment(stem) : parsedFile.title, year: parsedParent.year };
     }
+  }
+
+  if (isTvEpisodeFile) {
+    return { title: normalizeTitleSegment(stem), year: null };
   }
 
   return parsedFile;
