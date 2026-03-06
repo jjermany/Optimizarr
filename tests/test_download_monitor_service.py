@@ -861,6 +861,25 @@ def test_build_search_query_excludes_quality_for_all_profiles():
         assert '2010' in query
 
 
+def test_infer_search_categories_uses_movie_category_when_year_is_present():
+    from app.services.download_monitor_service import _infer_search_categories
+
+    assert _infer_search_categories('/media/The Gorge (2025).mkv') == [2000]
+
+
+def test_infer_search_categories_uses_tv_category_for_episode_patterns():
+    from app.services.download_monitor_service import _infer_search_categories
+
+    assert _infer_search_categories('/media/Shows/Season 01/Severance.S01E03.2160p.mkv') == [5000]
+    assert _infer_search_categories('/media/Shows/Arcane.1x02.1080p.mkv') == [5000]
+
+
+def test_infer_search_categories_leaves_ambiguous_titles_unbounded():
+    from app.services.download_monitor_service import _infer_search_categories
+
+    assert _infer_search_categories('/media/Heat.mkv') is None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Timeout ordering: completion must be checked before timeout fires
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2120,6 +2139,91 @@ def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
         assert dj.indexer_id == 1
         assert dj.indexer_name == 'TestIndexer'
         assert sab_category_calls and sab_category_calls[0]['category'] == 'optimizarr'
+
+
+def test_do_search_uses_movie_category_when_source_looks_like_movie(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/The Gorge (2025).mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+
+        search_calls = []
+
+        def _fake_search(_settings, query, categories=None):
+            search_calls.append({'query': query, 'categories': categories})
+            return [{
+                'title': 'The.Gorge.2025.1080p.WEB-DL',
+                'seeders': 10,
+                'size': 1000,
+                'protocol': 'usenet',
+                'guid': 'guid-1',
+                'indexerId': 1,
+            }]
+
+        monkeypatch.setattr(prowlarr_service, 'search', _fake_search)
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
+        monkeypatch.setattr(prowlarr_service, 'grab', lambda *_args, **_kwargs: {'downloadId': 'NZO12345'})
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+
+        assert search_calls == [{'query': 'The Gorge 2025 1080p', 'categories': [2000]}]
+
+
+def test_do_search_uses_tv_category_when_source_looks_like_episode(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Shows/Season 01/Severance.S01E03.2160p.mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+
+        search_calls = []
+
+        def _fake_search(_settings, query, categories=None):
+            search_calls.append({'query': query, 'categories': categories})
+            return []
+
+        monkeypatch.setattr(prowlarr_service, 'search', _fake_search)
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [])
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+
+        assert search_calls == [{'query': 'Severance S01E03 2160p 1080p', 'categories': [5000]}]
 
 
 def test_do_search_skips_previously_failed_release_keys(monkeypatch):

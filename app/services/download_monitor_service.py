@@ -877,6 +877,27 @@ def _build_search_query(source_path: str, profile: LibraryProfile) -> str:
     return ' '.join(filter(None, [title, year, resolution]))
 
 
+def _infer_search_categories(source_path: str) -> list[int] | None:
+    normalized_path = re.sub(r'[._-]+', ' ', str(source_path or '')).lower()
+    tv_patterns = (
+        r'\bs\d{1,2}e\d{1,3}\b',
+        r'\b\d{1,2}x\d{1,3}\b',
+        r'\bseason\s*\d+\b',
+        r'\bepisode\s*\d+\b',
+        r'/season\s*\d+\b',
+        r'/series\b',
+    )
+    if any(re.search(pattern, normalized_path) for pattern in tv_patterns):
+        return [5000]
+
+    stem = Path(source_path or '').stem
+    clean_stem = re.sub(r'[._-]+', ' ', stem)
+    if re.search(r'\b(19|20)\d{2}\b', clean_stem):
+        return [2000]
+
+    return None
+
+
 def _extract_source_title_and_year(source_path: str) -> tuple[str, int | None]:
     stem = Path(source_path or '').stem
     clean = re.sub(r'[._]', ' ', stem)
@@ -1555,7 +1576,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     db.commit()
 
     logger.info('Download job %s searching Prowlarr for %r', dj.id, query)
-    releases = prowlarr_service.search(prowlarr, query)
+    categories = _infer_search_categories(dj.source_file_path)
+    releases = prowlarr_service.search(prowlarr, query, categories=categories)
 
     # None means a connection/HTTP error — leave the job in 'searching' so the
     # monitor retries on the next poll cycle instead of immediately failing.

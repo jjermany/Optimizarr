@@ -11,6 +11,7 @@ from app.models.prowlarr_settings import ProwlarrSettings
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 15
+_SEARCH_RESULT_LIMIT = 100
 
 
 def get_or_create_prowlarr_settings(db: Session) -> ProwlarrSettings:
@@ -82,7 +83,7 @@ def search(settings: ProwlarrSettings, query: str, categories: list[int] | None 
     try:
         api_key = secrets_store.decrypt_secret(settings.api_key)
         url = f"{settings.host.rstrip('/')}/api/v1/search"
-        params: dict = {'query': query, 'limit': 50}
+        params: dict = {'query': query, 'limit': _SEARCH_RESULT_LIMIT}
         if categories:
             # Prowlarr accepts repeated 'categories' params
             params['categories'] = categories
