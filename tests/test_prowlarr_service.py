@@ -31,3 +31,26 @@ def test_search_uses_100_result_limit(monkeypatch):
     assert captured['params']['query'] == 'The Gorge 2025 1080p'
     assert captured['params']['limit'] == 100
     assert captured['params']['categories'] == [2000]
+
+
+def test_search_includes_search_type_when_provided(monkeypatch):
+    captured = {}
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return []
+
+    def _fake_get(url, params=None, headers=None, timeout=None):
+        captured['params'] = params
+        return _Response()
+
+    monkeypatch.setattr(prowlarr_service.secrets_store, 'decrypt_secret', lambda value: value)
+    monkeypatch.setattr(prowlarr_service.httpx, 'get', _fake_get)
+
+    settings = SimpleNamespace(host='http://prowlarr', api_key='test-key')
+    prowlarr_service.search(settings, 'Fallout 1080p {season:1}{episode:7}', categories=[5000], search_type='tvsearch')
+
+    assert captured['params']['type'] == 'tvsearch'

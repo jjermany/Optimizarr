@@ -9,6 +9,7 @@ from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum
 from app.models.settings import QueueSortEnum, Settings
 from app.services.download_monitor_service import (
+    _build_prowlarr_query,
     _build_second_pass_search_query,
     _extract_hash_from_release,
     _find_completed_download_match,
@@ -913,6 +914,60 @@ def test_build_second_pass_search_query_does_not_add_hdr_hint_for_hdr_only():
     query = _build_second_pass_search_query('/media/The Gorge (2025).mkv', profile)
 
     assert query == 'The Gorge 2025 1080p WEB-DL HEVC'
+
+
+def test_build_prowlarr_query_uses_tvsearch_tokens_for_episode_sources():
+    profile = SimpleNamespace(
+        target_resolution=1080,
+        download_quality_profile=DownloadQualityProfileEnum.web_dl.value,
+        tone_map_hdr=True,
+        hdr_only=False,
+        codec='hevc',
+    )
+
+    payload = _build_prowlarr_query(
+        '/data/media/tv/Fallout (2024) {imdb-tt12637874}/Season 01/Fallout.S01E07.The.Radio.2160p.REPACK.AMZN.WEB-DL.DDP5.1.HDR.H.265-NTb.mkv',
+        profile,
+        include_profile_hints=True,
+    )
+
+    assert payload['categories'] == [5000]
+    assert payload['search_type'] == 'tvsearch'
+    assert payload['query'] == 'Fallout 1080p WEB-DL HEVC SDR {imdbid:tt12637874}{season:1}{episode:7}{year:2024}'
+
+
+def test_build_prowlarr_query_uses_movie_tokens_for_movie_sources():
+    profile = SimpleNamespace(
+        target_resolution=1080,
+        download_quality_profile=DownloadQualityProfileEnum.web_dl.value,
+        tone_map_hdr=True,
+        hdr_only=False,
+        codec='hevc',
+    )
+
+    payload = _build_prowlarr_query(
+        '/data/media/movies/Doctor Strange (2016) {imdb-tt1211837} {tmdb-284052}/Doctor Strange (2016) {imdb-tt1211837} [Bluray-2160p][HDR10][AC3 5.1][x265]-BHDStudio.mp4',
+        profile,
+        include_profile_hints=True,
+    )
+
+    assert payload['categories'] == [2000]
+    assert payload['search_type'] == 'movie'
+    assert payload['query'] == 'Doctor Strange 2016 1080p WEB-DL HEVC SDR {imdbid:tt1211837}{tmdbid:284052}{year:2016}'
+
+
+def test_release_matches_source_title_accepts_matching_tv_episode_release():
+    assert _release_matches_source_title(
+        'Fallout.S01E07.2024.1080p.Amazon.WEB-DL.HEVC.DDP5.1',
+        '/data/media/tv/Fallout (2024) {imdb-tt12637874}/Season 01/Fallout.S01E07.The.Radio.2160p.REPACK.AMZN.WEB-DL.DDP5.1.HDR.H.265-NTb.mkv',
+    ) is True
+
+
+def test_release_matches_source_title_rejects_wrong_tv_episode_release():
+    assert _release_matches_source_title(
+        'Fallout.S02E07.1080p.AMZN.WEB-DL.DDP',
+        '/data/media/tv/Fallout (2024) {imdb-tt12637874}/Season 01/Fallout.S01E07.The.Radio.2160p.REPACK.AMZN.WEB-DL.DDP5.1.HDR.H.265-NTb.mkv',
+    ) is False
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2202,8 +2257,8 @@ def test_do_search_uses_movie_category_when_source_looks_like_movie(monkeypatch)
 
         search_calls = []
 
-        def _fake_search(_settings, query, categories=None):
-            search_calls.append({'query': query, 'categories': categories})
+        def _fake_search(_settings, query, categories=None, search_type=None):
+            search_calls.append({'query': query, 'categories': categories, 'search_type': search_type})
             return [{
                 'title': 'The.Gorge.2025.1080p.WEB-DL',
                 'seeders': 10,
@@ -2220,7 +2275,7 @@ def test_do_search_uses_movie_category_when_source_looks_like_movie(monkeypatch)
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
 
-        assert search_calls == [{'query': 'The Gorge 2025 1080p', 'categories': [2000]}]
+        assert search_calls == [{'query': 'The Gorge 2025 1080p {year:2025}', 'categories': [2000], 'search_type': 'movie'}]
 
 
 def test_do_search_uses_tv_category_when_source_looks_like_episode(monkeypatch):
@@ -2249,8 +2304,8 @@ def test_do_search_uses_tv_category_when_source_looks_like_episode(monkeypatch):
 
         search_calls = []
 
-        def _fake_search(_settings, query, categories=None):
-            search_calls.append({'query': query, 'categories': categories})
+        def _fake_search(_settings, query, categories=None, search_type=None):
+            search_calls.append({'query': query, 'categories': categories, 'search_type': search_type})
             return []
 
         monkeypatch.setattr(prowlarr_service, 'search', _fake_search)
@@ -2259,8 +2314,8 @@ def test_do_search_uses_tv_category_when_source_looks_like_episode(monkeypatch):
         _do_search(db, dj, prowlarr_stub, qbt, sab)
 
         assert search_calls == [
-            {'query': 'Severance S01E03 2160p 1080p', 'categories': [5000]},
-            {'query': 'Severance S01E03 2160p 1080p HEVC', 'categories': [5000]},
+            {'query': 'Severance 1080p {season:1}{episode:3}', 'categories': [5000], 'search_type': 'tvsearch'},
+            {'query': 'Severance 1080p HEVC {season:1}{episode:3}', 'categories': [5000], 'search_type': 'tvsearch'},
         ]
 
 
@@ -2289,8 +2344,8 @@ def test_do_search_stops_after_first_pass_when_candidate_matches(monkeypatch):
         sab = SimpleNamespace(enabled=True)
         search_calls = []
 
-        def _fake_search(_settings, query, categories=None):
-            search_calls.append({'query': query, 'categories': categories})
+        def _fake_search(_settings, query, categories=None, search_type=None):
+            search_calls.append({'query': query, 'categories': categories, 'search_type': search_type})
             return [{
                 'title': 'The.Gorge.2025.1080p.WEB-DL.HEVC',
                 'seeders': 50,
@@ -2307,7 +2362,7 @@ def test_do_search_stops_after_first_pass_when_candidate_matches(monkeypatch):
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
 
-        assert search_calls == [{'query': 'The Gorge 2025 1080p', 'categories': [2000]}]
+        assert search_calls == [{'query': 'The Gorge 2025 1080p {year:2025}', 'categories': [2000], 'search_type': 'movie'}]
 
 
 def test_do_search_uses_second_pass_with_profile_hints_when_first_pass_has_no_match(monkeypatch):
@@ -2342,8 +2397,8 @@ def test_do_search_uses_second_pass_with_profile_hints_when_first_pass_has_no_ma
         search_calls = []
         grabbed = []
 
-        def _fake_search(_settings, query, categories=None):
-            search_calls.append({'query': query, 'categories': categories})
+        def _fake_search(_settings, query, categories=None, search_type=None):
+            search_calls.append({'query': query, 'categories': categories, 'search_type': search_type})
             if len(search_calls) == 1:
                 return [{
                     'title': 'The.Gorge.2025.1080p.HDR.BluRay.x264',
@@ -2375,11 +2430,11 @@ def test_do_search_uses_second_pass_with_profile_hints_when_first_pass_has_no_ma
         db.refresh(dj)
 
         assert search_calls == [
-            {'query': 'The Gorge 2025 1080p', 'categories': [2000]},
-            {'query': 'The Gorge 2025 1080p WEB-DL HEVC SDR', 'categories': [2000]},
+            {'query': 'The Gorge 2025 1080p {year:2025}', 'categories': [2000], 'search_type': 'movie'},
+            {'query': 'The Gorge 2025 1080p WEB-DL HEVC SDR {year:2025}', 'categories': [2000], 'search_type': 'movie'},
         ]
         assert grabbed == ['good-second-pass-guid']
-        assert dj.search_query == 'The Gorge 2025 1080p WEB-DL HEVC SDR'
+        assert dj.search_query == 'The Gorge 2025 1080p WEB-DL HEVC SDR {year:2025}'
 
 
 def test_do_search_skips_previously_failed_release_keys(monkeypatch):

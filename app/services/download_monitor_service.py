@@ -858,6 +858,126 @@ def _build_search_query(source_path: str, profile: LibraryProfile) -> str:
     return ' '.join(filter(None, [title, year, resolution]))
 
 
+def _strip_bracketed_metadata(value: str) -> str:
+    cleaned = re.sub(r'\{[^}]*\}', ' ', value or '')
+    cleaned = re.sub(r'\[[^\]]*\]', ' ', cleaned)
+    cleaned = re.sub(r'\([^)]*(?:imdb|tmdb|tvdb|tvmaze|trakt|rid)[^)]*\)', ' ', cleaned, flags=re.IGNORECASE)
+    return re.sub(r'\s+', ' ', cleaned).strip()
+
+
+def _extract_tagged_ids(source_path: str) -> dict[str, str]:
+    normalized = str(source_path or '')
+    patterns = {
+        'imdbid': r'\bimdb[-_: ]?(tt\d{5,12})\b',
+        'tmdbid': r'\btmdb[-_: ]?(\d+)\b',
+        'tvdbid': r'\btvdb[-_: ]?(\d+)\b',
+        'tvmazeid': r'\btvmaze[-_: ]?(\d+)\b',
+        'rid': r'\brid[-_: ]?(\d+)\b',
+    }
+    extracted: dict[str, str] = {}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if match:
+            extracted[key] = match.group(1)
+    return extracted
+
+
+def _extract_tv_episode_details(source_path: str) -> dict[str, object]:
+    stem = _strip_bracketed_metadata(Path(source_path or '').stem)
+    clean_stem = re.sub(r'[._-]+', ' ', stem)
+    clean_stem = re.sub(r'\s+', ' ', clean_stem).strip()
+    season: int | None = None
+    episode: int | None = None
+    title = clean_stem
+
+    match = re.search(r'\bS(?P<season>\d{1,2})E(?P<episode>\d{1,3})\b', clean_stem, flags=re.IGNORECASE)
+    if match is None:
+        match = re.search(r'\b(?P<season>\d{1,2})x(?P<episode>\d{1,3})\b', clean_stem, flags=re.IGNORECASE)
+
+    if match is not None:
+        season = int(match.group('season'))
+        episode = int(match.group('episode'))
+        title = re.sub(r'[\s()\[\]{}._-]+$', '', clean_stem[:match.start()]).strip()
+    else:
+        season_dir_match = re.search(r'[\\/]+Season\s*(\d+)\b', str(source_path or ''), flags=re.IGNORECASE)
+        episode_match = re.search(r'\bEpisode\s*(\d{1,3})\b', clean_stem, flags=re.IGNORECASE)
+        if season_dir_match and episode_match:
+            season = int(season_dir_match.group(1))
+            episode = int(episode_match.group(1))
+            title = re.sub(r'[\s()\[\]{}._-]+$', '', clean_stem[:episode_match.start()]).strip()
+
+    year_match = re.search(r'\b(19|20)\d{2}\b', _strip_bracketed_metadata(str(source_path or '')))
+    year = int(year_match.group(0)) if year_match else None
+
+    return {
+        'title': title.strip(),
+        'season': season,
+        'episode': episode,
+        'year': year,
+        'ids': _extract_tagged_ids(source_path),
+    }
+
+
+def _build_prowlarr_query(
+    source_path: str,
+    profile: LibraryProfile,
+    *,
+    include_profile_hints: bool = False,
+) -> dict[str, object]:
+    categories = _infer_search_categories(source_path)
+    base_query = _build_search_query(source_path, profile)
+    query = _build_second_pass_search_query(source_path, profile) if include_profile_hints else base_query
+
+    if categories == [5000]:
+        details = _extract_tv_episode_details(source_path)
+        season = details.get('season')
+        episode = details.get('episode')
+        title = str(details.get('title') or '').strip()
+        if isinstance(season, int) and isinstance(episode, int) and title:
+            ids = details.get('ids') if isinstance(details.get('ids'), dict) else {}
+            year = details.get('year')
+            query_terms = [title, f'{profile.target_resolution}p']
+            if include_profile_hints:
+                query_terms.extend(_quality_hint_tokens(profile))
+                query_terms.extend(_codec_hint_tokens(profile))
+                query_terms.extend(_hdr_hint_tokens(profile))
+
+            token_parts: list[str] = []
+            for key in ('imdbid', 'rid', 'tvdbid', 'tmdbid', 'tvmazeid'):
+                value = ids.get(key) if isinstance(ids, dict) else None
+                if value:
+                    token_parts.append(f'{{{key}:{value}}}')
+            token_parts.append(f'{{season:{season}}}')
+            token_parts.append(f'{{episode:{episode}}}')
+            if isinstance(year, int):
+                token_parts.append(f'{{year:{year}}}')
+
+            return {
+                'query': f'{" ".join(dict.fromkeys(filter(None, query_terms)))} {"".join(token_parts)}'.strip(),
+                'categories': categories,
+                'search_type': 'tvsearch',
+            }
+
+    if categories == [2000]:
+        ids = _extract_tagged_ids(source_path)
+        year = _extract_source_title_and_year(source_path)[1]
+        token_parts = []
+        for key in ('imdbid', 'tmdbid'):
+            value = ids.get(key)
+            if value:
+                token_parts.append(f'{{{key}:{value}}}')
+        if isinstance(year, int):
+            token_parts.append(f'{{year:{year}}}')
+        if token_parts:
+            return {
+                'query': f'{query} {"".join(token_parts)}'.strip(),
+                'categories': categories,
+                'search_type': 'movie',
+            }
+
+    return {'query': query, 'categories': categories, 'search_type': None}
+
+
 def _quality_hint_tokens(profile: LibraryProfile) -> list[str]:
     quality_val = _quality_profile_value(profile)
     if quality_val == DownloadQualityProfileEnum.web_dl.value:
@@ -922,15 +1042,14 @@ def _infer_search_categories(source_path: str) -> list[int] | None:
 
 
 def _search_passes_for_job(dj: DownloadJob, profile: LibraryProfile) -> list[dict[str, object]]:
-    categories = _infer_search_categories(dj.source_file_path)
-    base_query = _build_search_query(dj.source_file_path, profile)
-    second_pass_query = _build_second_pass_search_query(dj.source_file_path, profile)
+    base_search = _build_prowlarr_query(dj.source_file_path, profile, include_profile_hints=False)
+    hinted_search = _build_prowlarr_query(dj.source_file_path, profile, include_profile_hints=True)
 
     search_passes: list[dict[str, object]] = [
-        {'name': 'broad', 'query': base_query, 'categories': categories}
+        {'name': 'broad', **base_search}
     ]
-    if second_pass_query != base_query:
-        search_passes.append({'name': 'profile_hint', 'query': second_pass_query, 'categories': categories})
+    if hinted_search.get('query') != base_search.get('query'):
+        search_passes.append({'name': 'profile_hint', **hinted_search})
     return search_passes
 
 
@@ -974,8 +1093,27 @@ def _is_probable_tv_episode_title(title: str) -> bool:
     return any(re.search(pattern, normalized) for pattern in patterns)
 
 
+def _extract_season_episode(value: str) -> tuple[int | None, int | None]:
+    normalized = _normalize_release_title(value)
+    match = re.search(r'\bs(?P<season>\d{1,2})e(?P<episode>\d{1,3})\b', normalized, flags=re.IGNORECASE)
+    if match is None:
+        match = re.search(r'\b(?P<season>\d{1,2})x(?P<episode>\d{1,3})\b', normalized, flags=re.IGNORECASE)
+    if match is None:
+        return None, None
+    return int(match.group('season')), int(match.group('episode'))
+
+
 def _release_matches_source_title(release_title: str, source_path: str) -> bool:
+    source_season, source_episode = _extract_season_episode(source_path)
     source_title, source_year = _extract_source_title_and_year(source_path)
+    if source_season is not None and source_episode is not None:
+        tv_details = _extract_tv_episode_details(source_path)
+        tv_title = str(tv_details.get('title') or '').strip()
+        if tv_title:
+            source_title = tv_title
+        tv_year = tv_details.get('year')
+        if isinstance(tv_year, int):
+            source_year = tv_year
     source_tokens = _title_tokens_for_matching(source_title)
     if not source_tokens:
         return True
@@ -985,7 +1123,11 @@ def _release_matches_source_title(release_title: str, source_path: str) -> bool:
     if not release_tokens:
         return False
 
-    if _is_probable_tv_episode_title(release_title):
+    release_season, release_episode = _extract_season_episode(release_title)
+    if source_season is not None and source_episode is not None:
+        if release_season != source_season or release_episode != source_episode:
+            return False
+    elif _is_probable_tv_episode_title(release_title):
         return False
 
     if source_year is not None:
@@ -1615,6 +1757,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     for pass_index, search_pass in enumerate(search_passes, start=1):
         query = str(search_pass['query'])
         categories = search_pass.get('categories')
+        search_type = search_pass.get('search_type')
         dj.search_query = query
         db.commit()
 
@@ -1631,6 +1774,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
             prowlarr,
             query,
             categories=categories if isinstance(categories, list) else None,
+            search_type=str(search_type) if search_type else None,
         )
 
         # None means a connection/HTTP error — leave the job in 'searching' so the

@@ -71,7 +71,12 @@ def test_connection(settings: ProwlarrSettings) -> dict:
         return {'success': False, 'error': str(exc)}
 
 
-def search(settings: ProwlarrSettings, query: str, categories: list[int] | None = None) -> list[dict] | None:
+def search(
+    settings: ProwlarrSettings,
+    query: str,
+    categories: list[int] | None = None,
+    search_type: str | None = None,
+) -> list[dict] | None:
     """
     Search Prowlarr indexers for a query string.
 
@@ -87,6 +92,8 @@ def search(settings: ProwlarrSettings, query: str, categories: list[int] | None 
         api_key = secrets_store.decrypt_secret(settings.api_key)
         url = f"{settings.host.rstrip('/')}/api/v1/search"
         params: dict = {'query': query, 'limit': _SEARCH_RESULT_LIMIT}
+        if search_type:
+            params['type'] = search_type
         if categories:
             # Prowlarr accepts repeated 'categories' params
             params['categories'] = categories
