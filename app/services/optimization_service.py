@@ -613,6 +613,7 @@ def _run_ffmpeg(
     duration: float | None,
     progress_callback: Callable[[dict[str, float | int | None]], None] | None,
     should_cancel: Callable[[], bool] | None,
+    active_position_offset: float = 0.0,
 ) -> tuple[int | None, float, float | None, bool, list[str]]:
     job_tag = f'job {job_id}' if job_id is not None else 'adhoc'
     logger.info('[%s] Running FFmpeg command: %s', job_tag, ' '.join(ffmpeg_command))
@@ -675,7 +676,7 @@ def _run_ffmpeg(
                 processed_seconds = out_time_ms / 1_000_000
                 if job_id is not None:
                     with _ACTIVE_FFMPEG_LOCK:
-                        _ACTIVE_FFMPEG_POSITIONS[job_id] = processed_seconds
+                        _ACTIVE_FFMPEG_POSITIONS[job_id] = processed_seconds + max(0.0, active_position_offset)
             except ValueError:
                 processed_seconds = processed_seconds
 
@@ -772,12 +773,16 @@ def _probe_partial_duration(workspace: Path) -> float | None:
     partials = list(workspace.glob('output.partial.*'))
     if not partials:
         return None
+    return _probe_media_duration(partials[0])
+
+
+def _probe_media_duration(path: str | Path) -> float | None:
     command = [
         'ffprobe', '-v', 'error',
         '-select_streams', 'v:0',
         '-show_entries', 'format=duration',
         '-of', 'default=noprint_wrappers=1:nokey=1',
-        str(partials[0]),
+        str(path),
     ]
     try:
         result = subprocess.run(command, capture_output=True, text=True, check=False)
@@ -792,6 +797,49 @@ def _probe_partial_duration(workspace: Path) -> float | None:
         return float(values[-1].strip())
     except ValueError:
         return None
+
+
+def recover_resume_position(workspace: Path, job_id: int | None = None) -> float | None:
+    """Return the furthest safe resume point for a workspace.
+
+    When a resumed encode is interrupted again, the workspace can contain both the
+    original ``output.partial.*`` and a newer ``output.resume.*`` segment. Merge
+    them back into ``output.partial.*`` so future retries/restarts keep the most
+    recent progress instead of falling back to the first interruption point.
+    """
+    if not workspace.exists():
+        return None
+
+    partial_path = next(workspace.glob('output.partial.*'), None)
+    resume_path = next(workspace.glob('output.resume.*'), None)
+
+    if partial_path is not None and partial_path.exists() and resume_path is not None and resume_path.exists():
+        merged_partial_path = workspace / f'output.partial.recovered{partial_path.suffix}'
+        merged_partial_path.unlink(missing_ok=True)
+        if _concat_partial_and_resume(workspace, partial_path, resume_path, merged_partial_path, job_id):
+            try:
+                os.replace(merged_partial_path, partial_path)
+                resume_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.error('[job %s] Failed to promote recovered partial: %s', job_id, exc)
+            finally:
+                merged_partial_path.unlink(missing_ok=True)
+                (workspace / 'concat_list.txt').unlink(missing_ok=True)
+        else:
+            (workspace / 'concat_list.txt').unlink(missing_ok=True)
+
+    if partial_path is not None and partial_path.exists():
+        return _probe_media_duration(partial_path)
+
+    if resume_path is not None and resume_path.exists():
+        promoted_partial_path = workspace / f'output.partial{resume_path.suffix}'
+        try:
+            os.replace(resume_path, promoted_partial_path)
+            return _probe_media_duration(promoted_partial_path)
+        except OSError:
+            return _probe_media_duration(resume_path)
+
+    return None
 
 
 def _run_ffprobe_stream_json(input_path: str) -> dict[str, Any] | None:
@@ -1374,6 +1422,8 @@ def optimize_video(
     if encoder_selected_callback:
         encoder_selected_callback(selection.encoder, selection.use_qsv or selection.use_vaapi)
 
+    resume_offset_seconds = float(resume_position_seconds or 0.0) if can_resume else 0.0
+
     if can_resume:
         # Encode only the remaining portion into a separate segment file.
         container = _container_from_profile(profile)
@@ -1404,6 +1454,7 @@ def optimize_video(
             remaining_duration,
             resume_progress_callback,
             should_cancel,
+            active_position_offset=resume_offset_seconds,
         )
     else:
         ffmpeg_command = _build_command_with_selection(input_path, str(partial_output_path), profile, selection)
@@ -1453,6 +1504,7 @@ def optimize_video(
             _retry_cmd = _build_resume_command(
                 input_path, _partial_dur, str(_retry_seg), profile, selection,
             )
+            resume_position_seconds = _partial_dur
             _remaining = (duration - _partial_dur) if duration else None
             _retry_start_pct = int((_partial_dur / duration) * 100) if duration else 0
             _retry_span = 100 - _retry_start_pct
@@ -1471,8 +1523,10 @@ def optimize_video(
                 '[%s] VAAPI buffer retry: resuming encode from %.1fs',
                 job_tag, _partial_dur,
             )
+            resume_offset_seconds = _partial_dur
             return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
                 job_id, _retry_cmd, _remaining, _retry_progress_cb, should_cancel,
+                active_position_offset=resume_offset_seconds,
             )
             if return_code == 0:
                 # Successful retry — wire up the resume state so the concat step below works.
@@ -1523,6 +1577,7 @@ def optimize_video(
             )
             return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
                 job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+                active_position_offset=resume_offset_seconds,
             )
         else:
             ffmpeg_command = _build_command_with_selection(
@@ -1564,6 +1619,7 @@ def optimize_video(
                     remaining_duration,
                     resume_progress_callback,
                     should_cancel,
+                    active_position_offset=resume_offset_seconds,
                 )
             else:
                 ffmpeg_command = _build_command_with_selection(
@@ -1620,6 +1676,7 @@ def optimize_video(
                 )
                 return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
                     job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+                    active_position_offset=resume_offset_seconds,
                 )
             else:
                 ffmpeg_command = _build_command_with_selection(
@@ -1674,6 +1731,7 @@ def optimize_video(
                 )
                 return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
                     job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+                    active_position_offset=resume_offset_seconds,
                 )
             else:
                 ffmpeg_command = _build_command_with_selection(
@@ -1696,7 +1754,7 @@ def optimize_video(
         metrics.error_message = 'ffmpeg_unavailable'
         return metrics
 
-    metrics.processed_seconds = processed_seconds
+    metrics.processed_seconds = processed_seconds + (resume_offset_seconds if can_resume else 0.0)
     metrics.fps = current_fps
     metrics.return_code = return_code
     metrics.encoder_used = selection.encoder

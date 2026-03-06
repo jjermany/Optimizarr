@@ -372,7 +372,7 @@ def _process_job(job_id: int) -> None:
         job.fallback_reason = metrics.fallback_reason
         if metrics.status == 'failed':
             job.error_message = metrics.error_message or metrics.skipped_reason or 'optimization_failed'
-            workspace = Path(settings.workspace_root) / str(job.id)
+            workspace = Path(coerce_workspace_root(settings.workspace_root)) / str(job.id)
             partial_duration = _probe_partial_duration(workspace)
             if partial_duration is not None and partial_duration > 0:
                 # Partial output found — save position so progress isn't lost.

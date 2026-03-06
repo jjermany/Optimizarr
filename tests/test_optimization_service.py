@@ -157,6 +157,69 @@ def test_optimize_video_failed_progress_uses_percent_not_seconds(monkeypatch, tm
     assert updates[-1]['progress_percent'] == 90
 
 
+def test_recover_resume_position_merges_partial_and_resume_segments(monkeypatch, tmp_path):
+    workspace = tmp_path / 'workspaces' / '42'
+    workspace.mkdir(parents=True, exist_ok=True)
+    partial = workspace / 'output.partial.mkv'
+    resume = workspace / 'output.resume.mkv'
+    partial.write_text('partial')
+    resume.write_text('resume')
+
+    def fake_concat(workspace_path, partial_path, resume_path, combined_path, job_id):
+        assert workspace_path == workspace
+        assert partial_path == partial
+        assert resume_path == resume
+        assert job_id == 42
+        combined_path.write_text('merged')
+        (workspace / 'concat_list.txt').write_text('temporary')
+        return True
+
+    monkeypatch.setattr(optimization_service, '_concat_partial_and_resume', fake_concat)
+    monkeypatch.setattr(optimization_service, '_probe_media_duration', lambda path: 155.5 if Path(path).name == 'output.partial.mkv' else None)
+
+    recovered = optimization_service.recover_resume_position(workspace, job_id=42)
+
+    assert recovered == 155.5
+    assert partial.exists()
+    assert not resume.exists()
+    assert not (workspace / 'output.partial.recovered.mkv').exists()
+    assert not (workspace / 'concat_list.txt').exists()
+
+
+def test_run_ffmpeg_tracks_absolute_active_position_for_resumed_encode(monkeypatch):
+    def fake_popen(*args, **kwargs):
+        return DummyPopen(
+            [
+                'out_time_ms=10000000\n',
+                'progress=end\n',
+            ],
+            returncode=0,
+        )
+
+    monkeypatch.setattr(optimization_service.subprocess, 'Popen', fake_popen)
+
+    observed_positions = []
+
+    def on_progress(_payload):
+        observed_positions.append(optimization_service.get_active_position(9))
+
+    return_code, processed_seconds, _fps, was_cancelled, _lines = optimization_service._run_ffmpeg(
+        9,
+        ['ffmpeg', '-version'],
+        100.0,
+        on_progress,
+        None,
+        active_position_offset=120.0,
+    )
+
+    assert return_code == 0
+    assert processed_seconds == 10.0
+    assert was_cancelled is False
+    assert observed_positions
+    assert observed_positions[-1] == 130.0
+    assert optimization_service.get_active_position(9) is None
+
+
 def test_is_hdr_video_detects_hdr_transfer(monkeypatch):
     monkeypatch.setattr(optimization_service, '_run_ffprobe_stream_json', lambda _: None)
 

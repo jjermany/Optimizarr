@@ -3,13 +3,13 @@ from __future__ import annotations
 from pathlib import Path
 import json
 import shutil
-import subprocess
 
 from sqlalchemy.orm import Session
 
 from app.core.security import coerce_workspace_root
 from app.models.job import Job
 from app.models.settings import Settings
+from app.services import optimization_service
 
 RECOVERABLE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
 ACTIVE_WORKSPACE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
@@ -75,31 +75,7 @@ def _workspace_path(settings: Settings, job_id: int) -> Path:
 
 
 def _probe_partial_duration(workspace: Path) -> float | None:
-    """Return the duration (seconds) of the partial output file in the workspace, if any."""
-    partials = list(workspace.glob('output.partial.*'))
-    if not partials:
-        return None
-    partial_path = partials[0]
-    command = [
-        'ffprobe', '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries', 'format=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        str(partial_path),
-    ]
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-    value = result.stdout.strip().splitlines()
-    if not value:
-        return None
-    try:
-        return float(value[-1].strip())
-    except ValueError:
-        return None
+    return optimization_service.recover_resume_position(workspace)
 
 
 def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:

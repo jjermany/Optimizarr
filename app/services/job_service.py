@@ -1,7 +1,6 @@
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
-import subprocess
 
 from sqlalchemy.orm import Session
 
@@ -138,33 +137,7 @@ def _get_settings(db: Session) -> Settings:
 
 
 def _probe_partial_duration(workspace: Path) -> float | None:
-    if not workspace.exists():
-        return None
-    partials = list(workspace.glob('output.partial.*'))
-    if not partials:
-        return None
-
-    command = [
-        'ffprobe', '-v', 'error',
-        '-select_streams', 'v:0',
-        '-show_entries', 'format=duration',
-        '-of', 'default=noprint_wrappers=1:nokey=1',
-        str(partials[0]),
-    ]
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, check=False)
-    except OSError:
-        return None
-    if result.returncode != 0:
-        return None
-
-    values = result.stdout.strip().splitlines()
-    if not values:
-        return None
-    try:
-        return float(values[-1].strip())
-    except ValueError:
-        return None
+    return optimization_service.recover_resume_position(workspace)
 
 
 def cancel_job(db: Session, job_id: int) -> Job | None:
