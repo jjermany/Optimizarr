@@ -544,14 +544,37 @@ def _enforce_library_schedule_policies(db: Session, settings: Settings, now: dat
 def _extract_year_from_path(path: str | None) -> int | None:
     if not path:
         return None
-    stem = Path(path).stem
-    spaced = re.sub(r'[._]', ' ', stem)
-    paren_match = re.search(r'\(((?:19|20)\d{2})\)', spaced)
-    if paren_match:
-        return int(paren_match.group(1))
-    year_match = re.search(r'\b((?:19|20)\d{2})\b', spaced)
-    if year_match:
-        return int(year_match.group(1))
+
+    def extract_year(candidate: str) -> int | None:
+        spaced = re.sub(r'[._]', ' ', candidate)
+        paren_match = re.search(r'\(((?:19|20)\d{2})\)', spaced)
+        if paren_match:
+            return int(paren_match.group(1))
+        year_match = re.search(r'\b((?:19|20)\d{2})\b', spaced)
+        if year_match:
+            return int(year_match.group(1))
+        return None
+
+    def looks_like_tv_container(candidate: str) -> bool:
+        normalized = re.sub(r'[._]', ' ', candidate).strip().lower()
+        return bool(
+            re.fullmatch(r'season\s*\d+', normalized)
+            or re.fullmatch(r'series\s*\d+', normalized)
+            or re.fullmatch(r's\d+', normalized)
+            or normalized == 'specials'
+        )
+
+    resolved = Path(path)
+    year = extract_year(resolved.stem)
+    if year is not None:
+        return year
+
+    direct_parent = resolved.parent.name
+    candidate_parent = resolved.parent.parent.name if direct_parent and looks_like_tv_container(direct_parent) else direct_parent
+    if candidate_parent:
+        year = extract_year(candidate_parent)
+        if year is not None:
+            return year
     return None
 
 

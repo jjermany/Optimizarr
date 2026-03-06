@@ -369,6 +369,14 @@ def test_preflight_job_applies_output_conflict_policy_rename(monkeypatch, tmp_pa
     assert job.output_path.endswith('-opt-v2.mkv')
 
 
+def test_extract_year_from_path_uses_show_folder_when_episode_name_has_no_year():
+    assert queue._extract_year_from_path('/media/TV/Severance (2022)/Season 01/Severance.S01E03.2160p.mkv') == 2022
+
+
+def test_extract_year_from_path_does_not_walk_above_show_folder():
+    assert queue._extract_year_from_path('/media/TV 2026/Severance/Season 01/Severance.S01E03.2160p.mkv') is None
+
+
 
 
 def test_claim_next_queued_job_honors_oldest_sort_without_resume_priority(tmp_path):

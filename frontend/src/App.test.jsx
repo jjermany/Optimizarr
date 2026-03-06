@@ -5,6 +5,7 @@ import {
   compareDownloadHistoryJobsByOption,
   downloadJobMatchesSearch,
   estimateDownloadEtaSeconds,
+  extractTitleYear,
   getDownloadEtaSeconds,
   libraryQueueCount,
   mergeDownloadJobsWithUpdate,
@@ -130,6 +131,22 @@ describe('compareDownloadHistoryJobsByOption', () => {
     const sorted = [...jobs].sort((a, b) => compareDownloadHistoryJobsByOption(a, b, 'year_newest'));
 
     expect(sorted.map((job) => job.id)).toEqual([2, 1, 3]);
+  });
+});
+
+describe('extractTitleYear', () => {
+  it('falls back to the show folder year for TV episode paths', () => {
+    expect(extractTitleYear('/media/TV/Severance (2022)/Season 01/Severance.S01E03.2160p.mkv')).toEqual({
+      title: 'Severance S01E03 2160p',
+      year: '2022',
+    });
+  });
+
+  it('does not keep walking above the show folder', () => {
+    expect(extractTitleYear('/media/TV 2026/Severance/Season 01/Severance.S01E03.2160p.mkv')).toEqual({
+      title: 'Severance S01E03 2160p',
+      year: null,
+    });
   });
 });
 

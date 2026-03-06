@@ -1,3 +1,4 @@
+import os
 import time
 from pathlib import Path
 
@@ -144,6 +145,7 @@ def test_get_and_update_settings():
         assert payload['discovery_interval_minutes'] >= 1
         assert payload['queue_sort'] in {'default', 'newest', 'oldest', 'year_newest', 'year_oldest'}
         assert payload['workspace_root']
+        assert payload['scan_probe_workers'] >= 1
         assert isinstance(payload['requeue_interrupted_jobs'], bool)
         assert isinstance(payload['cleanup_workspaces_on_startup'], bool)
         assert payload['min_free_gb'] >= 1
@@ -158,6 +160,7 @@ def test_get_and_update_settings():
                 'discovery_interval_minutes': 15,
                 'queue_sort': 'newest',
                 'workspace_root': '/tmp/optimizarr-cache-settings/workspaces',
+                'scan_probe_workers': 9999,
                 'requeue_interrupted_jobs': False,
                 'cleanup_workspaces_on_startup': False,
                 'min_free_gb': 32,
@@ -172,6 +175,7 @@ def test_get_and_update_settings():
         assert updated['discovery_interval_minutes'] == 15
         assert updated['queue_sort'] == 'newest'
         assert updated['workspace_root'] == '/tmp/optimizarr-cache-settings/workspaces'
+        assert updated['scan_probe_workers'] == max(1, os.cpu_count() or 1)
         assert updated['requeue_interrupted_jobs'] is False
         assert updated['cleanup_workspaces_on_startup'] is False
         assert updated['min_free_gb'] == 32

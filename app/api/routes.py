@@ -43,7 +43,7 @@ from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.prowlarr_settings import ProwlarrSettings
 from app.models.qbittorrent_settings import QBittorrentSettings
 from app.models.sabnzbd_settings import SabnzbdSettings
-from app.models.settings import DiscoveryMethodEnum, QueueSortEnum, Settings
+from app.models.settings import DiscoveryMethodEnum, QueueSortEnum, Settings, clamp_scan_probe_workers
 
 from app.services import auth_service, download_client_service, notification_service, plex_service, prowlarr_service
 from app.services.job_service import (
@@ -661,6 +661,7 @@ class SettingsResponse(BaseModel):
     discovery_interval_minutes: int
     queue_sort: QueueSortEnum
     workspace_root: str
+    scan_probe_workers: int
     requeue_interrupted_jobs: bool
     cleanup_workspaces_on_startup: bool
     min_free_gb: int
@@ -681,6 +682,7 @@ class SettingsResponse(BaseModel):
             discovery_interval_minutes=settings.discovery_interval_minutes,
             queue_sort=settings.queue_sort,
             workspace_root=settings.workspace_root,
+            scan_probe_workers=clamp_scan_probe_workers(settings.scan_probe_workers),
             requeue_interrupted_jobs=settings.requeue_interrupted_jobs,
             cleanup_workspaces_on_startup=settings.cleanup_workspaces_on_startup,
             min_free_gb=settings.min_free_gb,
@@ -701,6 +703,7 @@ class SettingsUpdateRequest(BaseModel):
     discovery_interval_minutes: int | None = Field(default=None, ge=1)
     queue_sort: QueueSortEnum | None = None
     workspace_root: str | None = Field(default=None, min_length=1)
+    scan_probe_workers: int | None = Field(default=None, ge=1)
     requeue_interrupted_jobs: bool | None = None
     cleanup_workspaces_on_startup: bool | None = None
     min_free_gb: int | None = Field(default=None, ge=1)
@@ -1195,6 +1198,8 @@ def update_settings(
     settings = _get_settings(db)
 
     updates = payload.model_dump(exclude_none=True)
+    if 'scan_probe_workers' in updates:
+        updates['scan_probe_workers'] = clamp_scan_probe_workers(updates['scan_probe_workers'])
     for field_name, value in updates.items():
         setattr(settings, field_name, value)
 

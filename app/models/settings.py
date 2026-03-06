@@ -1,3 +1,4 @@
+import os
 from enum import Enum
 
 from sqlalchemy import Boolean, Enum as SqlEnum, Integer, String
@@ -17,6 +18,12 @@ class QueueSortEnum(str, Enum):
     oldest = 'oldest'
     year_newest = 'year_newest'
     year_oldest = 'year_oldest'
+
+
+def clamp_scan_probe_workers(value: int | None) -> int:
+    cpu_count = max(1, os.cpu_count() or 1)
+    requested = 1 if value is None else int(value)
+    return max(1, min(requested, cpu_count))
 
 
 class Settings(Base):
@@ -49,6 +56,7 @@ class Settings(Base):
         nullable=False,
     )
     workspace_root: Mapped[str] = mapped_column(String(512), default='/cache/workspaces', nullable=False)
+    scan_probe_workers: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     min_free_gb: Mapped[int] = mapped_column(Integer, default=25, nullable=False)
     requeue_interrupted_jobs: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     cleanup_workspaces_on_startup: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

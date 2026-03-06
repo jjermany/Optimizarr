@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 import logging
 from pathlib import Path
 import re
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SessionLocal
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile
-from app.models.settings import DiscoveryMethodEnum, Settings
+from app.models.settings import DiscoveryMethodEnum, Settings, clamp_scan_probe_workers
 from app.services.job_service import create_job, job_exists_for_source
 from app.services.optimization_service import is_hdr_video, probe_video_height
 from app.services.realtime_service import broker
@@ -36,6 +37,26 @@ _NEAR_4K_HEIGHT_FLOOR = 2000
 class PendingFileState:
     last_size: int | None = None
     size_unchanged_since: float | None = None
+
+
+@dataclass(frozen=True)
+class DiscoveryProbeCandidate:
+    media_file: Path
+    source_path: str
+
+
+@dataclass(frozen=True)
+class DiscoveryProbeResult:
+    source_resolution: int | None
+    source_is_hdr: bool | None
+    has_existing_target_sdr_sibling: bool = False
+
+
+@dataclass(frozen=True)
+class DiscoveryProbePlan:
+    hdr_required: bool
+    minimum_source_resolution: int
+    target_resolution: int
 
 
 class _DiscoveryEventHandler(FileSystemEventHandler):
@@ -254,12 +275,31 @@ def scan_library(db: Session, library: Library, include_disabled: bool = False) 
     profile = _get_or_create_library_profile(db, library)
     created_jobs = []
     library_path = Path(library.path)
+    settings = _get_or_create_settings(db)
+    workers = _effective_scan_probe_workers(getattr(settings, 'scan_probe_workers', 1))
+    probe_plan = _build_probe_plan(profile)
+    candidates: list[DiscoveryProbeCandidate] = []
 
     for media_file in library_path.rglob('*'):
         if not media_file.is_file() or media_file.suffix.lower() not in MEDIA_SUFFIXES:
             continue
 
-        job = _queue_file_if_eligible(db, media_file, library, profile)
+        candidate = _prepare_probe_candidate(db, media_file, library, profile)
+        if candidate is not None:
+            candidates.append(candidate)
+
+    if workers == 1:
+        probed_candidates = [
+            (candidate, _probe_candidate_metadata(candidate, probe_plan))
+            for candidate in candidates
+        ]
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='scan-probe') as executor:
+            probe_results = list(executor.map(lambda candidate: _probe_candidate_metadata(candidate, probe_plan), candidates))
+        probed_candidates = list(zip(candidates, probe_results))
+
+    for candidate, probe_result in probed_candidates:
+        job = _finalize_candidate_with_probe(db, candidate, probe_result, library, profile)
         if job is not None:
             created_jobs.append(job)
 
@@ -400,19 +440,18 @@ def _is_same_release_family(source_file: Path, candidate: Path) -> bool:
     return source_prefix in candidate_prefix or candidate_prefix in source_prefix
 
 
-def _has_existing_target_sdr_sibling(media_file: Path, profile: LibraryProfile) -> bool:
+def _has_existing_target_sdr_sibling(media_file: Path, target_resolution: int) -> bool:
     """Return True when a sibling file already satisfies the target SDR output."""
-    target_resolution = int(getattr(profile, 'target_resolution', 1080) or 1080)
     for sibling in media_file.parent.iterdir():
         if sibling == media_file or not sibling.is_file() or sibling.suffix.lower() not in MEDIA_SUFFIXES:
             continue
         if not _is_same_release_family(media_file, sibling):
             continue
 
-        sibling_height = probe_video_height(str(sibling))
-        matches_target = (
-            sibling_height is not None and abs(int(sibling_height) - target_resolution) <= 32
-        ) or _release_matches_target_resolution_label(sibling, target_resolution)
+        matches_target = _release_matches_target_resolution_label(sibling, target_resolution)
+        if not matches_target:
+            sibling_height = probe_video_height(str(sibling))
+            matches_target = sibling_height is not None and abs(int(sibling_height) - target_resolution) <= 32
         if not matches_target:
             continue
 
@@ -422,7 +461,24 @@ def _has_existing_target_sdr_sibling(media_file: Path, profile: LibraryProfile) 
     return False
 
 
-def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, profile: LibraryProfile):
+def _effective_scan_probe_workers(value: int | None) -> int:
+    return clamp_scan_probe_workers(value)
+
+
+def _build_probe_plan(profile: LibraryProfile) -> DiscoveryProbePlan:
+    return DiscoveryProbePlan(
+        hdr_required=bool(getattr(profile, 'hdr_only', False) or getattr(profile, 'tone_map_hdr', False)),
+        minimum_source_resolution=int(getattr(profile, 'minimum_source_resolution', 2160) or 2160),
+        target_resolution=int(getattr(profile, 'target_resolution', 1080) or 1080),
+    )
+
+
+def _prepare_probe_candidate(
+    db: Session,
+    media_file: Path,
+    library: Library,
+    profile: LibraryProfile,
+) -> DiscoveryProbeCandidate | None:
     if media_file.stem.endswith(profile.output_suffix):
         return None
 
@@ -431,11 +487,6 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
     if output_path.exists():
         return None
 
-    # Broader sibling check: a downloaded release may have a different stem
-    # (e.g. different release group) so the exact-path check above misses it.
-    # Scan siblings that share the same title prefix (everything before the
-    # first '[') and end with the output suffix — catches cases like
-    # "...-MainFrame-1080p.mkv" sitting beside "...-BEN.mp4".
     bracket_pos = media_file.stem.find('[')
     if bracket_pos > 0:
         title_prefix = media_file.stem[:bracket_pos].rstrip(' ._-')
@@ -449,7 +500,69 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
 
     source_path = str(media_file)
     download_enabled = getattr(profile, 'download_enabled', False)
+    if download_enabled:
+        from app.services.download_monitor_service import download_job_exists_for_source
+
+        if download_job_exists_for_source(db, source_path):
+            return None
+        if _blocking_encode_job_exists_for_download_route(db, source_path, library.id):
+            return None
+    else:
+        if job_exists_for_source(db, source_path, library_id=library.id):
+            return None
+
+    return DiscoveryProbeCandidate(media_file=media_file, source_path=source_path)
+
+
+def _probe_candidate_metadata(candidate: DiscoveryProbeCandidate, probe_plan: DiscoveryProbePlan) -> DiscoveryProbeResult:
+    if probe_plan.hdr_required:
+        source_is_hdr = is_hdr_video(candidate.source_path)
+        if not source_is_hdr:
+            return DiscoveryProbeResult(source_resolution=None, source_is_hdr=False)
+
+        source_resolution = probe_video_height(candidate.source_path)
+        has_existing_target_sdr_sibling = False
+        if _meets_minimum_source_resolution(candidate.media_file, source_resolution, probe_plan.minimum_source_resolution):
+            has_existing_target_sdr_sibling = _has_existing_target_sdr_sibling(candidate.media_file, probe_plan.target_resolution)
+        return DiscoveryProbeResult(
+            source_resolution=source_resolution,
+            source_is_hdr=True,
+            has_existing_target_sdr_sibling=has_existing_target_sdr_sibling,
+        )
+
+    source_resolution = probe_video_height(candidate.source_path)
+    return DiscoveryProbeResult(source_resolution=source_resolution, source_is_hdr=None)
+
+
+def _finalize_candidate_with_probe(
+    db: Session,
+    candidate: DiscoveryProbeCandidate,
+    probe_result: DiscoveryProbeResult,
+    library: Library,
+    profile: LibraryProfile,
+):
+    source_path = candidate.source_path
+    download_enabled = getattr(profile, 'download_enabled', False)
     route_to_download = False
+    source_resolution = probe_result.source_resolution
+    source_is_hdr = probe_result.source_is_hdr
+    hdr_required = bool(getattr(profile, 'hdr_only', False) or getattr(profile, 'tone_map_hdr', False))
+    minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
+
+    if hdr_required:
+        if not source_is_hdr:
+            return None
+        if not _meets_minimum_source_resolution(candidate.media_file, source_resolution, minimum_source_resolution):
+            return None
+        if probe_result.has_existing_target_sdr_sibling:
+            return None
+    else:
+        if source_resolution is None:
+            return None
+        if not _meets_minimum_source_resolution(candidate.media_file, source_resolution, minimum_source_resolution):
+            return None
+        if source_resolution <= profile.target_resolution:
+            return None
 
     if download_enabled:
         from app.services.download_monitor_service import (
@@ -457,46 +570,9 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
             create_download_job,
             download_job_exists_for_source,
         )
-        # If a download job is already active for this file, nothing more to do.
+
         if download_job_exists_for_source(db, source_path):
             return None
-        # In download mode, queued/paused encode rows are stale placeholders that
-        # can be cancelled once download routing succeeds.
-        if _blocking_encode_job_exists_for_download_route(db, source_path, library.id):
-            return None
-    else:
-        # Encoding-only mode: skip the (expensive) ffprobe if a job already exists.
-        if job_exists_for_source(db, source_path, library_id=library.id):
-            return None
-
-    source_resolution = probe_video_height(source_path)
-    source_is_hdr = is_hdr_video(source_path)
-
-    hdr_required = bool(getattr(profile, 'hdr_only', False) or getattr(profile, 'tone_map_hdr', False))
-    if hdr_required:
-        if not source_is_hdr:
-            return None
-        minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
-        if not _meets_minimum_source_resolution(media_file, source_resolution, minimum_source_resolution):
-            return None
-        if _has_existing_target_sdr_sibling(media_file, profile):
-            return None
-    else:
-        if source_resolution is None:
-            return None
-
-        minimum_source_resolution = int(getattr(profile, 'minimum_source_resolution', 2160) or 2160)
-        if not _meets_minimum_source_resolution(media_file, source_resolution, minimum_source_resolution):
-            return None
-
-        if source_resolution <= profile.target_resolution:
-            return None
-
-    if download_enabled:
-        # If Prowlarr and at least one download client are configured, create a
-        # download job now and skip creating a queued encode placeholder row.
-        # Fallback encoding is created later by the download monitor only when
-        # download search/grab/import cannot complete successfully.
         if can_attempt_download(db):
             create_download_job(db, source_path, library, profile)
             route_to_download = True
@@ -507,10 +583,7 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
                 'queuing encode directly for %r',
                 source_path,
             )
-        # Prowlarr / client not ready – fall through to queuing an encoding job.
         if route_to_download:
-            # If a stale queued/paused encode placeholder exists from a previous
-            # run/version, cancel it so queue UI shows one active row per source.
             _cancel_queued_encode_for_source(db, source_path, library.id)
             broker.publish_system_event('discovery_download_routed', source_path=source_path, library_id=library.id)
             return None
@@ -552,6 +625,14 @@ def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, pro
     )
     broker.publish_system_event('discovery_job_queued', source_path=source_path)
     return job
+
+
+def _queue_file_if_eligible(db: Session, media_file: Path, library: Library, profile: LibraryProfile):
+    candidate = _prepare_probe_candidate(db, media_file, library, profile)
+    if candidate is None:
+        return None
+    probe_result = _probe_candidate_metadata(candidate, _build_probe_plan(profile))
+    return _finalize_candidate_with_probe(db, candidate, probe_result, library, profile)
 
 
 _manager = DiscoveryManager()

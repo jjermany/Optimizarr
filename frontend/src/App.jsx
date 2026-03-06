@@ -481,18 +481,17 @@ function normalizeDownloadJob(job) {
   return normalized;
 }
 
-function extractTitleYear(filePath) {
-  const fileName = (filePath || '').split('/').pop() || '';
-  const stem = fileName.replace(/\.[^.]+$/, '');
-  // Normalize dot/underscore separators to spaces
-  const spaced = stem.replace(/[._]/g, ' ').trim();
-  // Prefer year enclosed in parentheses e.g. (2019)
+function normalizeTitleSegment(value) {
+  return String(value || '').replace(/[._]/g, ' ').trim();
+}
+
+function parseYearFromSegment(value) {
+  const spaced = normalizeTitleSegment(value);
   const parenMatch = spaced.match(/\(((19|20)\d{2})\)/);
   if (parenMatch) {
     const title = spaced.slice(0, spaced.indexOf(parenMatch[0])).replace(/\s+$/, '').trim();
     return { title: title || spaced, year: parenMatch[1] };
   }
-  // Fall back: first standalone 4-digit year (1900-2099)
   const yearMatch = spaced.match(/\b((19|20)\d{2})\b/);
   if (yearMatch) {
     const yearIdx = spaced.indexOf(yearMatch[0]);
@@ -500,6 +499,37 @@ function extractTitleYear(filePath) {
     return { title: title || spaced, year: yearMatch[1] };
   }
   return { title: spaced, year: null };
+}
+
+function looksLikeTvContainerSegment(value) {
+  const normalized = normalizeTitleSegment(value).toLowerCase();
+  return /^season\s*\d+$/i.test(normalized)
+    || /^series\s*\d+$/i.test(normalized)
+    || /^s\d+$/i.test(normalized)
+    || normalized === 'specials';
+}
+
+export function extractTitleYear(filePath) {
+  const pathParts = String(filePath || '').split('/').filter(Boolean);
+  const fileName = pathParts[pathParts.length - 1] || '';
+  const stem = fileName.replace(/\.[^.]+$/, '');
+  const parsedFile = parseYearFromSegment(stem);
+  if (parsedFile.year) {
+    return parsedFile;
+  }
+
+  const directParent = pathParts[pathParts.length - 2] || '';
+  const showDirectory = looksLikeTvContainerSegment(directParent)
+    ? (pathParts[pathParts.length - 3] || '')
+    : directParent;
+  if (showDirectory) {
+    const parsedParent = parseYearFromSegment(showDirectory);
+    if (parsedParent.year) {
+      return { title: parsedFile.title, year: parsedParent.year };
+    }
+  }
+
+  return parsedFile;
 }
 
 
@@ -3948,6 +3978,10 @@ export default function App() {
 
                 <FormField label="Workspace Root" hint="Temporary directory used during encoding.">
                   <TextInput type="text" value={settings.workspace_root} onChange={(e) => setSettings((prev) => ({ ...prev, workspace_root: e.target.value }))} />
+                </FormField>
+
+                <FormField label="Scan Probe Workers" hint="Parallel metadata probes during discovery scans. Values above available CPU cores are clamped automatically.">
+                  <TextInput type="number" min={1} value={settings.scan_probe_workers} onChange={(e) => setSettings((prev) => ({ ...prev, scan_probe_workers: Number(e.target.value) }))} />
                 </FormField>
 
                 <FormField label="Minimum Free Disk (GB)" hint="Pause the queue when free disk drops below this threshold.">

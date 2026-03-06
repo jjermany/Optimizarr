@@ -109,6 +109,12 @@ def init_db() -> None:
         _add_column_if_missing(
             connection,
             'settings',
+            'scan_probe_workers',
+            'scan_probe_workers INTEGER NOT NULL DEFAULT 1',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
             'requeue_interrupted_jobs',
             'requeue_interrupted_jobs BOOLEAN NOT NULL DEFAULT 1',
         )

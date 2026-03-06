@@ -95,6 +95,41 @@ def test_scan_library_queues_4k_when_hdr_not_required(monkeypatch, tmp_path):
         assert created_jobs[0]['source_path'] == str(source_file)
 
 
+def test_scan_library_skips_hdr_probe_when_profile_does_not_need_it(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'shows'
+    library_path.mkdir()
+
+    source_file = library_path / 'episode.mp4'
+    source_file.write_text('content')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _: 2160)
+
+    hdr_calls = {'count': 0}
+
+    def fake_hdr(_path: str) -> bool:
+        hdr_calls['count'] += 1
+        return False
+
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', fake_hdr)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'Shows', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        profile_response = client.put(f'/libraries/{library_id}/profile', json={'hdr_only': False, 'tone_map_hdr': False})
+        assert profile_response.status_code == 200
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+        assert len(scan_response.json()['created_jobs']) == 1
+
+    assert hdr_calls['count'] == 0
+
+
 def test_scan_library_tone_map_hdr_requires_hdr_source(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()
@@ -122,6 +157,44 @@ def test_scan_library_tone_map_hdr_requires_hdr_source(monkeypatch, tmp_path):
         scan_response = client.post(f'/libraries/{library_id}/scan')
         assert scan_response.status_code == 200
         assert scan_response.json()['created_jobs'] == []
+
+
+def test_scan_library_checks_hdr_before_resolution_for_hdr_required_profiles(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'tone-map-hdr-required'
+    library_path.mkdir()
+
+    source_file = library_path / 'movie.2160p.mkv'
+    source_file.write_text('content')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+
+    resolution_calls = {'count': 0}
+
+    def fake_probe(_path: str) -> int:
+        resolution_calls['count'] += 1
+        return 2160
+
+    monkeypatch.setattr(discovery_service, 'probe_video_height', fake_probe)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: False)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'ToneMapRequired', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        profile_response = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'hdr_only': False, 'tone_map_hdr': True, 'minimum_source_resolution': 2160},
+        )
+        assert profile_response.status_code == 200
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+        assert scan_response.json()['created_jobs'] == []
+
+    assert resolution_calls['count'] == 0
 
 
 def test_scan_library_tone_map_hdr_queues_hdr_source(monkeypatch, tmp_path):
