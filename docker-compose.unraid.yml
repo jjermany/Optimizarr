@@ -5,7 +5,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - /mnt/user/data/media:/media
+      - /mnt/user/data:/data
       - /mnt/cache/appdata/optimizarr:/config
       - /mnt/cache/appdata/optimizarr/tmp:/cache
     devices:
@@ -15,4 +15,5 @@ services:
     environment:
       - LIBVA_DRIVER_NAME=iHD
       - QSV_DEVICE=/dev/dri/renderD128
+      - MEDIA_ROOT=/data/media
     restart: unless-stopped

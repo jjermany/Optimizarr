@@ -4,7 +4,7 @@ Optimizarr is an automated media optimization service with a web UI. It discover
 
 ## Features
 
-- Library management for media folders under `/media`
+- Library management for media folders under `MEDIA_ROOT` (recommended: `/data/media`)
 - Configurable per-library encoding profiles (codec, CRF/CBR, resolution, schedule)
 - Job queue with pause / resume / cancel / retry / abort controls
 - Manual and automatic library scanning
@@ -61,9 +61,10 @@ docker run -d \
   --name optimizarr \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
-  -v /path/to/media:/media \
+  -v /path/to/data:/data \
   -v /path/to/config:/config \
   -v /path/to/cache:/cache \
+  -e MEDIA_ROOT=/data/media \
   -e LIBVA_DRIVER_NAME=iHD \
   -e QSV_DEVICE=/dev/dri/renderD128 \
   ghcr.io/jjermany/optimizarr:latest
@@ -73,7 +74,7 @@ Volumes:
 
 | Host path | Container path | Purpose |
 |---|---|---|
-| `/path/to/media` | `/media` | Media libraries |
+| `/path/to/data` | `/data` | Root data path containing completed downloads and final media libraries |
 | `/path/to/config` | `/config` | Database + settings (persistent) |
 | `/path/to/cache` | `/cache` | Temporary encode workspace |
 
@@ -108,6 +109,7 @@ Key environment variables:
 |---|---|---|
 | `LIBVA_DRIVER_NAME` | `iHD` | VA-API driver. Use `iHD` for Intel Gen 8+ / Arc |
 | `QSV_DEVICE` | `/dev/dri/renderD128` | DRM render node for QSV |
+| `MEDIA_ROOT` | `/data/media` | Root folder shown by the library picker; set this to your final media-library path |
 | `OPTIMIZARR_VERSION` | `0.1.0` | Reported by `GET /version` |
 | `OPTIMIZARR_SESSION_COOKIE_SECURE` | `auto` | Session cookie `Secure` policy (`auto`, `true`, `false`) |
 | `OPTIMIZARR_BOOTSTRAP_TOKEN` | _(auto-generated)_ | Required one-time token for first admin setup; if unset, Optimizarr prints a generated token to the logs |
@@ -134,6 +136,12 @@ Filesystem boundaries:
 - Library paths must stay under `MEDIA_ROOT`.
 - The directory browser only lists folders under `MEDIA_ROOT`.
 - `workspace_root` must stay under `OPTIMIZARR_WORKSPACE_ROOT_BASE`.
+
+Recommended layout:
+- Mount your full data tree into the container at `/data`.
+- Set `MEDIA_ROOT=/data/media`.
+- Keep completed downloads under `/data/complete/...`.
+- Keep final libraries under `/data/media/...`.
 
 ---
 

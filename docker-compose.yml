@@ -7,7 +7,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./media:/media
+      - ./data:/data
       - ./config:/config
       - ./cache:/cache
     devices:
@@ -17,4 +17,5 @@ services:
     environment:
       - LIBVA_DRIVER_NAME=iHD
       - QSV_DEVICE=/dev/dri/renderD128
+      - MEDIA_ROOT=/data/media
     restart: unless-stopped

@@ -15,7 +15,7 @@ _BOOTSTRAP_TOKEN_LOGGED = False
 
 
 def media_root() -> Path:
-    raw = os.getenv('MEDIA_ROOT', '/media').strip() or '/media'
+    raw = os.getenv('MEDIA_ROOT', '/data/media').strip() or '/data/media'
     return Path(raw).resolve()
 
 

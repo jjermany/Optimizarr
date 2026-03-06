@@ -586,7 +586,7 @@ def disable_auth_account_two_factor(
 
 
 class JobCreateRequest(BaseModel):
-    source_path: str = Field(..., examples=['/media/in/movie.mkv'])
+    source_path: str = Field(..., examples=['/data/media/in/movie.mkv'])
 
 
 class JobResponse(BaseModel):
