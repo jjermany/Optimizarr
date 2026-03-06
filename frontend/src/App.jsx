@@ -853,6 +853,24 @@ function MobileActionMenu({ children, label = 'Actions' }) {
   );
 }
 
+function FallbackNotice({ compact = false }) {
+  if (compact) {
+    return (
+      <div className="mt-1.5 flex items-center gap-2 text-xs normal-case text-amber-200/90">
+        <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 font-semibold uppercase tracking-[0.12em] text-amber-300">Fallback</span>
+        <span className="text-slate-400">Download routed to encode.</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 flex items-center gap-2 text-xs text-amber-200/90">
+      <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 font-semibold uppercase tracking-[0.12em] text-amber-300">Fallback</span>
+      <span className="text-slate-400">Download routed to encode.</span>
+    </div>
+  );
+}
+
 function Toggle({ checked, onChange, label }) {
   return (
     <label className="flex cursor-pointer items-center gap-3">
@@ -3769,11 +3787,7 @@ export default function App() {
                             <span>{year ?? '—'}</span>
                             <span>{libName}</span>
                           </div>
-                          {fallbackInfo && (
-                            <div className="mt-2 rounded-xl border border-amber-500/30 bg-amber-950/25 px-3 py-2 text-xs text-amber-200">
-                              Fallback used. Download attempt did not complete, so this title finished through encode instead.
-                            </div>
-                          )}
+                          {fallbackInfo && <FallbackNotice />}
                           <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
                             <span>{formatResolution(job.source_resolution)} · {formatHdrIndicator(job.source_is_hdr)}</span>
                             {job.encoder_used && <span>{job.encoder_used}{job.hwaccel_used ? ' (HW)' : ''}</span>}
@@ -3837,11 +3851,7 @@ export default function App() {
                               <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
                               <td className="px-4 py-3 text-sm capitalize">
                                 <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${job.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : job.status === 'failed' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{job.status}</span>
-                                {fallbackInfo && (
-                                  <p className="mt-2 rounded-lg border border-amber-500/30 bg-amber-950/25 px-2.5 py-1.5 text-xs normal-case text-amber-200">
-                                    Fallback used. Download attempt rolled over to encode.
-                                  </p>
-                                )}
+                                {fallbackInfo && <FallbackNotice compact />}
                                 {job.status === 'failed' && job.error_message && (
                                   <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
                                 )}
