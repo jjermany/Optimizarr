@@ -161,7 +161,7 @@ const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']
 const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode']);
 const TERMINAL_DL_STATUSES = new Set(['complete', 'failed', 'timed_out', 'fallback_queued']);
 const QUEUE_DEDUPE_DL_STATUSES = new Set([...ACTIVE_DL_STATUSES, 'complete', 'fallback_queued']);
-const ACTIVE_ENCODE_DEDUPE_STATUSES = new Set(['starting', 'running', 'preflight']);
+const ACTIVE_ENCODE_DEDUPE_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting', 'paused', 'paused_schedule']);
 
 function isActiveEncodeStatus(status) {
   return ACTIVE_STATUSES.has(status?.toLowerCase());

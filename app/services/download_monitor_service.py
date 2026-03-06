@@ -794,6 +794,23 @@ def _profile_codec_value(profile: LibraryProfile) -> str:
     return str(value or 'hevc').strip().lower()
 
 
+def _profile_av1_fallback_codec_value(profile: LibraryProfile) -> str | None:
+    raw = getattr(profile, 'av1_fallback_codec', None)
+    value = getattr(raw, 'value', raw)
+    normalized = str(value or '').strip().lower()
+    return normalized or None
+
+
+def _allowed_profile_codecs(profile: LibraryProfile) -> set[str]:
+    target_codec = _profile_codec_value(profile)
+    allowed = {target_codec}
+    if target_codec == 'av1':
+        fallback_codec = _profile_av1_fallback_codec_value(profile)
+        if fallback_codec and fallback_codec != 'av1':
+            allowed.add(fallback_codec)
+    return allowed
+
+
 def _detect_release_codecs(release: dict) -> set[str]:
     """
     Best-effort codec detection from release metadata/title.
@@ -984,15 +1001,28 @@ def _build_prowlarr_query(
         ids = _extract_tagged_ids(source_path)
         year = _extract_source_title_and_year(source_path)[1]
         token_parts = []
-        for key in ('imdbid', 'tmdbid'):
-            value = ids.get(key)
-            if value:
-                token_parts.append(_format_prowlarr_token(key, value))
-        if isinstance(year, int):
+        query_prefix = query
+
+        imdb_id = ids.get('imdbid')
+        tmdb_id = ids.get('tmdbid')
+        if imdb_id:
+            query_prefix = ''
+            token_parts.append(_format_prowlarr_token('imdbid', imdb_id))
+        elif tmdb_id:
+            query_prefix = ''
+            token_parts.append(_format_prowlarr_token('tmdbid', tmdb_id))
+
+        if not token_parts:
+            if tmdb_id:
+                token_parts.append(_format_prowlarr_token('tmdbid', tmdb_id))
+            if isinstance(year, int):
+                token_parts.append(_format_prowlarr_token('year', year))
+        elif not imdb_id and isinstance(year, int):
             token_parts.append(_format_prowlarr_token('year', year))
+
         if token_parts:
             return {
-                'query': f'{query} {"".join(token_parts)}'.strip(),
+                'query': f'{query_prefix} {"".join(token_parts)}'.strip(),
                 'categories': categories,
                 'search_type': 'movie',
             }
@@ -1029,6 +1059,31 @@ def _build_generic_tv_search_query(
     return {
         'query': ' '.join(filter(None, query_terms)),
         'categories': [5000],
+        'search_type': None,
+    }
+
+
+def _build_generic_movie_search_query(
+    source_path: str,
+    profile: LibraryProfile,
+    *,
+    include_profile_hints: bool = False,
+) -> dict[str, object]:
+    title, _year = _extract_source_title_and_year(source_path)
+    title = str(title or '').strip()
+    if not title:
+        base_query = _build_second_pass_search_query(source_path, profile) if include_profile_hints else _build_search_query(source_path, profile)
+        return {'query': base_query, 'categories': [2000], 'search_type': None}
+
+    query_terms = [title, f'{profile.target_resolution}p']
+    if include_profile_hints:
+        query_terms.extend(_quality_hint_tokens(profile))
+        query_terms.extend(_codec_hint_tokens(profile))
+        query_terms.extend(_hdr_hint_tokens(profile))
+
+    return {
+        'query': ' '.join(filter(None, query_terms)),
+        'categories': [2000],
         'search_type': None,
     }
 
@@ -1114,6 +1169,18 @@ def _search_passes_for_job(dj: DownloadJob, profile: LibraryProfile) -> list[dic
         generic_tv_hinted_search = _build_generic_tv_search_query(dj.source_file_path, profile, include_profile_hints=True)
         if generic_tv_hinted_search.get('query') not in {base_search.get('query'), hinted_search.get('query'), generic_tv_search.get('query')}:
             search_passes.append({'name': 'title_fallback_profile_hint', **generic_tv_hinted_search})
+    elif base_search.get('categories') == [2000]:
+        generic_movie_search = _build_generic_movie_search_query(dj.source_file_path, profile, include_profile_hints=False)
+        if generic_movie_search.get('query') not in {base_search.get('query'), hinted_search.get('query')}:
+            search_passes.append({'name': 'title_fallback', **generic_movie_search})
+
+        generic_movie_hinted_search = _build_generic_movie_search_query(dj.source_file_path, profile, include_profile_hints=True)
+        if generic_movie_hinted_search.get('query') not in {
+            base_search.get('query'),
+            hinted_search.get('query'),
+            generic_movie_search.get('query'),
+        }:
+            search_passes.append({'name': 'title_fallback_profile_hint', **generic_movie_hinted_search})
     return search_passes
 
 
@@ -1305,7 +1372,7 @@ def _select_best_release(
     filtered_by_client = 0
     filtered_by_variant = 0
     filtered_by_codec = 0
-    target_codec = _profile_codec_value(profile)
+    allowed_codecs = _allowed_profile_codecs(profile)
 
     for r in releases:
         title = r.get('title', '')
@@ -1327,9 +1394,10 @@ def _select_best_release(
             continue
 
         # Codec filter: if codec is detectable and doesn't match the library
-        # target codec, skip this release (e.g. AV1 when profile is HEVC).
+        # target codec set, skip this release. AV1 profiles may explicitly
+        # allow their configured fallback codec.
         detected_codecs = _detect_release_codecs(r)
-        if detected_codecs and target_codec not in detected_codecs:
+        if detected_codecs and not (detected_codecs & allowed_codecs):
             filtered_by_codec += 1
             continue
 
@@ -2738,9 +2806,9 @@ def _release_title_matches_profile(title: str, profile: LibraryProfile) -> bool:
     if tone_map_hdr and _is_hdr_release(title_lower):
         return False
 
-    target_codec = _profile_codec_value(profile)
+    allowed_codecs = _allowed_profile_codecs(profile)
     detected_codecs = _detect_release_codecs(release)
-    if detected_codecs and target_codec not in detected_codecs:
+    if detected_codecs and not (detected_codecs & allowed_codecs):
         return False
 
     quality_val = _quality_profile_value(profile)

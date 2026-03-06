@@ -12,6 +12,7 @@ from app.models.library import DownloadQualityProfileEnum
 from app.models.settings import QueueSortEnum, Settings
 from app.services import download_client_service, notification_service
 from app.services.download_monitor_service import (
+    _build_generic_movie_search_query,
     _build_prowlarr_query,
     _build_second_pass_search_query,
     _extract_hash_from_release,
@@ -37,6 +38,7 @@ def _profile(
     tone_map_hdr: bool = False,
     hdr_only: bool = False,
     codec: str = 'hevc',
+    av1_fallback_codec: str = 'hevc',
 ):
     return SimpleNamespace(
         target_resolution=1080,
@@ -44,6 +46,7 @@ def _profile(
         tone_map_hdr=tone_map_hdr,
         hdr_only=hdr_only,
         codec=codec,
+        av1_fallback_codec=av1_fallback_codec,
     )
 
 
@@ -541,6 +544,33 @@ def test_select_best_release_allows_av1_when_profile_codec_is_av1():
     assert selected['title'] == 'Movie.2024.1080p.WEB-DL.AV1-GROUP'
 
 
+def test_select_best_release_allows_configured_av1_fallback_codec_when_av1_missing():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x265-GROUP',
+            'seeders': 200,
+            'size': 1300,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x264-GROUP',
+            'seeders': 400,
+            'size': 1200,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(DownloadQualityProfileEnum.web_dl, codec='av1', av1_fallback_codec='hevc'),
+        qbt_enabled=True,
+        sab_enabled=True,
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x265-GROUP'
+
+
 def test_select_best_release_keeps_unknown_codec_titles_eligible():
     releases = [
         {
@@ -565,6 +595,16 @@ def test_select_best_release_keeps_unknown_codec_titles_eligible():
 def test_release_title_matches_profile_rejects_av1_when_codec_is_hevc():
     profile = _profile(DownloadQualityProfileEnum.web_dl, codec='hevc')
     assert _release_title_matches_profile('Movie.2024.1080p.WEB-DL.AV1-GROUP', profile) is False
+
+
+def test_release_title_matches_profile_allows_configured_av1_fallback_codec():
+    profile = _profile(DownloadQualityProfileEnum.web_dl, codec='av1', av1_fallback_codec='hevc')
+    assert _release_title_matches_profile('Movie.2024.1080p.WEB-DL.x265-GROUP', profile) is True
+
+
+def test_release_title_matches_profile_rejects_non_configured_av1_fallback_codec():
+    profile = _profile(DownloadQualityProfileEnum.web_dl, codec='av1', av1_fallback_codec='hevc')
+    assert _release_title_matches_profile('Movie.2024.1080p.WEB-DL.x264-GROUP', profile) is False
 
 
 def test_release_matches_source_title_rejects_explicit_year_mismatch():
@@ -954,7 +994,27 @@ def test_build_prowlarr_query_uses_movie_tokens_for_movie_sources():
 
     assert payload['categories'] == [2000]
     assert payload['search_type'] == 'movie'
-    assert payload['query'] == 'Doctor Strange 2016 WEB-DL HEVC SDR {ImdbId:tt1211837}{TmdbId:284052}{Year:2016}'
+    assert payload['query'] == '{ImdbId:tt1211837}'
+
+
+def test_build_prowlarr_query_uses_imdb_only_for_movie_sources_even_with_profile_hints():
+    profile = SimpleNamespace(
+        target_resolution=1080,
+        download_quality_profile=DownloadQualityProfileEnum.web_dl.value,
+        tone_map_hdr=True,
+        hdr_only=False,
+        codec='hevc',
+    )
+
+    payload = _build_prowlarr_query(
+        '/data/media/movies/Doctor Strange (2016) {imdb-tt1211837} {tmdb-284052}/Doctor Strange (2016) {imdb-tt1211837}.mp4',
+        profile,
+        include_profile_hints=True,
+    )
+
+    assert payload['categories'] == [2000]
+    assert payload['search_type'] == 'movie'
+    assert payload['query'] == '{ImdbId:tt1211837}'
 
 
 def test_build_search_query_keeps_resolution_for_tv_sources():
@@ -964,6 +1024,18 @@ def test_build_search_query_keeps_resolution_for_tv_sources():
 
     assert 'Severance S01E03' in query
     assert '1080p' in query
+
+
+def test_build_generic_movie_search_query_matches_simple_prowlarr_title_search():
+    profile = _full_profile(DownloadQualityProfileEnum.web_dl)
+
+    payload = _build_generic_movie_search_query('/media/War Machine (2026).mkv', profile, include_profile_hints=False)
+
+    assert payload == {
+        'query': 'War Machine 1080p',
+        'categories': [2000],
+        'search_type': None,
+    }
 
 
 def test_release_matches_source_title_accepts_matching_tv_episode_release():
@@ -2285,7 +2357,7 @@ def test_do_search_uses_movie_category_when_source_looks_like_movie(monkeypatch)
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
 
-        assert search_calls == [{'query': 'The Gorge 2025 1080p {year:2025}', 'categories': [2000], 'search_type': 'movie'}]
+        assert search_calls == [{'query': 'The Gorge 2025 {Year:2025}', 'categories': [2000], 'search_type': 'movie'}]
 
 
 def test_do_search_uses_tv_category_when_source_looks_like_episode(monkeypatch):
@@ -2374,7 +2446,7 @@ def test_do_search_stops_after_first_pass_when_candidate_matches(monkeypatch):
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
 
-        assert search_calls == [{'query': 'The Gorge 2025 1080p {year:2025}', 'categories': [2000], 'search_type': 'movie'}]
+        assert search_calls == [{'query': 'The Gorge 2025 {Year:2025}', 'categories': [2000], 'search_type': 'movie'}]
 
 
 def test_do_search_uses_second_pass_with_profile_hints_when_first_pass_has_no_match(monkeypatch):
@@ -2442,11 +2514,152 @@ def test_do_search_uses_second_pass_with_profile_hints_when_first_pass_has_no_ma
         db.refresh(dj)
 
         assert search_calls == [
-            {'query': 'The Gorge 2025 1080p {year:2025}', 'categories': [2000], 'search_type': 'movie'},
-            {'query': 'The Gorge 2025 1080p WEB-DL HEVC SDR {year:2025}', 'categories': [2000], 'search_type': 'movie'},
+            {'query': 'The Gorge 2025 {Year:2025}', 'categories': [2000], 'search_type': 'movie'},
+            {'query': 'The Gorge 2025 WEB-DL HEVC SDR {Year:2025}', 'categories': [2000], 'search_type': 'movie'},
         ]
         assert grabbed == ['good-second-pass-guid']
-        assert dj.search_query == 'The Gorge 2025 1080p WEB-DL HEVC SDR {year:2025}'
+        assert dj.search_query == 'The Gorge 2025 WEB-DL HEVC SDR {Year:2025}'
+
+
+def test_do_search_uses_simple_movie_title_fallback_when_structured_movie_passes_fail(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        profile = db.query(LibraryProfile).filter_by(library_id=library.id).first()
+        profile.download_quality_profile = DownloadQualityProfileEnum.web_dl.value
+        profile.codec = 'hevc'
+        db.commit()
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/War Machine (2026) {imdb-tt15940132}.mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+        search_calls = []
+
+        def _fake_search(_settings, query, categories=None, search_type=None):
+            search_calls.append({'query': query, 'categories': categories, 'search_type': search_type})
+            if len(search_calls) < 3:
+                return []
+            return [{
+                'title': 'War.Machine.1080p.WEB-DL.HEVC',
+                'seeders': 25,
+                'size': 1000,
+                'protocol': 'usenet',
+                'guid': 'war-machine-guid',
+                'indexerId': 1,
+            }]
+
+        monkeypatch.setattr(prowlarr_service, 'search', _fake_search)
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
+        monkeypatch.setattr(prowlarr_service, 'grab', lambda *_args, **_kwargs: {'downloadId': 'NZO12345'})
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+        db.refresh(dj)
+
+        assert search_calls == [
+            {'query': '{ImdbId:tt15940132}', 'categories': [2000], 'search_type': 'movie'},
+            {'query': 'War Machine 1080p', 'categories': [2000], 'search_type': None},
+            {'query': 'War Machine 1080p WEB-DL HEVC', 'categories': [2000], 'search_type': None},
+        ]
+        assert dj.search_query == 'War Machine 1080p WEB-DL HEVC'
+
+
+def test_do_search_filters_imdb_movie_results_by_resolution_and_tone_map_before_fallback(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        profile = db.query(LibraryProfile).filter_by(library_id=library.id).first()
+        profile.download_quality_profile = DownloadQualityProfileEnum.web_dl.value
+        profile.codec = 'hevc'
+        profile.tone_map_hdr = True
+        db.commit()
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/War Machine (2026) {imdb-tt15940132}.mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+        search_calls = []
+        grabbed = []
+
+        def _fake_search(_settings, query, categories=None, search_type=None):
+            search_calls.append({'query': query, 'categories': categories, 'search_type': search_type})
+            if len(search_calls) == 1:
+                return [
+                    {
+                        'title': 'War.Machine.2026.2160p.WEB-DL.HEVC.HDR',
+                        'seeders': 100,
+                        'size': 1000,
+                        'protocol': 'usenet',
+                        'guid': 'bad-hdr-guid',
+                        'indexerId': 1,
+                    },
+                    {
+                        'title': 'War.Machine.2026.720p.WEB-DL.HEVC',
+                        'seeders': 90,
+                        'size': 900,
+                        'protocol': 'usenet',
+                        'guid': 'bad-resolution-guid',
+                        'indexerId': 1,
+                    },
+                ]
+            return [{
+                'title': 'War.Machine.2026.1080p.WEB-DL.HEVC',
+                'seeders': 25,
+                'size': 1100,
+                'protocol': 'usenet',
+                'guid': 'good-guid',
+                'indexerId': 1,
+            }]
+
+        monkeypatch.setattr(prowlarr_service, 'search', _fake_search)
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
+        monkeypatch.setattr(
+            prowlarr_service,
+            'grab',
+            lambda *_args, **_kwargs: (grabbed.append(_args[1]) or {'downloadId': 'NZO12345'}),
+        )
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+        db.refresh(dj)
+
+        assert search_calls == [
+            {'query': '{ImdbId:tt15940132}', 'categories': [2000], 'search_type': 'movie'},
+            {'query': 'War Machine 1080p', 'categories': [2000], 'search_type': None},
+        ]
+        assert grabbed == ['good-guid']
+        assert dj.search_query == 'War Machine 1080p'
 
 
 def test_do_search_skips_previously_failed_release_keys(monkeypatch):
