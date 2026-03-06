@@ -186,6 +186,33 @@ def test_get_and_update_settings():
         assert final_payload['enable_optimizer'] is False
 
 
+def test_get_libraries_includes_scan_state(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'shows'
+    library_path.mkdir()
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'Shows', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        monkeypatch.setattr(discovery_service, 'is_library_scan_active', lambda candidate_id: candidate_id == library_id)
+
+        list_response = client.get('/libraries')
+
+    assert list_response.status_code == 200
+    assert list_response.json() == [{
+        'id': library_id,
+        'name': 'Shows',
+        'path': str(library_path),
+        'enabled': True,
+        'scanning': True,
+    }]
+
+
 def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
     queued = []
     monkeypatch.setattr(routes.notification_service, 'enqueue_test_email', lambda: queued.append('sent'))

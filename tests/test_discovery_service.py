@@ -367,6 +367,48 @@ def test_scan_library_publishes_discovery_job_queued_event(monkeypatch, tmp_path
     assert discovery_events[0][1]['source_path'] == str(source_file)
 
 
+def test_scan_library_tracks_active_scan_state(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'shows'
+    library_path.mkdir()
+
+    source_file = library_path / 'episode.mkv'
+    source_file.write_text('content')
+
+    events = []
+    observed_scan_state = []
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _: False)
+    monkeypatch.setattr(broker, 'publish_system_event', lambda event, **data: events.append((event, data)))
+
+    def fake_probe(path: str) -> int:
+        observed_scan_state.append(discovery_service.is_library_scan_active(library_id))
+        return 2160
+
+    monkeypatch.setattr(discovery_service, 'probe_video_height', fake_probe)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'Shows', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        profile_response = client.put(f'/libraries/{library_id}/profile', json={'hdr_only': False})
+        assert profile_response.status_code == 200
+
+        assert discovery_service.is_library_scan_active(library_id) is False
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+        assert discovery_service.is_library_scan_active(library_id) is False
+
+    assert observed_scan_state == [True]
+    assert [event for event, _data in events if event.startswith('library_scan_')] == [
+        'library_scan_started',
+        'library_scan_completed',
+    ]
+
+
 def test_scan_library_skips_disabled_library_by_default(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()

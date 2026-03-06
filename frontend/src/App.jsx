@@ -965,7 +965,6 @@ export default function App() {
   const [profileErrors, setProfileErrors] = useState({});
   const [selectedPreset, setSelectedPreset] = useState('balanced');
   const [savingProfile, setSavingProfile] = useState(false);
-  const [scanningLibraries, setScanningLibraries] = useState({});
   const [libraryDraft, setLibraryDraft] = useState({ name: '', path: '/data/media/', enabled: true });
   const [libraryFormErrors, setLibraryFormErrors] = useState({});
   const [savingLibrary, setSavingLibrary] = useState(false);
@@ -1727,6 +1726,18 @@ export default function App() {
               setQueuePaused(false);
               return;
             }
+            if (payload.data?.event === 'library_scan_started') {
+              setLibraries((prev) => prev.map((library) => (
+                library.id === payload.data?.library_id ? { ...library, scanning: true } : library
+              )));
+              return;
+            }
+            if (payload.data?.event === 'library_scan_completed') {
+              setLibraries((prev) => prev.map((library) => (
+                library.id === payload.data?.library_id ? { ...library, scanning: false } : library
+              )));
+              return;
+            }
             if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') pushToast('Recovery ran on startup.', 'info');
           }
         };
@@ -1908,14 +1919,11 @@ export default function App() {
   }
 
   async function handleLibraryScan(libraryId) {
-    setScanningLibraries((prev) => ({ ...prev, [libraryId]: true }));
     try {
       await scanLibrary(libraryId);
       await refreshAll();
     } catch (scanError) {
       pushToast(scanError.message || 'Failed to start library scan.', 'error');
-    } finally {
-      setScanningLibraries((prev) => ({ ...prev, [libraryId]: false }));
     }
   }
 
@@ -2693,8 +2701,8 @@ export default function App() {
                             checked={library.enabled}
                             onChange={(e) => handleLibraryToggle(library.id, e.target.checked)}
                           />
-                          <Btn size="sm" variant="secondary" disabled={Boolean(scanningLibraries[library.id])} onClick={() => handleLibraryScan(library.id)}>
-                            {scanningLibraries[library.id] ? 'Scanning…' : 'Scan'}
+                          <Btn size="sm" variant="secondary" disabled={Boolean(library.scanning)} onClick={() => handleLibraryScan(library.id)}>
+                            {library.scanning ? 'Scanning…' : 'Scan'}
                           </Btn>
                           <Btn size="sm" variant="danger" disabled={deletingLibraryId === library.id} onClick={() => handleDeleteLibrary(library.id)}>
                             {deletingLibraryId === library.id ? 'Deleting…' : 'Delete'}

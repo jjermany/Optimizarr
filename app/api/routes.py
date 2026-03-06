@@ -45,7 +45,7 @@ from app.models.qbittorrent_settings import QBittorrentSettings
 from app.models.sabnzbd_settings import SabnzbdSettings
 from app.models.settings import DiscoveryMethodEnum, QueueSortEnum, Settings, clamp_scan_probe_workers
 
-from app.services import auth_service, download_client_service, notification_service, plex_service, prowlarr_service
+from app.services import auth_service, discovery_service, download_client_service, notification_service, plex_service, prowlarr_service
 from app.services.job_service import (
     abort_all_jobs,
     abort_job,
@@ -973,10 +973,17 @@ class LibraryResponse(BaseModel):
     name: str
     path: str
     enabled: bool
+    scanning: bool = False
 
     @classmethod
     def from_orm_library(cls, library: Library):
-        return cls(id=library.id, name=library.name, path=library.path, enabled=library.enabled)
+        return cls(
+            id=library.id,
+            name=library.name,
+            path=library.path,
+            enabled=library.enabled,
+            scanning=discovery_service.is_library_scan_active(library.id),
+        )
 
 
 class LibraryProfileResponse(BaseModel):

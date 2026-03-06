@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 MEDIA_SUFFIXES = {'.mkv', '.mp4'}
 STABILITY_WINDOW_SECONDS = 60
 _NEAR_4K_HEIGHT_FLOOR = 2000
+_active_library_scans: dict[int, int] = {}
+_active_library_scans_lock = threading.Lock()
 
 
 @dataclass
@@ -268,42 +270,75 @@ def _get_or_create_library_profile(db: Session, library: Library) -> LibraryProf
     return profile
 
 
+def is_library_scan_active(library_id: int) -> bool:
+    with _active_library_scans_lock:
+        return _active_library_scans.get(int(library_id), 0) > 0
+
+
+class _LibraryScanTracker:
+    def __init__(self, library: Library) -> None:
+        self._library = library
+
+    def __enter__(self) -> None:
+        should_publish = False
+        with _active_library_scans_lock:
+            library_id = int(self._library.id)
+            previous = _active_library_scans.get(library_id, 0)
+            _active_library_scans[library_id] = previous + 1
+            should_publish = previous == 0
+        if should_publish:
+            broker.publish_system_event('library_scan_started', library_id=self._library.id)
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        should_publish = False
+        with _active_library_scans_lock:
+            library_id = int(self._library.id)
+            current = _active_library_scans.get(library_id, 0)
+            if current <= 1:
+                _active_library_scans.pop(library_id, None)
+                should_publish = True
+            else:
+                _active_library_scans[library_id] = current - 1
+        if should_publish:
+            broker.publish_system_event('library_scan_completed', library_id=self._library.id)
+
+
 def scan_library(db: Session, library: Library, include_disabled: bool = False) -> list:
     if not include_disabled and not library.enabled:
         return []
+    with _LibraryScanTracker(library):
+        profile = _get_or_create_library_profile(db, library)
+        created_jobs = []
+        library_path = Path(library.path)
+        settings = _get_or_create_settings(db)
+        workers = _effective_scan_probe_workers(getattr(settings, 'scan_probe_workers', 1))
+        probe_plan = _build_probe_plan(profile)
+        candidates: list[DiscoveryProbeCandidate] = []
 
-    profile = _get_or_create_library_profile(db, library)
-    created_jobs = []
-    library_path = Path(library.path)
-    settings = _get_or_create_settings(db)
-    workers = _effective_scan_probe_workers(getattr(settings, 'scan_probe_workers', 1))
-    probe_plan = _build_probe_plan(profile)
-    candidates: list[DiscoveryProbeCandidate] = []
+        for media_file in library_path.rglob('*'):
+            if not media_file.is_file() or media_file.suffix.lower() not in MEDIA_SUFFIXES:
+                continue
 
-    for media_file in library_path.rglob('*'):
-        if not media_file.is_file() or media_file.suffix.lower() not in MEDIA_SUFFIXES:
-            continue
+            candidate = _prepare_probe_candidate(db, media_file, library, profile)
+            if candidate is not None:
+                candidates.append(candidate)
 
-        candidate = _prepare_probe_candidate(db, media_file, library, profile)
-        if candidate is not None:
-            candidates.append(candidate)
+        if workers == 1:
+            probed_candidates = [
+                (candidate, _probe_candidate_metadata(candidate, probe_plan))
+                for candidate in candidates
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='scan-probe') as executor:
+                probe_results = list(executor.map(lambda candidate: _probe_candidate_metadata(candidate, probe_plan), candidates))
+            probed_candidates = list(zip(candidates, probe_results))
 
-    if workers == 1:
-        probed_candidates = [
-            (candidate, _probe_candidate_metadata(candidate, probe_plan))
-            for candidate in candidates
-        ]
-    else:
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='scan-probe') as executor:
-            probe_results = list(executor.map(lambda candidate: _probe_candidate_metadata(candidate, probe_plan), candidates))
-        probed_candidates = list(zip(candidates, probe_results))
+        for candidate, probe_result in probed_candidates:
+            job = _finalize_candidate_with_probe(db, candidate, probe_result, library, profile)
+            if job is not None:
+                created_jobs.append(job)
 
-    for candidate, probe_result in probed_candidates:
-        job = _finalize_candidate_with_probe(db, candidate, probe_result, library, profile)
-        if job is not None:
-            created_jobs.append(job)
-
-    return created_jobs
+        return created_jobs
 
 
 def scan_enabled_libraries(db: Session, libraries: list[Library] | None = None) -> list:
