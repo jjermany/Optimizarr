@@ -2534,6 +2534,14 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         timeout_reference = timeout_reference.replace(tzinfo=timezone.utc)
     elapsed = datetime.now(timezone.utc) - timeout_reference
     if elapsed > timedelta(minutes=timeout_minutes):
+        if client_type == 'qbittorrent':
+            logger.info(
+                'Download job %s: qBittorrent download exceeded timeout (%s minutes) but torrent still exists; '
+                'continuing to monitor until completion or removal',
+                dj.id,
+                timeout_minutes,
+            )
+            return
         _retry_failed_download(
             db,
             dj,

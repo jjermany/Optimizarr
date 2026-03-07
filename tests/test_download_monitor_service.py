@@ -1113,6 +1113,60 @@ def test_check_download_progress_imports_complete_download_despite_elapsed_timeo
         assert imported_paths == ['/downloads/Inception.2010.1080p.WEB-DL']
 
 
+def test_check_download_progress_qbit_elapsed_timeout_keeps_monitoring(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        profile = db.query(LibraryProfile).filter_by(library_id=library.id).first()
+        profile.download_timeout_minutes = 1
+        db.commit()
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Avatar (2009).mkv',
+            release_name='Avatar.2009.1080p.WEB-DL',
+            download_hash='stillalive',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            progress_percent=43,
+            download_started_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 43,
+            'eta_seconds': 1200,
+            'download_speed_bps': 1024,
+            'is_complete': False,
+            'is_stalled': False,
+            'save_path': '/downloads/Avatar.2009.1080p.WEB-DL',
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kw: True)
+
+        retry_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._retry_failed_download',
+            lambda *_args, **_kwargs: retry_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.retry_count == 0
+        assert retry_calls == []
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Startup recovery: timed_out jobs that completed in qBit while offline
 # ─────────────────────────────────────────────────────────────────────────────
