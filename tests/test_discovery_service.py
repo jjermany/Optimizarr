@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 from app.api import routes
 from app.core.database import SessionLocal
 from app.main import app
+from app.models.discovery_index import DiscoveryFileIndex
 from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile
@@ -365,6 +366,110 @@ def test_scan_library_publishes_discovery_job_queued_event(monkeypatch, tmp_path
     discovery_events = [item for item in events if item[0] == 'discovery_job_queued']
     assert len(discovery_events) == 1
     assert discovery_events[0][1]['source_path'] == str(source_file)
+
+
+def test_run_watcher_recovery_only_processes_new_or_changed_files(monkeypatch, tmp_path):
+    library_path = tmp_path / 'movies'
+    library_path.mkdir()
+
+    unchanged_file = library_path / 'Existing Movie (2024).mkv'
+    unchanged_file.write_text('existing')
+    new_file = library_path / 'New Movie (2025).mkv'
+    new_file.write_text('new')
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(DiscoveryFileIndex).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=False, hdr_only=False, target_resolution=1080)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        db.add(
+            DiscoveryFileIndex(
+                library_id=library.id,
+                source_path=str(unchanged_file),
+                file_size_bytes=unchanged_file.stat().st_size,
+                file_mtime_ns=unchanged_file.stat().st_mtime_ns,
+                discovery_signature=discovery_service._discovery_signature(profile),
+            )
+        )
+        db.commit()
+
+        probe_calls = []
+        monkeypatch.setattr(
+            discovery_service,
+            'probe_video_height',
+            lambda path: probe_calls.append(path) or 2160,
+        )
+        monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
+
+        summary = discovery_service.run_watcher_recovery(db, [library], reason='startup')
+        queued_jobs = db.query(Job).order_by(Job.id.asc()).all()
+
+        assert summary['changed_files'] == 1
+        assert summary['queued_jobs'] == 1
+        assert [job.source_path for job in queued_jobs] == [str(new_file)]
+        assert probe_calls == [str(new_file)]
+
+
+def test_run_watcher_recovery_reprocesses_indexed_file_when_profile_signature_changes(monkeypatch, tmp_path):
+    library_path = tmp_path / 'movies'
+    library_path.mkdir()
+
+    source_file = library_path / 'Signature Test (2025).mkv'
+    source_file.write_text('content')
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(DiscoveryFileIndex).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=False, hdr_only=False, target_resolution=1080)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        db.add(
+            DiscoveryFileIndex(
+                library_id=library.id,
+                source_path=str(source_file),
+                file_size_bytes=source_file.stat().st_size,
+                file_mtime_ns=source_file.stat().st_mtime_ns,
+                discovery_signature='stale-signature',
+            )
+        )
+        db.commit()
+
+        probe_calls = []
+        monkeypatch.setattr(
+            discovery_service,
+            'probe_video_height',
+            lambda path: probe_calls.append(path) or 2160,
+        )
+        monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
+
+        summary = discovery_service.run_watcher_recovery(db, [library], reason='startup')
+
+        assert summary['changed_files'] == 1
+        assert summary['queued_jobs'] == 1
+        assert probe_calls == [str(source_file)]
 
 
 def test_scan_library_tracks_active_scan_state(monkeypatch, tmp_path):

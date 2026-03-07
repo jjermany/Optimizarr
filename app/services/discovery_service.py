@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
+import json
 import logging
+import os
 from pathlib import Path
 import re
 import threading
@@ -12,6 +14,7 @@ import time
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
+from app.models.discovery_index import DiscoveryFileIndex
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import DiscoveryMethodEnum, Settings, clamp_scan_probe_workers
@@ -39,6 +42,14 @@ _active_library_scans_lock = threading.Lock()
 class PendingFileState:
     last_size: int | None = None
     size_unchanged_since: float | None = None
+
+
+@dataclass(frozen=True)
+class MediaFileState:
+    path: Path
+    source_path: str
+    file_size_bytes: int
+    file_mtime_ns: int
 
 
 @dataclass(frozen=True)
@@ -91,6 +102,7 @@ class DiscoveryManager:
         self._pending_lock = threading.Lock()
         self._next_interval_scan_at = datetime.now(UTC)
         self._scan_requested = threading.Event()
+        self._watcher_recovery_completed = False
 
     def request_scan(self) -> None:
         """Signal the worker to run a discovery scan on the next iteration."""
@@ -101,6 +113,8 @@ class DiscoveryManager:
             return self._thread
 
         self._stop_event.clear()
+        self._scan_requested.clear()
+        self._watcher_recovery_completed = False
         self._thread = threading.Thread(target=self._run, name='discovery-worker', daemon=True)
         self._thread.start()
         return self._thread
@@ -133,10 +147,12 @@ class DiscoveryManager:
 
                 enabled_libraries = _get_enabled_libraries(db)
                 if settings.discovery_method == DiscoveryMethodEnum.interval:
+                    self._watcher_recovery_completed = False
                     self._stop_observer()
                     self._run_interval_scan_if_due(db, enabled_libraries, settings.discovery_interval_minutes)
                 else:
                     self._ensure_watcher(enabled_libraries)
+                    self._run_watcher_recovery_if_needed(db, enabled_libraries)
                     self._drain_stable_events(db, enabled_libraries)
             except Exception:
                 logger.exception('Auto-discovery worker iteration failed')
@@ -244,6 +260,28 @@ class DiscoveryManager:
         if queued_count:
             logger.info('Auto-discovery watcher queued %s job(s) from stable file events', queued_count)
 
+    def _run_watcher_recovery_if_needed(self, db: Session, libraries: list[Library]) -> None:
+        reason: str | None = None
+        if not self._watcher_recovery_completed:
+            reason = 'startup'
+        elif self._scan_requested.is_set():
+            reason = 'requested'
+
+        if reason is None:
+            return
+
+        self._scan_requested.clear()
+        summary = run_watcher_recovery(db, libraries, reason=reason)
+        self._watcher_recovery_completed = True
+        logger.info(
+            'Watcher recovery complete (%s): changed=%s queued=%s indexed=%s pruned=%s',
+            reason,
+            summary.get('changed_files', 0),
+            summary.get('queued_jobs', 0),
+            summary.get('indexed_files', 0),
+            summary.get('pruned_files', 0),
+        )
+
 
 def _get_or_create_settings(db: Session) -> Settings:
     settings = db.query(Settings).first()
@@ -314,12 +352,10 @@ def scan_library(db: Session, library: Library, include_disabled: bool = False) 
         workers = _effective_scan_probe_workers(getattr(settings, 'scan_probe_workers', 1))
         probe_plan = _build_probe_plan(profile)
         candidates: list[DiscoveryProbeCandidate] = []
+        media_states = list(_iter_media_file_states(library_path))
 
-        for media_file in library_path.rglob('*'):
-            if not media_file.is_file() or media_file.suffix.lower() not in MEDIA_SUFFIXES:
-                continue
-
-            candidate = _prepare_probe_candidate(db, media_file, library, profile)
+        for media_state in media_states:
+            candidate = _prepare_probe_candidate(db, media_state.path, library, profile)
             if candidate is not None:
                 candidates.append(candidate)
 
@@ -338,6 +374,7 @@ def scan_library(db: Session, library: Library, include_disabled: bool = False) 
             if job is not None:
                 created_jobs.append(job)
 
+        _sync_library_discovery_index(db, library, profile, media_states)
         return created_jobs
 
 
@@ -349,13 +386,80 @@ def scan_enabled_libraries(db: Session, libraries: list[Library] | None = None) 
     return created_jobs
 
 
+def run_watcher_recovery(
+    db: Session,
+    libraries: list[Library] | None = None,
+    *,
+    reason: str = 'startup',
+) -> dict[str, int]:
+    target_libraries = libraries or _get_enabled_libraries(db)
+    changed_files = 0
+    queued_jobs = 0
+    indexed_files = 0
+    pruned_files = 0
+
+    for library in target_libraries:
+        profile = _get_or_create_library_profile(db, library)
+        signature = _discovery_signature(profile)
+        existing_rows = (
+            db.query(DiscoveryFileIndex)
+            .filter(DiscoveryFileIndex.library_id == library.id)
+            .all()
+        )
+        existing_by_path = {row.source_path: row for row in existing_rows}
+
+        media_states = list(_iter_media_file_states(Path(library.path)))
+        changed_states: list[MediaFileState] = []
+        for state in media_states:
+            row = existing_by_path.get(state.source_path)
+            if row is None:
+                changed_states.append(state)
+                continue
+            if (
+                int(row.file_size_bytes or 0) != state.file_size_bytes
+                or int(row.file_mtime_ns or 0) != state.file_mtime_ns
+                or str(row.discovery_signature or '') != signature
+            ):
+                changed_states.append(state)
+
+        _, pruned = _sync_library_discovery_index(db, library, profile, media_states)
+        pruned_files += pruned
+        indexed_files += len(media_states)
+        changed_files += len(changed_states)
+
+        for state in changed_states:
+            job = _queue_file_if_eligible(db, state.path, library, profile)
+            if job is not None:
+                queued_jobs += 1
+
+    logger.info(
+        'Watcher recovery (%s): libraries=%s changed=%s queued=%s indexed=%s pruned=%s',
+        reason,
+        len(target_libraries),
+        changed_files,
+        queued_jobs,
+        indexed_files,
+        pruned_files,
+    )
+    return {
+        'changed_files': changed_files,
+        'queued_jobs': queued_jobs,
+        'indexed_files': indexed_files,
+        'pruned_files': pruned_files,
+    }
+
+
 def queue_path_if_eligible(db: Session, media_file: Path, enabled_by_path: dict[str, Library]):
     library = _match_library(media_file, enabled_by_path)
     if library is None:
         return None
 
     profile = _get_or_create_library_profile(db, library)
-    return _queue_file_if_eligible(db, media_file, library, profile)
+    job = _queue_file_if_eligible(db, media_file, library, profile)
+    media_state = _media_file_state_from_path(media_file)
+    if media_state is not None:
+        _upsert_discovery_index_entry(db, library, profile, media_state)
+    return job
 
 
 def _match_library(media_file: Path, enabled_by_path: dict[str, Library]) -> Library | None:
@@ -506,6 +610,133 @@ def _build_probe_plan(profile: LibraryProfile) -> DiscoveryProbePlan:
         minimum_source_resolution=int(getattr(profile, 'minimum_source_resolution', 2160) or 2160),
         target_resolution=int(getattr(profile, 'target_resolution', 1080) or 1080),
     )
+
+
+def _discovery_signature(profile: LibraryProfile) -> str:
+    payload = {
+        'download_enabled': bool(getattr(profile, 'download_enabled', False)),
+        'output_suffix': str(getattr(profile, 'output_suffix', '') or ''),
+        'container': str(getattr(profile, 'container', '') or ''),
+        'target_resolution': int(getattr(profile, 'target_resolution', 1080) or 1080),
+        'minimum_source_resolution': int(getattr(profile, 'minimum_source_resolution', 2160) or 2160),
+        'hdr_only': bool(getattr(profile, 'hdr_only', False)),
+        'tone_map_hdr': bool(getattr(profile, 'tone_map_hdr', False)),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(',', ':'))
+
+
+def _iter_media_file_states(library_path: Path):
+    if not library_path.exists():
+        return
+
+    stack = [library_path]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                        path = Path(entry.path)
+                        if path.suffix.lower() not in MEDIA_SUFFIXES:
+                            continue
+                        stat = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    yield MediaFileState(
+                        path=path,
+                        source_path=str(path),
+                        file_size_bytes=int(getattr(stat, 'st_size', 0) or 0),
+                        file_mtime_ns=int(getattr(stat, 'st_mtime_ns', int(stat.st_mtime * 1_000_000_000)) or 0),
+                    )
+        except OSError:
+            continue
+
+
+def _media_file_state_from_path(media_file: Path) -> MediaFileState | None:
+    try:
+        stat = media_file.stat()
+    except OSError:
+        return None
+    return MediaFileState(
+        path=media_file,
+        source_path=str(media_file),
+        file_size_bytes=int(getattr(stat, 'st_size', 0) or 0),
+        file_mtime_ns=int(getattr(stat, 'st_mtime_ns', int(stat.st_mtime * 1_000_000_000)) or 0),
+    )
+
+
+def _sync_library_discovery_index(
+    db: Session,
+    library: Library,
+    profile: LibraryProfile,
+    media_states: list[MediaFileState],
+) -> tuple[dict[str, DiscoveryFileIndex], int]:
+    signature = _discovery_signature(profile)
+    existing_rows = (
+        db.query(DiscoveryFileIndex)
+        .filter(DiscoveryFileIndex.library_id == library.id)
+        .all()
+    )
+    existing_by_path = {row.source_path: row for row in existing_rows}
+    seen_paths = {state.source_path for state in media_states}
+    now = datetime.now(UTC)
+
+    for state in media_states:
+        row = existing_by_path.get(state.source_path)
+        if row is None:
+            row = DiscoveryFileIndex(
+                library_id=library.id,
+                source_path=state.source_path,
+            )
+            db.add(row)
+            existing_by_path[state.source_path] = row
+        row.file_size_bytes = state.file_size_bytes
+        row.file_mtime_ns = state.file_mtime_ns
+        row.discovery_signature = signature
+        row.last_seen_at = now
+
+    pruned = 0
+    for stale_path, row in list(existing_by_path.items()):
+        if stale_path in seen_paths:
+            continue
+        db.delete(row)
+        existing_by_path.pop(stale_path, None)
+        pruned += 1
+
+    db.commit()
+    return existing_by_path, pruned
+
+
+def _upsert_discovery_index_entry(
+    db: Session,
+    library: Library,
+    profile: LibraryProfile,
+    media_state: MediaFileState,
+) -> None:
+    row = (
+        db.query(DiscoveryFileIndex)
+        .filter(
+            DiscoveryFileIndex.library_id == library.id,
+            DiscoveryFileIndex.source_path == media_state.source_path,
+        )
+        .first()
+    )
+    if row is None:
+        row = DiscoveryFileIndex(
+            library_id=library.id,
+            source_path=media_state.source_path,
+        )
+        db.add(row)
+    row.file_size_bytes = media_state.file_size_bytes
+    row.file_mtime_ns = media_state.file_mtime_ns
+    row.discovery_signature = _discovery_signature(profile)
+    row.last_seen_at = datetime.now(UTC)
+    db.commit()
 
 
 def _prepare_probe_candidate(
