@@ -643,6 +643,65 @@ def test_claim_next_queued_job_removes_placeholder_when_download_already_importe
         assert events == [('job_removed', {'job_id': placeholder_id})]
 
 
+def test_claim_next_queued_job_prechecks_completed_artifact_and_removes_placeholder(monkeypatch):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True, schedule_enabled=False)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        source_path = '/media/movies/Shrek 2 (2004).mkv'
+        placeholder = Job(input_path=source_path, status='queued', library_id=library.id)
+        db.add(placeholder)
+        db.commit()
+        placeholder_id = placeholder.id
+
+        def _fake_precheck(_db, job, _library, _profile):
+            completed_download = DownloadJob(
+                library_id=job.library_id,
+                source_file_path=job.source_path,
+                status=DownloadJobStatus.complete.value,
+                imported_file_path='/media/movies/Shrek 2 (2004)-1080p.mkv',
+            )
+            _db.add(completed_download)
+            _db.commit()
+            return True
+
+        events: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.recover_completed_artifact_for_queue_job',
+            _fake_precheck,
+        )
+        monkeypatch.setattr(
+            queue.broker,
+            'publish_system_event',
+            lambda event, **payload: events.append((event, payload)),
+        )
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        remaining_placeholder = db.query(Job).filter(Job.id == placeholder_id).first()
+
+        assert selected_id is None
+        assert remaining_placeholder is None
+        assert events == [('job_removed', {'job_id': placeholder_id})]
+
+
 def test_claim_next_queued_job_routes_to_download_and_removes_placeholder(monkeypatch):
     queue.resume_queue()
 

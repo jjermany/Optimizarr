@@ -457,6 +457,122 @@ def _recover_completed_root_for_waiting_queue_jobs(
     return adopted
 
 
+def recover_completed_artifact_for_queue_job(
+    db: Session,
+    job: Job,
+    library: Library | None,
+    profile: LibraryProfile | None,
+) -> bool:
+    """Import a completed client artifact for a single queued download-enabled job.
+
+    Called synchronously from the queue worker so a just-queued source can be
+    imported immediately if its download already exists in qBit's completed
+    directory or SAB history.
+    """
+    if library is None or profile is None or not getattr(profile, 'download_enabled', False):
+        return False
+    if not job.source_path:
+        return False
+    if download_job_exists_for_source(db, job.source_path):
+        return False
+
+    qbt = download_client_service.get_or_create_qbt_settings(db)
+    sab = download_client_service.get_or_create_sab_settings(db)
+
+    if getattr(qbt, 'enabled', False):
+        qbt_completed_root = download_client_service.get_qbt_default_save_path(qbt)
+        if qbt_completed_root:
+            probe = DownloadJob(
+                library_id=library.id,
+                source_file_path=job.source_path,
+                release_name=None,
+                client_type='qbittorrent',
+                status=DownloadJobStatus.downloading.value,
+            )
+            completed_match = _find_completed_download_match(probe, qbt_completed_root)
+            if completed_match:
+                completed_name = Path(completed_match).name
+                if _release_title_matches_profile(completed_name, profile):
+                    dj = DownloadJob(
+                        library_id=library.id,
+                        source_file_path=job.source_path,
+                        release_name=completed_name,
+                        client_type='qbittorrent',
+                        status=DownloadJobStatus.downloading.value,
+                    )
+                    db.add(dj)
+                    db.commit()
+                    db.refresh(dj)
+                    logger.info(
+                        'Queue precheck: created download job %s for queued job %s from completed path %r',
+                        dj.id,
+                        job.id,
+                        completed_match,
+                    )
+                    _import_file(db, dj, completed_match, library, profile, qbt, sab)
+                    return True
+                logger.info(
+                    'Queue precheck: source %r matched completed path %r but failed profile check',
+                    job.source_path,
+                    completed_name,
+                )
+
+    if getattr(sab, 'enabled', False):
+        probe = DownloadJob(
+            library_id=library.id,
+            source_file_path=job.source_path,
+            release_name=None,
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+        )
+        keys = _build_completed_root_match_keys(probe)
+        if not keys:
+            return False
+
+        completed_items = download_client_service.get_sab_completed_history_items(sab)
+        for item in completed_items:
+            name = str(item.get('name') or '')
+            name_key = _normalize_release_key(name)
+            if not name_key:
+                continue
+            if not any(k and (k in name_key or name_key in k) for k in keys):
+                continue
+            if not _release_title_matches_profile(name, profile):
+                logger.info(
+                    'Queue precheck: source %r matched completed SAB history %r but failed profile check',
+                    job.source_path,
+                    name,
+                )
+                return False
+
+            save_path = str(item.get('save_path') or '').strip()
+            nzo_id = str(item.get('nzo_id') or '').strip()
+            if not save_path or not nzo_id:
+                return False
+
+            dj = DownloadJob(
+                library_id=library.id,
+                source_file_path=job.source_path,
+                release_name=name,
+                download_hash=nzo_id,
+                client_type='sabnzbd',
+                status=DownloadJobStatus.downloading.value,
+            )
+            db.add(dj)
+            db.commit()
+            db.refresh(dj)
+            logger.info(
+                'Queue precheck: created download job %s for queued job %s from SAB history %r',
+                dj.id,
+                job.id,
+                name,
+            )
+            _import_file(db, dj, save_path, library, profile, qbt, sab)
+            return True
+
+    return False
+
+
 def _recover_sab_completed_for_waiting_queue_jobs(
     db: Session,
     qbt,
@@ -2355,7 +2471,18 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             _fallback_to_encode(db, dj, library, profile)
         return
 
-    if status.get('is_stalled'):
+    if status.get('is_stalled') and client_type == 'qbittorrent':
+        # qBittorrent can report new or metadata-resolving torrents as
+        # stalledDL temporarily even though they later resume and complete.
+        # Keep tracking the same job and rely on the normal timeout path for
+        # genuinely long-lived stalls so the eventual completed item can still
+        # be imported.
+        logger.info(
+            'Download job %s: qBittorrent reported stalled state; continuing to monitor before retrying',
+            dj.id,
+        )
+
+    elif status.get('is_stalled'):
         _retry_failed_download(
             db,
             dj,
@@ -2366,7 +2493,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         )
         return
 
-    # Timeout check: only applied when the download is not yet complete or stalled.
+    # Timeout check: only applied when the download is not yet complete.
     # Use download_started_at (when the torrent was sent to the client) as the
     # timeout reference so that jobs created in a previous run don't immediately
     # time out when the app restarts.  Fall back to created_at for rows that

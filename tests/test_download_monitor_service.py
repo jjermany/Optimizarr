@@ -2114,6 +2114,58 @@ def test_check_download_progress_stalled_retries_search_before_fallback(monkeypa
         assert failed_keys
 
 
+def test_check_download_progress_qbit_stalled_stays_tracked(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Qbit.Stalled.Transient.mkv',
+            release_name='Qbit.Stalled.Transient.2025.1080p.WEB-DL',
+            download_hash='qbit_stalled_transient',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            max_retries=5,
+            progress_percent=12,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 12,
+            'eta_seconds': None,
+            'download_speed_bps': 0,
+            'is_complete': False,
+            'is_stalled': True,
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kwargs: True)
+
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.retry_count == 0
+        assert dj.error_message is None
+        assert fallback_calls == []
+
+
 def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()

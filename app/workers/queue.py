@@ -653,8 +653,15 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
             from app.services.download_monitor_service import (
                 can_attempt_download,
                 create_download_job,
+                recover_completed_artifact_for_queue_job,
                 download_job_exists_for_source,
             )
+            if recover_completed_artifact_for_queue_job(db, job, library, profile):
+                logger.info(
+                    'Queue precheck: imported completed artifact for queued job %s source=%r',
+                    job.id,
+                    job.source_path,
+                )
             completed_import_row = (
                 db.query(DownloadJob.id)
                 .filter(
