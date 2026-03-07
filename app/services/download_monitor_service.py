@@ -248,6 +248,19 @@ def any_active_download_job(db: Session) -> bool:
 
 
 def create_download_job(db: Session, source_path: str, library: Library, profile: LibraryProfile) -> DownloadJob:
+    if recover_completed_artifact_for_source(db, source_path, library, profile):
+        existing = (
+            db.query(DownloadJob)
+            .filter(
+                DownloadJob.library_id == library.id,
+                DownloadJob.source_file_path == source_path,
+            )
+            .order_by(DownloadJob.id.desc())
+            .first()
+        )
+        if existing is not None:
+            return existing
+
     dj = DownloadJob(
         library_id=library.id,
         source_file_path=source_path,
@@ -457,23 +470,20 @@ def _recover_completed_root_for_waiting_queue_jobs(
     return adopted
 
 
-def recover_completed_artifact_for_queue_job(
+def recover_completed_artifact_for_source(
     db: Session,
-    job: Job,
+    source_path: str,
     library: Library | None,
     profile: LibraryProfile | None,
+    *,
+    queue_job_id: int | None = None,
 ) -> bool:
-    """Import a completed client artifact for a single queued download-enabled job.
-
-    Called synchronously from the queue worker so a just-queued source can be
-    imported immediately if its download already exists in qBit's completed
-    directory or SAB history.
-    """
+    """Import a completed client artifact for a single source if present."""
     if library is None or profile is None or not getattr(profile, 'download_enabled', False):
         return False
-    if not job.source_path:
+    if not source_path:
         return False
-    if download_job_exists_for_source(db, job.source_path):
+    if download_job_exists_for_source(db, source_path):
         return False
 
     qbt = download_client_service.get_or_create_qbt_settings(db)
@@ -484,7 +494,7 @@ def recover_completed_artifact_for_queue_job(
         if qbt_completed_root:
             probe = DownloadJob(
                 library_id=library.id,
-                source_file_path=job.source_path,
+                source_file_path=source_path,
                 release_name=None,
                 client_type='qbittorrent',
                 status=DownloadJobStatus.downloading.value,
@@ -495,7 +505,7 @@ def recover_completed_artifact_for_queue_job(
                 if _release_title_matches_profile(completed_name, profile):
                     dj = DownloadJob(
                         library_id=library.id,
-                        source_file_path=job.source_path,
+                        source_file_path=source_path,
                         release_name=completed_name,
                         client_type='qbittorrent',
                         status=DownloadJobStatus.downloading.value,
@@ -504,23 +514,25 @@ def recover_completed_artifact_for_queue_job(
                     db.commit()
                     db.refresh(dj)
                     logger.info(
-                        'Queue precheck: created download job %s for queued job %s from completed path %r',
+                        'Completed-artifact recovery: created download job %s for source %r'
+                        ' (queue_job_id=%s) from completed path %r',
                         dj.id,
-                        job.id,
+                        source_path,
+                        queue_job_id,
                         completed_match,
                     )
                     _import_file(db, dj, completed_match, library, profile, qbt, sab)
                     return True
                 logger.info(
-                    'Queue precheck: source %r matched completed path %r but failed profile check',
-                    job.source_path,
+                    'Completed-artifact recovery: source %r matched completed path %r but failed profile check',
+                    source_path,
                     completed_name,
                 )
 
     if getattr(sab, 'enabled', False):
         probe = DownloadJob(
             library_id=library.id,
-            source_file_path=job.source_path,
+            source_file_path=source_path,
             release_name=None,
             client_type='sabnzbd',
             status=DownloadJobStatus.downloading.value,
@@ -539,8 +551,8 @@ def recover_completed_artifact_for_queue_job(
                 continue
             if not _release_title_matches_profile(name, profile):
                 logger.info(
-                    'Queue precheck: source %r matched completed SAB history %r but failed profile check',
-                    job.source_path,
+                    'Completed-artifact recovery: source %r matched completed SAB history %r but failed profile check',
+                    source_path,
                     name,
                 )
                 return False
@@ -552,7 +564,7 @@ def recover_completed_artifact_for_queue_job(
 
             dj = DownloadJob(
                 library_id=library.id,
-                source_file_path=job.source_path,
+                source_file_path=source_path,
                 release_name=name,
                 download_hash=nzo_id,
                 client_type='sabnzbd',
@@ -562,15 +574,33 @@ def recover_completed_artifact_for_queue_job(
             db.commit()
             db.refresh(dj)
             logger.info(
-                'Queue precheck: created download job %s for queued job %s from SAB history %r',
+                'Completed-artifact recovery: created download job %s for source %r'
+                ' (queue_job_id=%s) from SAB history %r',
                 dj.id,
-                job.id,
+                source_path,
+                queue_job_id,
                 name,
             )
             _import_file(db, dj, save_path, library, profile, qbt, sab)
             return True
 
     return False
+
+
+def recover_completed_artifact_for_queue_job(
+    db: Session,
+    job: Job,
+    library: Library | None,
+    profile: LibraryProfile | None,
+) -> bool:
+    """Import a completed client artifact for a single queued download-enabled job."""
+    return recover_completed_artifact_for_source(
+        db,
+        job.source_path or '',
+        library,
+        profile,
+        queue_job_id=job.id,
+    )
 
 
 def _recover_sab_completed_for_waiting_queue_jobs(

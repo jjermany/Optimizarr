@@ -604,8 +604,17 @@ def _finalize_candidate_with_probe(
             can_attempt_download,
             create_download_job,
             download_job_exists_for_source,
+            recover_completed_artifact_for_source,
         )
 
+        if recover_completed_artifact_for_source(db, source_path, library, profile):
+            _cancel_queued_encode_for_source(db, source_path, library.id)
+            broker.publish_system_event(
+                'discovery_download_imported',
+                source_path=source_path,
+                library_id=library.id,
+            )
+            return None
         if download_job_exists_for_source(db, source_path):
             return None
         if can_attempt_download(db):

@@ -582,6 +582,62 @@ def test_queue_file_if_eligible_download_mode_creates_download_job_when_route_re
         assert created_downloads == [str(media_file)]
 
 
+def test_queue_file_if_eligible_download_mode_imports_completed_artifact_before_routing(monkeypatch, tmp_path):
+    media_file = tmp_path / 'Shrek 2 (2004).mkv'
+    media_file.write_text('content')
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(tmp_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True, hdr_only=False, target_resolution=1080)
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        created_downloads = []
+        cancelled_sources = []
+        events: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            download_monitor_service,
+            'recover_completed_artifact_for_source',
+            lambda _db, source_path, *_args, **_kwargs: source_path == str(media_file),
+        )
+        monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
+        monkeypatch.setattr(download_monitor_service, 'download_job_exists_for_source', lambda _db, _path: False)
+        monkeypatch.setattr(
+            download_monitor_service,
+            'create_download_job',
+            lambda _db, source_path, *_args: created_downloads.append(source_path),
+        )
+        monkeypatch.setattr(
+            discovery_service,
+            '_cancel_queued_encode_for_source',
+            lambda _db, source_path, library_id: cancelled_sources.append((source_path, library_id)),
+        )
+        monkeypatch.setattr(
+            discovery_service.broker,
+            'publish_system_event',
+            lambda event, **payload: events.append((event, payload)),
+        )
+        monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _path: 2160)
+        monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
+
+        result = discovery_service._queue_file_if_eligible(db, media_file, library, profile)
+
+        assert result is None
+        assert created_downloads == []
+        assert cancelled_sources == [(str(media_file), library.id)]
+        assert ('discovery_download_imported', {'source_path': str(media_file), 'library_id': library.id}) in events
+
+
 def test_queue_file_if_eligible_download_mode_skips_when_source_already_moving(monkeypatch, tmp_path):
     media_file = tmp_path / 'Already Moving (2025).mkv'
     media_file.write_text('content')
