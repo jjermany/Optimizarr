@@ -77,6 +77,12 @@ const RECONNECT_MAX_DELAY_MS = 30000;
 const JOBS_PAGE_SIZE = 50;
 const HISTORY_PAGE_SIZE = 25;
 const JOBS_UI_PREFS_KEY = 'optimizarr.jobsUiPrefs.v1';
+const PROFILE_SECTIONS_DEFAULT = {
+  details: false,
+  processing: false,
+  plex: false,
+  download: false,
+};
 
 const PAGE_KEYS = {
   dashboard: 'Dashboard',
@@ -1163,12 +1169,10 @@ export default function App() {
   const [dirBrowser, setDirBrowser] = useState({ open: false, target: null, initialPath: null });
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
-  const [profileSectionsOpen, setProfileSectionsOpen] = useState({
-    details: true,
-    processing: true,
-    plex: false,
-    download: true,
-  });
+  const [profileSectionsOpen, setProfileSectionsOpen] = useState(() => ({
+    ...PROFILE_SECTIONS_DEFAULT,
+    ...(jobsUiPrefs.profileSectionsOpen ?? {}),
+  }));
   const [targetResolutionCustom, setTargetResolutionCustom] = useState(false);
   const [minimumResolutionCustom, setMinimumResolutionCustom] = useState(false);
   const [profileErrors, setProfileErrors] = useState({});
@@ -1431,9 +1435,10 @@ export default function App() {
         historySort,
         historyTypeFilter,
         jobsView,
+        profileSectionsOpen,
       }),
     );
-  }, [queueSearch, historySearch, queueSort, historySort, historyTypeFilter, jobsView]);
+  }, [queueSearch, historySearch, queueSort, historySort, historyTypeFilter, jobsView, profileSectionsOpen]);
 
   const selectedLibrary = useMemo(
     () => libraries.find((library) => library.id === selectedLibraryId) ?? null,
@@ -1797,15 +1802,6 @@ export default function App() {
     setMinimumResolutionCustom(!MIN_SOURCE_RESOLUTION_PRESETS.includes(Number(nextDraft.minimum_source_resolution)));
     setProfileErrors({});
   }, [selectedLibraryId, selectedLibraryProfile]);
-
-  useEffect(() => {
-    setProfileSectionsOpen({
-      details: true,
-      processing: true,
-      plex: false,
-      download: true,
-    });
-  }, [selectedLibraryId]);
 
   useEffect(() => {
     if (!accountSettings) return;
