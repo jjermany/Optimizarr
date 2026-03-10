@@ -608,6 +608,7 @@ class JobResponse(BaseModel):
     source_resolution: int | None = None
     source_is_hdr: bool | None = None
     library_id: int | None = None
+    encode_duration_seconds: int | None = None
     completed_at: str | None = None
 
     @classmethod
@@ -631,6 +632,7 @@ class JobResponse(BaseModel):
             source_resolution=job.source_resolution,
             source_is_hdr=job.source_is_hdr,
             library_id=job.library_id,
+            encode_duration_seconds=job.encode_duration_seconds,
             completed_at=job.completed_at.replace(tzinfo=timezone.utc).isoformat() if job.completed_at else None,
         )
 
@@ -1591,6 +1593,7 @@ def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = Fa
     if cancel_job_first:
         from app.services.optimization_service import stop_active_ffmpeg, delete_workspace
         from app.services.job_service import _get_settings
+        from app.services.job_timing_service import stop_encode_timing
         settings = _get_settings(db)
         stop_active_ffmpeg(job.id)
         delete_workspace(settings, job.id)
@@ -1602,6 +1605,7 @@ def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = Fa
         job.output_path = None
         job.cancel_requested = False
         job.completed_at = _dt.now(timezone.utc)
+        stop_encode_timing(job)
         db.commit()
 
     create_download_job(db, job.source_path, library, profile)

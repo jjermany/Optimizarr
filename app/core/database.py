@@ -167,6 +167,9 @@ def init_db() -> None:
         _add_column_if_missing(connection, 'jobs', 'source_resolution', 'source_resolution INTEGER')
         _add_column_if_missing(connection, 'jobs', 'source_is_hdr', 'source_is_hdr BOOLEAN')
         _add_column_if_missing(connection, 'jobs', 'resume_position_seconds', 'resume_position_seconds REAL')
+        _add_column_if_missing(connection, 'jobs', 'encode_started_at', 'encode_started_at DATETIME')
+        _add_column_if_missing(connection, 'jobs', 'last_encode_activity_at', 'last_encode_activity_at DATETIME')
+        _add_column_if_missing(connection, 'jobs', 'encode_duration_seconds', 'encode_duration_seconds INTEGER')
 
         _add_column_if_missing(connection, 'library_profiles', 'minimum_source_resolution', 'minimum_source_resolution INTEGER NOT NULL DEFAULT 2160')
         _add_column_if_missing(connection, 'library_profiles', 'schedule_policy', "schedule_policy VARCHAR(14) NOT NULL DEFAULT 'finish_current'")

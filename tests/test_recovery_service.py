@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.core.database import SessionLocal
@@ -76,6 +77,44 @@ def test_startup_recovery_preserves_partial_resume_state_when_available(monkeypa
         assert job.progress_percent == 61
         assert job.resume_position_seconds == 123.4
         assert workspace.exists()
+
+
+def test_startup_recovery_caps_encode_runtime_at_last_activity(monkeypatch, tmp_path):
+    workspace_root = tmp_path / 'workspaces'
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        _configure_settings(db, workspace_root, requeue=True)
+
+        started_at = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
+        last_activity_at = started_at + timedelta(seconds=45)
+        job = Job(
+            input_path='/media/restart-runtime.mkv',
+            status='running',
+            progress_percent=61,
+            encode_started_at=started_at,
+            last_encode_activity_at=last_activity_at,
+            encode_duration_seconds=12,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = workspace_root / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / 'output.partial.mkv').write_text('partial')
+
+        monkeypatch.setattr(recovery_service, '_probe_partial_duration', lambda *_: 123.4)
+
+        summary = recovery_service.run_startup_recovery(db)
+        db.refresh(job)
+
+        assert summary['recovered_jobs'] == 1
+        assert job.encode_duration_seconds == 57
+        assert job.encode_started_at is None
+        assert job.last_encode_activity_at is None
 
 
 

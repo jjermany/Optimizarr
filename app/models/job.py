@@ -33,6 +33,9 @@ class Job(Base):
     source_resolution: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_is_hdr: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     resume_position_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    encode_started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_encode_activity_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    encode_duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 

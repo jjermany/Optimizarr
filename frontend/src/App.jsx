@@ -3895,6 +3895,7 @@ export default function App() {
                       const histJobDownloadEnabled = !!libraryProfiles[job.library_id]?.download_enabled;
                       const fallbackInfo = fallbackHistoryByEncodeJobId[job.id];
                       const completedDate = formatHistoryCompletedAt(job.completed_at);
+                      const encodeDuration = formatElapsed(job.encode_duration_seconds);
                       return (
                         <div key={`hist-mobile-encode-${job.id}`} className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
                           <div className="mb-2 flex items-center justify-between">
@@ -3913,6 +3914,7 @@ export default function App() {
                             {fallbackInfo && <FallbackIndicator />}
                             <span>{formatResolution(job.source_resolution)} · {formatHdrIndicator(job.source_is_hdr)}</span>
                             {job.encoder_used && <span>{job.encoder_used}{job.hwaccel_used ? ' (HW)' : ''}</span>}
+                            <span>Encode: {encodeDuration}</span>
                           </div>
                           <p className="mt-2.5 text-xs text-slate-500">{completedDate}</p>
                           {job.status === 'failed' && job.error_message && (
@@ -3933,7 +3935,7 @@ export default function App() {
                     })}
                   </div>
                   <div className="hidden overflow-x-auto [scrollbar-gutter:stable] md:block">
-                    <table className="min-w-[1120px] divide-y divide-slate-800">
+                    <table className="min-w-[1200px] divide-y divide-slate-800">
                       <thead className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur-sm">
                         <tr>
                           <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Type</th>
@@ -3944,6 +3946,7 @@ export default function App() {
                           <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
                           <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Details</th>
                           <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Encoder</th>
+                          <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Encode Time</th>
                           <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Completed</th>
                           <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
                         </tr>
@@ -3951,7 +3954,7 @@ export default function App() {
                       <tbody className="divide-y divide-slate-800/60">
                         {pagedHistoryItems.length === 0 && (
                           <tr>
-                            <td colSpan={10} className="px-4 py-10 text-center text-sm text-slate-500">
+                            <td colSpan={11} className="px-4 py-10 text-center text-sm text-slate-500">
                               {historySearch ? 'No matching history.' : 'No completed jobs yet.'}
                             </td>
                           </tr>
@@ -3978,6 +3981,7 @@ export default function App() {
                                 </td>
                                 <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">{clientLabel ? `Client: ${clientLabel}` : '—'}</td>
                                 <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">—</td>
+                                <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">—</td>
                                 <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">{completedDate}</td>
                                 <td className="whitespace-nowrap px-4 py-3">
                                   <div className="flex flex-wrap gap-1.5">
@@ -4003,6 +4007,7 @@ export default function App() {
                           const histJobDownloadEnabled = !!libraryProfiles[job.library_id]?.download_enabled;
                           const fallbackInfo = fallbackHistoryByEncodeJobId[job.id];
                           const completedDate = formatHistoryCompletedAt(job.completed_at);
+                          const encodeDuration = formatElapsed(job.encode_duration_seconds);
                           return (
                             <tr key={`hist-encode-${job.id}`} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
                               <td className="px-4 py-3 text-sm"><HistoryTypeBadge type="encode" /></td>
@@ -4038,6 +4043,7 @@ export default function App() {
                                   <span className="text-slate-600">—</span>
                                 )}
                               </td>
+                              <td className="hidden whitespace-nowrap px-4 py-3 text-xs text-slate-400 xl:table-cell">{encodeDuration}</td>
                               <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">{completedDate}</td>
                               <td className="whitespace-nowrap px-4 py-3">
                                 <div className="flex flex-wrap gap-1.5">

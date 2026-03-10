@@ -894,6 +894,7 @@ def _finalize_candidate_with_probe(
             'source_resolution': job.source_resolution,
             'source_is_hdr': job.source_is_hdr,
             'library_id': job.library_id,
+            'encode_duration_seconds': job.encode_duration_seconds,
             'completed_at': job.completed_at.isoformat() if job.completed_at else None,
         },
         throttle_progress=False,

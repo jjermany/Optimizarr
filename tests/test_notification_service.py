@@ -100,6 +100,12 @@ def test_format_notification_body_keeps_unknown_failure_reason_as_is():
     assert 'Reason: custom_error' in body
 
 
+def test_format_duration_formats_human_readable_runtime():
+    assert notification_service.format_duration(5) == '5s'
+    assert notification_service.format_duration(65) == '1m 5s'
+    assert notification_service.format_duration(3665) == '1h 1m 5s'
+
+
 def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
     queued = []
     monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
@@ -117,6 +123,70 @@ def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
     assert queued[0][0] == 'Optimizarr batch complete'
     assert 'title.mkv' in queued[0][1]
     assert 'grouped alert' in queued[0][1]
+
+
+def test_enqueue_job_complete_marks_encode_and_includes_runtime(monkeypatch):
+    queued = []
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+
+    with SessionLocal() as db:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_job_complete = True
+        db.commit()
+
+    job = type(
+        'JobStub',
+        (),
+        {
+            'source_path': '/media/Movies/title.mkv',
+            'library_id': None,
+            'encode_duration_seconds': 3723,
+        },
+    )
+
+    notification_service.enqueue_job_complete(job)
+
+    assert queued == [
+        (
+            'Optimizarr job complete',
+            'Job Type: Encode\n'
+            'Library: unknown\n'
+            'File: title\n'
+            'Encode Time: 1h 2m 3s\n'
+            'Status: Completed successfully.\n',
+        )
+    ]
+
+
+def test_enqueue_download_job_complete_marks_download_type(monkeypatch):
+    queued = []
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+
+    with SessionLocal() as db:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_job_complete = True
+        db.commit()
+
+    download_job = type(
+        'DownloadJobStub',
+        (),
+        {
+            'source_file_path': '/downloads/Movie.2024.mkv',
+            'library_id': None,
+        },
+    )
+
+    notification_service.enqueue_download_job_complete(download_job)
+
+    assert queued == [
+        (
+            'Optimizarr job complete',
+            'Job Type: Download\n'
+            'Library: unknown\n'
+            'File: Movie (2024)\n'
+            'Status: Download imported successfully.\n',
+        )
+    ]
 
 
 def test_handle_job_terminal_state_marks_waiting_encode_as_fallback_queued(monkeypatch):

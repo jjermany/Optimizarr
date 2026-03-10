@@ -19,6 +19,7 @@ from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
 from app.models.settings import QueueSortEnum, Settings
 from app.services.job_service import _probe_partial_duration, prune_job_history
 from app.services.notification_service import enqueue_job_complete, enqueue_job_failed, enqueue_low_disk_space_alert, format_display_name, handle_job_terminal_state
+from app.services.job_timing_service import start_encode_timing, stop_encode_timing, touch_encode_timing
 from app.services.plex_service import trigger_scan_after_job
 from app.services.optimization_service import (
     delete_partial_output,
@@ -70,6 +71,7 @@ def _should_cancel(db: Session, job_id: int) -> bool:
 
 def _mark_finished(job: Job) -> None:
     if job.status in TERMINAL_STATUSES:
+        stop_encode_timing(job)
         job.completed_at = datetime.now(UTC)
 
 
@@ -93,6 +95,7 @@ def _publish_job(job: Job, *, throttle_progress: bool = True) -> None:
             'error_message': job.error_message,
             'source_resolution': job.source_resolution,
             'source_is_hdr': job.source_is_hdr,
+            'encode_duration_seconds': job.encode_duration_seconds,
             'completed_at': job.completed_at.isoformat() if job.completed_at else None,
         },
         throttle_progress=throttle_progress,
@@ -296,6 +299,7 @@ def _process_job(job_id: int) -> None:
         # from scratch or re-paused with a new position.
         job.resume_position_seconds = None
         job.status = 'running'
+        start_encode_timing(job)
         db.commit()
         _publish_job(job, throttle_progress=False)
 
@@ -305,6 +309,7 @@ def _process_job(job_id: int) -> None:
                 return
             job.encoder_used = encoder_name
             job.hwaccel_used = hwaccel
+            touch_encode_timing(job)
             db.commit()
             _publish_job(job, throttle_progress=False)
 
@@ -317,6 +322,7 @@ def _process_job(job_id: int) -> None:
             job.fps = float(fps_val) if isinstance(fps_val, (int, float)) else None
             eta_val = update.get('eta_seconds')
             job.eta_seconds = int(eta_val) if isinstance(eta_val, (int, float)) else None
+            touch_encode_timing(job)
             db.commit()
             _publish_job(job, throttle_progress=True)
 
@@ -539,6 +545,7 @@ def _enforce_library_schedule_policies(db: Session, settings: Settings, now: dat
         job.eta_seconds = None
         if current_position is not None and current_position > 0:
             job.resume_position_seconds = current_position
+        stop_encode_timing(job)
         db.commit()
         _publish_job(job, throttle_progress=False)
         broker.publish_system_event(
@@ -849,6 +856,7 @@ def start_queued_job(job_id: int, *, manual: bool = False) -> tuple[bool, str | 
                 running_job.eta_seconds = None
                 if current_position is not None and current_position > 0:
                     running_job.resume_position_seconds = current_position
+                stop_encode_timing(running_job)
                 db.commit()
                 _publish_job(running_job, throttle_progress=False)
                 broker.publish_system_event('job_paused', job_id=running_job.id)

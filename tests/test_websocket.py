@@ -116,6 +116,7 @@ def test_job_progress_throttle_limits_to_one_event_per_second():
         'used_fallback': None,
         'fallback_reason': None,
         'error_message': None,
+        'encode_duration_seconds': None,
     }
 
     broker.publish_job_update(payload, throttle_progress=True)
@@ -147,6 +148,7 @@ def test_job_progress_payload_includes_completed_at_field():
         'used_fallback': None,
         'fallback_reason': None,
         'error_message': None,
+        'encode_duration_seconds': None,
         'completed_at': None,
     }
 
@@ -155,6 +157,8 @@ def test_job_progress_payload_includes_completed_at_field():
 
     assert event['type'] == 'job_update'
     assert 'completed_at' in event['data']
+    assert 'encode_duration_seconds' in event['data']
+    assert event['data']['encode_duration_seconds'] is None
     assert event['data']['completed_at'] is None
 
     broker.unsubscribe(subscription.client_id)

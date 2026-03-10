@@ -8,6 +8,7 @@ from app.models.job import Job
 from app.models.library import LibraryProfile
 from app.models.settings import Settings
 from app.services import optimization_service
+from app.services.job_timing_service import reset_encode_timing, stop_encode_timing
 
 TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
 
@@ -172,6 +173,7 @@ def cancel_job(db: Session, job_id: int) -> Job | None:
     if job.status in TERMINAL_STATUSES:
         return job
 
+    was_running = job.status == 'running'
     if job.status in {'running', 'starting', 'preflight'}:
         optimization_service.stop_active_ffmpeg(job.id)
 
@@ -182,6 +184,8 @@ def cancel_job(db: Session, job_id: int) -> Job | None:
         job.fps = None
         job.cancel_requested = False
         job.completed_at = None
+        if was_running:
+            stop_encode_timing(job)
 
     db.commit()
     db.refresh(job)
@@ -236,6 +240,7 @@ def pause_job(db: Session, job_id: int) -> Job | None:
     job.eta_seconds = None
     if current_position is not None and current_position > 0:
         job.resume_position_seconds = current_position
+    stop_encode_timing(job)
     db.commit()
     db.refresh(job)
     return job
@@ -274,6 +279,7 @@ def abort_job(db: Session, job_id: int) -> Job | None:
 
     settings = _get_settings(db)
     optimization_service.stop_active_ffmpeg(job_id)
+    was_running = job.status == 'running'
     # Keep the workspace while a running worker is winding down so an in-flight
     # ffmpeg process does not continue writing into a deleted directory.
     # The worker cooperatively observes cancel_requested and finalizes state.
@@ -288,11 +294,14 @@ def abort_job(db: Session, job_id: int) -> Job | None:
         job.error_message = 'Aborted by user'
         job.cancel_requested = False
         job.completed_at = datetime.now(UTC)
+        stop_encode_timing(job)
     elif job.status in {'starting', 'preflight', 'running'}:
         job.status = 'aborting'
         job.error_message = 'Aborting by user request'
         job.eta_seconds = None
         job.completed_at = None
+        if was_running:
+            stop_encode_timing(job)
     else:
         optimization_service.delete_workspace(settings, job_id)
         job.status = 'cancelled'
@@ -303,6 +312,7 @@ def abort_job(db: Session, job_id: int) -> Job | None:
         job.output_path = None
         job.completed_at = datetime.now(UTC)
         job.cancel_requested = False
+        stop_encode_timing(job)
     db.commit()
     db.refresh(job)
     return job
@@ -334,6 +344,7 @@ def discard_progress_and_requeue(db: Session, job_id: int) -> Job | None:
     job.cancel_requested = False
     job.completed_at = None
     job.retry_count = 0
+    reset_encode_timing(job, clear_duration=True)
     db.commit()
     db.refresh(job)
     return job
@@ -402,6 +413,7 @@ def abort_all_jobs(db: Session) -> list[Job]:
         job.error_message = 'Aborted by user'
         job.cancel_requested = False
         job.completed_at = now
+        stop_encode_timing(job)
 
     db.commit()
     for job in targets:
@@ -430,6 +442,7 @@ def cancel_all_queued_jobs(db: Session) -> list[Job]:
     for job in targets:
         job.status = 'cancelled'
         job.completed_at = now
+        stop_encode_timing(job)
     db.commit()
     for job in targets:
         db.refresh(job)

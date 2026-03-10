@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.core.security import coerce_workspace_root
 from app.models.job import Job
 from app.models.settings import Settings
+from app.services.job_timing_service import stop_encode_timing
 from app.services import optimization_service
 
 RECOVERABLE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
@@ -88,6 +89,7 @@ def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
     interrupted_job_ids: list[int] = []
 
     for job in jobs:
+        stop_encode_timing(job, include_idle_since_last_activity=False)
         recovered_jobs += 1
         interrupted_job_ids.append(job.id)
         job.status = 'interrupted'

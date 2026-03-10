@@ -47,6 +47,19 @@ def format_display_name(source_path: str) -> str:
     return f'{title} ({year})' if year else title
 
 
+def format_duration(seconds: int | None) -> str | None:
+    if seconds is None:
+        return None
+    total_seconds = max(0, int(seconds))
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours > 0:
+        return f'{hours}h {minutes}m {secs}s'
+    if minutes > 0:
+        return f'{minutes}m {secs}s'
+    return f'{secs}s'
+
+
 @dataclass(slots=True)
 class EmailEvent:
     subject: str
@@ -305,9 +318,12 @@ def enqueue_job_complete(job: Job) -> None:
         db.close()
 
     file_name = format_display_name(job.source_path)
+    duration_label = format_duration(job.encode_duration_seconds)
     body = (
+        'Job Type: Encode\n'
         f'Library: {library_name or "unknown"}\n'
         f'File: {file_name}\n'
+        f'Encode Time: {duration_label or "n/a"}\n'
         f'Status: Completed successfully.\n'
     )
     enqueue_email(subject='Optimizarr job complete', body=body)
@@ -328,6 +344,7 @@ def enqueue_download_job_complete(download_job: DownloadJob) -> None:
 
     file_name = format_display_name(download_job.source_file_path)
     body = (
+        'Job Type: Download\n'
         f'Library: {library_name or "unknown"}\n'
         f'File: {file_name}\n'
         f'Status: Download imported successfully.\n'
