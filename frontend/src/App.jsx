@@ -129,6 +129,11 @@ const QUALITY_PRESETS = {
 
 const TARGET_RESOLUTION_PRESETS = [2160, 1440, 1080, 720];
 const MIN_SOURCE_RESOLUTION_PRESETS = [2160, 1440, 1080];
+const CODEC_LABELS = {
+  h264: 'H.264',
+  hevc: 'HEVC',
+  av1: 'AV1',
+};
 
 function progressFromJob(job) {
   const normalized = job.status?.toLowerCase();
@@ -732,7 +737,18 @@ function validateLibraryDraft(draft, libraryEnabled) {
   if (draft.av1_fallback_codec === 'av1') {
     errors.av1_fallback_codec = 'AV1 fallback must be HEVC or H.264.';
   }
+  const availableDownloadFallbackCodecs = getAvailableDownloadFallbackCodecs(draft.download_codec, draft.codec);
+  if (draft.download_fallback_codec && !availableDownloadFallbackCodecs.includes(draft.download_fallback_codec)) {
+    errors.download_fallback_codec = 'Download fallback codec must be compatible with the selected download codec preference.';
+  }
   return errors;
+}
+
+function getAvailableDownloadFallbackCodecs(downloadCodec, encodeCodec) {
+  const primaryCodec = String(downloadCodec || encodeCodec || '').toLowerCase();
+  if (primaryCodec === 'av1') return ['hevc', 'h264'];
+  if (primaryCodec === 'hevc') return ['h264'];
+  return [];
 }
 
 function validateLibraryForm(draft) {
@@ -1746,6 +1762,8 @@ export default function App() {
       bitrate_mode: 'vbr_crf',
       crf: 23,
       minimum_source_resolution: 2160,
+      download_codec: null,
+      download_fallback_codec: null,
       ...selectedLibraryProfile,
     };
     if (nextDraft.bitrate_mode === 'vbr_crf' && !Number.isInteger(nextDraft.crf)) {
@@ -3076,7 +3094,14 @@ export default function App() {
                           const nextCodec = e.target.value;
                           const available = availableEncodersByCodec[nextCodec] ?? [];
                           const preferred = available.includes(prev.preferred_video_encoder) ? prev.preferred_video_encoder : 'auto';
-                          return { ...prev, codec: nextCodec, preferred_video_encoder: preferred };
+                          const availableFallbacks = getAvailableDownloadFallbackCodecs(prev.download_codec, nextCodec);
+                          const nextDownloadFallback = availableFallbacks.includes(prev.download_fallback_codec) ? prev.download_fallback_codec : null;
+                          return {
+                            ...prev,
+                            codec: nextCodec,
+                            preferred_video_encoder: preferred,
+                            download_fallback_codec: nextDownloadFallback,
+                          };
                         })}
                       >
                         <option value="h264">H.264</option>
@@ -3253,6 +3278,47 @@ export default function App() {
                     </div>
                     {profileDraft.download_enabled && (
                       <>
+                        <FormField label="Download Codec Preference" hint="Choose the codec Optimizarr should prefer when selecting download releases. Leave it on 'Use Encode Codec' to follow the main codec setting.">
+                          <SelectInput
+                            value={profileDraft.download_codec ?? ''}
+                            onChange={(e) => {
+                              const nextDownloadCodec = e.target.value || null;
+                              setProfileDraft((prev) => {
+                                const availableFallbacks = getAvailableDownloadFallbackCodecs(nextDownloadCodec, prev.codec);
+                                const nextFallback = availableFallbacks.includes(prev.download_fallback_codec) ? prev.download_fallback_codec : null;
+                                return {
+                                  ...prev,
+                                  download_codec: nextDownloadCodec,
+                                  download_fallback_codec: nextFallback,
+                                };
+                              });
+                            }}
+                          >
+                            <option value="">{`Use Encode Codec (${CODEC_LABELS[profileDraft.codec] ?? profileDraft.codec?.toUpperCase() ?? 'Auto'})`}</option>
+                            <option value="hevc">HEVC</option>
+                            <option value="h264">H.264</option>
+                            <option value="av1">AV1</option>
+                          </SelectInput>
+                        </FormField>
+                        <FormField
+                          label="Download Fallback Codec"
+                          hint="Optional fallback when no release matches the preferred download codec. The first item is a disabled placeholder; choose 'Disabled' to turn fallback off."
+                          error={profileErrors.download_fallback_codec}
+                        >
+                          <SelectInput
+                            value={profileDraft.download_fallback_codec ?? 'none'}
+                            onChange={(e) => setProfileDraft((prev) => ({ ...prev, download_fallback_codec: e.target.value === 'none' ? null : e.target.value }))}
+                            disabled={getAvailableDownloadFallbackCodecs(profileDraft.download_codec, profileDraft.codec).length === 0}
+                          >
+                            <option value="" disabled>Select fallback codec</option>
+                            <option value="none">Disabled</option>
+                            {getAvailableDownloadFallbackCodecs(profileDraft.download_codec, profileDraft.codec).map((codecName) => (
+                              <option key={codecName} value={codecName}>
+                                {CODEC_LABELS[codecName] ?? codecName.toUpperCase()}
+                              </option>
+                            ))}
+                          </SelectInput>
+                        </FormField>
                         <FormField label="Quality Profile" hint="Only accept releases matching this source type. 'Any' skips the quality filter and accepts whatever Prowlarr returns.">
                           <SelectInput
                             value={profileDraft.download_quality_profile ?? 'any'}

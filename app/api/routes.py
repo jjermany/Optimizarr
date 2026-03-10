@@ -1012,6 +1012,8 @@ class LibraryProfileResponse(BaseModel):
     plex_library_id: str | None = None
     download_enabled: bool = False
     download_timeout_minutes: int = 60
+    download_codec: CodecEnum | None = None
+    download_fallback_codec: CodecEnum | None = None
     download_quality_profile: DownloadQualityProfileEnum = DownloadQualityProfileEnum.any
 
     @classmethod
@@ -1040,6 +1042,8 @@ class LibraryProfileResponse(BaseModel):
             plex_library_id=profile.plex_library_id,
             download_enabled=getattr(profile, 'download_enabled', False),
             download_timeout_minutes=getattr(profile, 'download_timeout_minutes', 60),
+            download_codec=getattr(profile, 'download_codec', None),
+            download_fallback_codec=getattr(profile, 'download_fallback_codec', None),
             download_quality_profile=getattr(profile, 'download_quality_profile', DownloadQualityProfileEnum.any),
         )
 
@@ -1077,6 +1081,8 @@ class LibraryProfileUpdateRequest(BaseModel):
     plex_library_id: str | None = None
     download_enabled: bool | None = None
     download_timeout_minutes: int | None = Field(default=None, ge=1)
+    download_codec: CodecEnum | None = None
+    download_fallback_codec: CodecEnum | None = None
     download_quality_profile: DownloadQualityProfileEnum | None = None
 
     @field_validator('av1_fallback_codec')

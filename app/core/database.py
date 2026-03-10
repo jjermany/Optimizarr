@@ -236,6 +236,18 @@ def init_db() -> None:
         _add_column_if_missing(
             connection,
             'library_profiles',
+            'download_codec',
+            'download_codec VARCHAR(4)',
+        )
+        _add_column_if_missing(
+            connection,
+            'library_profiles',
+            'download_fallback_codec',
+            'download_fallback_codec VARCHAR(4)',
+        )
+        _add_column_if_missing(
+            connection,
+            'library_profiles',
             'download_quality_profile',
             "download_quality_profile VARCHAR(16) NOT NULL DEFAULT 'any'",
         )

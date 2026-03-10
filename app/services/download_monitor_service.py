@@ -947,13 +947,30 @@ def _profile_av1_fallback_codec_value(profile: LibraryProfile) -> str | None:
     return normalized or None
 
 
-def _allowed_profile_codecs(profile: LibraryProfile) -> set[str]:
-    target_codec = _profile_codec_value(profile)
+def _download_codec_value(profile: LibraryProfile) -> str:
+    raw = getattr(profile, 'download_codec', None)
+    value = getattr(raw, 'value', raw)
+    normalized = str(value or '').strip().lower()
+    return normalized or _profile_codec_value(profile)
+
+
+def _download_fallback_codec_value(profile: LibraryProfile) -> str | None:
+    raw = getattr(profile, 'download_fallback_codec', None)
+    value = getattr(raw, 'value', raw)
+    normalized = str(value or '').strip().lower()
+    return normalized or None
+
+
+def _allowed_download_codecs(profile: LibraryProfile) -> set[str]:
+    target_codec = _download_codec_value(profile)
     allowed = {target_codec}
     if target_codec == 'av1':
         fallback_codec = _profile_av1_fallback_codec_value(profile)
         if fallback_codec and fallback_codec != 'av1':
             allowed.add(fallback_codec)
+    download_fallback_codec = _download_fallback_codec_value(profile)
+    if download_fallback_codec and download_fallback_codec != target_codec:
+        allowed.add(download_fallback_codec)
     return allowed
 
 
@@ -1250,7 +1267,7 @@ def _quality_hint_tokens(profile: LibraryProfile) -> list[str]:
 
 
 def _codec_hint_tokens(profile: LibraryProfile) -> list[str]:
-    codec = _profile_codec_value(profile)
+    codec = _download_codec_value(profile)
     if codec == 'hevc':
         return ['HEVC']
     if codec == 'av1':
@@ -1518,7 +1535,7 @@ def _select_best_release(
     filtered_by_client = 0
     filtered_by_variant = 0
     filtered_by_codec = 0
-    allowed_codecs = _allowed_profile_codecs(profile)
+    allowed_codecs = _allowed_download_codecs(profile)
 
     for r in releases:
         title = r.get('title', '')
@@ -2971,7 +2988,7 @@ def _release_title_matches_profile(title: str, profile: LibraryProfile) -> bool:
     if tone_map_hdr and _is_hdr_release(title_lower):
         return False
 
-    allowed_codecs = _allowed_profile_codecs(profile)
+    allowed_codecs = _allowed_download_codecs(profile)
     detected_codecs = _detect_release_codecs(release)
     if detected_codecs and not (detected_codecs & allowed_codecs):
         return False

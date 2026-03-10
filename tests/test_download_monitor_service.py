@@ -39,6 +39,8 @@ def _profile(
     hdr_only: bool = False,
     codec: str = 'hevc',
     av1_fallback_codec: str = 'hevc',
+    download_codec: str | None = None,
+    download_fallback_codec: str | None = None,
 ):
     return SimpleNamespace(
         target_resolution=1080,
@@ -47,6 +49,8 @@ def _profile(
         hdr_only=hdr_only,
         codec=codec,
         av1_fallback_codec=av1_fallback_codec,
+        download_codec=download_codec,
+        download_fallback_codec=download_fallback_codec,
     )
 
 
@@ -597,9 +601,51 @@ def test_release_title_matches_profile_rejects_av1_when_codec_is_hevc():
     assert _release_title_matches_profile('Movie.2024.1080p.WEB-DL.AV1-GROUP', profile) is False
 
 
+def test_select_best_release_allows_configured_download_fallback_codec_for_hevc():
+    releases = [
+        {
+            'title': 'Movie.2024.1080p.WEB-DL.x264-GROUP',
+            'seeders': 400,
+            'size': 1200,
+            'protocol': 'torrent',
+        },
+        {
+            'title': 'Movie.2024.1080p.WEBRip.x264-OTHER',
+            'seeders': 900,
+            'size': 1100,
+            'protocol': 'torrent',
+        },
+    ]
+
+    selected = _select_best_release(
+        releases,
+        _profile(
+            DownloadQualityProfileEnum.web_dl,
+            codec='hevc',
+            download_codec='hevc',
+            download_fallback_codec='h264',
+        ),
+        qbt_enabled=True,
+        sab_enabled=True,
+    )
+
+    assert selected is not None
+    assert selected['title'] == 'Movie.2024.1080p.WEB-DL.x264-GROUP'
+
+
 def test_release_title_matches_profile_allows_configured_av1_fallback_codec():
     profile = _profile(DownloadQualityProfileEnum.web_dl, codec='av1', av1_fallback_codec='hevc')
     assert _release_title_matches_profile('Movie.2024.1080p.WEB-DL.x265-GROUP', profile) is True
+
+
+def test_release_title_matches_profile_allows_configured_download_fallback_codec():
+    profile = _profile(
+        DownloadQualityProfileEnum.web_dl,
+        codec='hevc',
+        download_codec='hevc',
+        download_fallback_codec='h264',
+    )
+    assert _release_title_matches_profile('Movie.2024.1080p.WEB-DL.x264-GROUP', profile) is True
 
 
 def test_release_title_matches_profile_rejects_non_configured_av1_fallback_codec():

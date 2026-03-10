@@ -789,7 +789,7 @@ def test_queue_file_if_eligible_download_mode_skips_when_source_already_moving(m
         assert create_calls == []
 
 
-def test_queue_file_if_eligible_download_mode_cancels_stale_placeholder_encode(monkeypatch, tmp_path):
+def test_queue_file_if_eligible_download_mode_removes_stale_placeholder_encode(monkeypatch, tmp_path):
     media_file = tmp_path / 'The Unholy Trinity (2025).mkv'
     media_file.write_text('content')
 
@@ -831,8 +831,8 @@ def test_queue_file_if_eligible_download_mode_cancels_stale_placeholder_encode(m
         monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
 
         result = discovery_service._queue_file_if_eligible(db, media_file, library, profile)
-        db.refresh(placeholder)
+        placeholder_after = db.query(Job).filter(Job.id == placeholder.id).first()
 
         assert result is None
         assert created_downloads == [str(media_file)]
-        assert placeholder.status == 'cancelled'
+        assert placeholder_after is None

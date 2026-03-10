@@ -479,8 +479,8 @@ def _match_library(media_file: Path, enabled_by_path: dict[str, Library]) -> Lib
 
 
 def _cancel_queued_encode_for_source(db: Session, source_path: str, library_id: int) -> None:
-    """Cancel any queued or paused encoding job for the given source so it
-    doesn't race against an incoming download job."""
+    """Remove any queued or paused placeholder encode job for the given source
+    so it doesn't briefly appear alongside the routed download job."""
     existing = (
         db.query(Job)
         .filter(
@@ -491,10 +491,10 @@ def _cancel_queued_encode_for_source(db: Session, source_path: str, library_id: 
         .first()
     )
     if existing:
-        from datetime import UTC, datetime as _dt
-        existing.status = 'cancelled'
-        existing.completed_at = _dt.now(UTC)
+        placeholder_job_id = existing.id
+        db.delete(existing)
         db.commit()
+        broker.publish_system_event('job_removed', job_id=placeholder_job_id)
 
 
 def _blocking_encode_job_exists_for_download_route(db: Session, source_path: str, library_id: int) -> bool:

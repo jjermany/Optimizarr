@@ -546,6 +546,8 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
                 'minimum_source_resolution': 3000,
                 'codec': 'av1',
                 'av1_fallback_codec': 'h264',
+                'download_codec': 'hevc',
+                'download_fallback_codec': 'h264',
                 'max_workers': 2,
                 'schedule_start_hour': 3,
                 'schedule_end_hour': 11,
@@ -559,6 +561,8 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
         assert updated_profile['minimum_source_resolution'] == 3000
         assert updated_profile['codec'] == 'av1'
         assert updated_profile['av1_fallback_codec'] == 'h264'
+        assert updated_profile['download_codec'] == 'hevc'
+        assert updated_profile['download_fallback_codec'] == 'h264'
         assert updated_profile['schedule_start_hour'] == 3
         assert updated_profile['schedule_end_hour'] == 11
         assert updated_profile['schedule_policy'] == 'pause_current'

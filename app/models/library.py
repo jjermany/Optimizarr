@@ -134,6 +134,8 @@ class LibraryProfile(Base):
     plex_library_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     download_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     download_timeout_minutes: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    download_codec: Mapped[CodecEnum | None] = mapped_column(SqlEnum(CodecEnum), nullable=True)
+    download_fallback_codec: Mapped[CodecEnum | None] = mapped_column(SqlEnum(CodecEnum), nullable=True)
     download_quality_profile: Mapped[DownloadQualityProfileEnum] = mapped_column(
         SqlEnum(DownloadQualityProfileEnum),
         default=DownloadQualityProfileEnum.any,
