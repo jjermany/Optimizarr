@@ -1566,6 +1566,8 @@ def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = Fa
         can_attempt_download,
         create_download_job,
         download_job_exists_for_source,
+        _publish_download_job,
+        _wake_event,
     )
 
     if not job or not job.library_id or not job.source_path:
@@ -1586,9 +1588,31 @@ def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = Fa
         logger.info('Promote encode->download skipped: download route unavailable for job %s', job.id)
         return False
 
-    if download_job_exists_for_source(db, job.source_path):
-        logger.info('Promote encode->download skipped: download job already exists for source %r', job.source_path)
+    active_blocker_statuses = {
+        DownloadJobStatus.pending.value,
+        DownloadJobStatus.searching.value,
+        DownloadJobStatus.downloading.value,
+        DownloadJobStatus.moving.value,
+        DownloadJobStatus.stalled.value,
+        DownloadJobStatus.importing.value,
+        DownloadJobStatus.complete.value,
+    }
+    reusable_statuses = {
+        DownloadJobStatus.waiting_encode.value,
+        DownloadJobStatus.fallback_queued.value,
+        DownloadJobStatus.failed.value,
+        DownloadJobStatus.timed_out.value,
+    }
+    existing_jobs = (
+        db.query(DownloadJob)
+        .filter(DownloadJob.source_file_path == job.source_path)
+        .order_by(DownloadJob.id.desc())
+        .all()
+    )
+    if any(dj.status in active_blocker_statuses for dj in existing_jobs):
+        logger.info('Promote encode->download skipped: active/complete download job already exists for source %r', job.source_path)
         return False
+    reusable_download_job = next((dj for dj in existing_jobs if dj.status in reusable_statuses), None)
 
     if cancel_job_first:
         from app.services.optimization_service import stop_active_ffmpeg, delete_workspace
@@ -1607,6 +1631,45 @@ def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = Fa
         job.completed_at = _dt.now(timezone.utc)
         stop_encode_timing(job)
         db.commit()
+
+    if reusable_download_job is not None:
+        from datetime import datetime as _dt
+
+        reusable_download_job.status = DownloadJobStatus.pending.value
+        reusable_download_job.error_message = None
+        reusable_download_job.search_query = None
+        reusable_download_job.release_name = None
+        reusable_download_job.indexer_id = None
+        reusable_download_job.indexer_name = None
+        reusable_download_job.selected_release_key = None
+        reusable_download_job.failed_release_keys = None
+        reusable_download_job.retry_count = 0
+        reusable_download_job.max_retries = 5
+        reusable_download_job.download_hash = None
+        reusable_download_job.client_type = None
+        reusable_download_job.progress_percent = 0
+        reusable_download_job.eta_seconds = None
+        reusable_download_job.download_speed_bps = None
+        reusable_download_job.downloaded_file_path = None
+        reusable_download_job.imported_file_path = None
+        reusable_download_job.encode_job_id = job.id
+        reusable_download_job.download_started_at = None
+        reusable_download_job.completed_at = None
+        reusable_download_job.created_at = _dt.now(timezone.utc)
+        db.commit()
+        db.refresh(reusable_download_job)
+        _publish_download_job(reusable_download_job)
+        _wake_event.set()
+        logger.info(
+            'Promote encode->download: reused terminal download job %s for source %r',
+            reusable_download_job.id,
+            job.source_path,
+        )
+        return True
+
+    if download_job_exists_for_source(db, job.source_path):
+        logger.info('Promote encode->download skipped: download job already exists for source %r', job.source_path)
+        return False
 
     create_download_job(db, job.source_path, library, profile)
     return True

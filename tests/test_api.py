@@ -1308,6 +1308,98 @@ def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):
     assert resumed_reasons == ['manual']
 
 
+def test_discard_progress_reuses_terminal_download_job_for_search_instead(monkeypatch):
+    from app.core.database import SessionLocal
+    from app.models.download_job import DownloadJob, DownloadJobStatus
+    from app.models.job import Job
+    from app.models.library import Library, LibraryProfile
+    from app.services import download_monitor_service, job_service, optimization_service
+
+    source_path = '/media/The Testament of Ann Lee (2025).mkv'
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(library_id=library.id, download_enabled=True)
+        db.add(profile)
+        db.commit()
+
+        encode_job = Job(
+            input_path=source_path,
+            library_id=library.id,
+            status='running',
+            progress_percent=42,
+        )
+        db.add(encode_job)
+        db.commit()
+        db.refresh(encode_job)
+
+        download_job = DownloadJob(
+            library_id=library.id,
+            source_file_path=source_path,
+            status=DownloadJobStatus.waiting_encode.value,
+            search_query='old query',
+            release_name='Old.Release.Name',
+            failed_release_keys='[\"guid:bad-guid\"]',
+            retry_count=3,
+            max_retries=5,
+            download_hash='deadbeef',
+            client_type='qbittorrent',
+            progress_percent=100,
+            encode_job_id=999,
+        )
+        db.add(download_job)
+        db.commit()
+        db.refresh(download_job)
+
+        encode_job_id = encode_job.id
+        download_job_id = download_job.id
+
+    monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
+    monkeypatch.setattr(download_monitor_service, 'create_download_job', lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('create_download_job should not be called')))
+    monkeypatch.setattr(job_service, '_get_settings', lambda _db: object())
+    monkeypatch.setattr(optimization_service, 'stop_active_ffmpeg', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(optimization_service, 'delete_workspace', lambda *_args, **_kwargs: None)
+    monkeypatch.setattr('app.services.job_timing_service.stop_encode_timing', lambda *_args, **_kwargs: None)
+
+    with TestClient(app) as client:
+        response = client.post(f'/jobs/{encode_job_id}/discard-progress')
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload['status'] == 'cancelled'
+
+    with SessionLocal() as db:
+        updated_encode = db.query(Job).filter(Job.id == encode_job_id).first()
+        updated_download = db.query(DownloadJob).filter(DownloadJob.id == download_job_id).first()
+
+        assert updated_encode is not None
+        assert updated_encode.status == 'cancelled'
+        assert updated_encode.progress_percent == 0
+        assert updated_encode.completed_at is not None
+
+        assert updated_download is not None
+        assert updated_download.status == DownloadJobStatus.pending.value
+        assert updated_download.search_query is None
+        assert updated_download.release_name is None
+        assert updated_download.failed_release_keys is None
+        assert updated_download.retry_count == 0
+        assert updated_download.download_hash is None
+        assert updated_download.client_type is None
+        assert updated_download.progress_percent == 0
+        assert updated_download.downloaded_file_path is None
+        assert updated_download.imported_file_path is None
+        assert updated_download.encode_job_id == encode_job_id
+
+
 def test_recovery_endpoint_marks_interrupted_requeues_and_cleans_workspace(tmp_path):
     from app.core.database import SessionLocal
     from app.models.job import Job
