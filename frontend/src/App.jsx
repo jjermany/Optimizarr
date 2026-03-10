@@ -782,6 +782,23 @@ function SectionTitle({ children }) {
   );
 }
 
+function CollapsibleSection({ title, open, onToggle, children, divider = false }) {
+  return (
+    <div>
+      {divider && <hr className="mb-5 border-slate-800" />}
+      <button
+        type="button"
+        onClick={onToggle}
+        className="mb-4 flex w-full items-center justify-between rounded-xl border border-slate-800/70 bg-slate-950/25 px-4 py-3 text-left transition-colors hover:bg-slate-950/40"
+      >
+        <SectionTitle>{title}</SectionTitle>
+        <span className="text-sm text-slate-400">{open ? 'Hide' : 'Show'}</span>
+      </button>
+      {open && children}
+    </div>
+  );
+}
+
 function FormField({ label, hint, error, children, span2 = false }) {
   return (
     <label className={`flex flex-col gap-1.5 ${span2 ? 'md:col-span-2' : ''}`}>
@@ -1146,6 +1163,12 @@ export default function App() {
   const [dirBrowser, setDirBrowser] = useState({ open: false, target: null, initialPath: null });
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
+  const [profileSectionsOpen, setProfileSectionsOpen] = useState({
+    details: true,
+    processing: true,
+    plex: false,
+    download: true,
+  });
   const [targetResolutionCustom, setTargetResolutionCustom] = useState(false);
   const [minimumResolutionCustom, setMinimumResolutionCustom] = useState(false);
   const [profileErrors, setProfileErrors] = useState({});
@@ -1774,6 +1797,15 @@ export default function App() {
     setMinimumResolutionCustom(!MIN_SOURCE_RESOLUTION_PRESETS.includes(Number(nextDraft.minimum_source_resolution)));
     setProfileErrors({});
   }, [selectedLibraryId, selectedLibraryProfile]);
+
+  useEffect(() => {
+    setProfileSectionsOpen({
+      details: true,
+      processing: true,
+      plex: false,
+      download: true,
+    });
+  }, [selectedLibraryId]);
 
   useEffect(() => {
     if (!accountSettings) return;
@@ -2939,9 +2971,11 @@ export default function App() {
                 <p className="text-sm text-slate-400">Select a library to edit its encoding profile.</p>
               ) : (
                 <div className="space-y-5">
-                  {/* Library details */}
-                  <div>
-                    <SectionTitle>Library Details</SectionTitle>
+                  <CollapsibleSection
+                    title="Library Details"
+                    open={profileSectionsOpen.details}
+                    onToggle={() => setProfileSectionsOpen((prev) => ({ ...prev, details: !prev.details }))}
+                  >
                     <div className="space-y-3">
                       <FormField label="Name">
                         <TextInput
@@ -2979,13 +3013,14 @@ export default function App() {
                         </Btn>
                       </div>
                     </div>
-                  </div>
+                  </CollapsibleSection>
 
-                  <hr className="border-slate-800" />
-
-                  {/* Quality preset */}
-                  <div>
-                    <SectionTitle>Encoding Profile</SectionTitle>
+                  <CollapsibleSection
+                    title="Encoding Profile"
+                    open={profileSectionsOpen.processing}
+                    onToggle={() => setProfileSectionsOpen((prev) => ({ ...prev, processing: !prev.processing }))}
+                    divider
+                  >
                     <FormField label="Quality Preset" hint="Start with a preset, then fine-tune below.">
                       <SelectInput
                         value={selectedPreset}
@@ -3001,7 +3036,7 @@ export default function App() {
                         ))}
                       </SelectInput>
                     </FormField>
-                  </div>
+                  
 
                   <div className="grid gap-4 md:grid-cols-2">
                     {/* Library enabled */}
@@ -3238,11 +3273,15 @@ export default function App() {
                       </>
                     )}
                   </div>
+                  </CollapsibleSection>
 
                   {plexSettings?.enabled && (
-                    <div>
-                      <hr className="mb-5 border-slate-800" />
-                      <SectionTitle>Plex Integration</SectionTitle>
+                    <CollapsibleSection
+                      title="Plex Integration"
+                      open={profileSectionsOpen.plex}
+                      onToggle={() => setProfileSectionsOpen((prev) => ({ ...prev, plex: !prev.plex }))}
+                      divider
+                    >
                       <FormField
                         label="Plex Library Section"
                         hint={plexLibraries.length === 0 ? 'Go to Settings → Plex Integration and click Load Sections to populate this list.' : 'Optimizarr will scan this Plex section each time a file from this library finishes encoding.'}
@@ -3259,13 +3298,15 @@ export default function App() {
                           ))}
                         </SelectInput>
                       </FormField>
-                    </div>
+                    </CollapsibleSection>
                   )}
 
-                  {/* Download Mode */}
-                  <div>
-                    <hr className="mb-5 border-slate-800" />
-                    <SectionTitle>Download Mode</SectionTitle>
+                  <CollapsibleSection
+                    title="Download Mode"
+                    open={profileSectionsOpen.download}
+                    onToggle={() => setProfileSectionsOpen((prev) => ({ ...prev, download: !prev.download }))}
+                    divider
+                  >
                     <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
                       <div>
                         <p className="text-sm font-medium text-slate-200">Enable Download Mode</p>
@@ -3342,7 +3383,7 @@ export default function App() {
                         </FormField>
                       </>
                     )}
-                  </div>
+                  </CollapsibleSection>
 
                   <Btn variant="primary" size="lg" disabled={savingProfile} onClick={handleSaveLibraryProfile} className="w-full sm:w-auto">
                     {savingProfile ? 'Saving…' : 'Save Profile'}
