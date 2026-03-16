@@ -378,7 +378,12 @@ def auth_status(request: Request, db: Session = Depends(get_db)) -> AuthStatusRe
 
     user = _session_user_from_request(db, request)
     if user is None:
-        return AuthStatusResponse(setup_required=False, authenticated=False)
+        configured_user = db.query(AdminUser).first()
+        return AuthStatusResponse(
+            setup_required=False,
+            authenticated=False,
+            two_factor_enabled=bool(configured_user.two_factor_enabled) if configured_user is not None else False,
+        )
     return AuthStatusResponse(
         setup_required=False,
         authenticated=True,

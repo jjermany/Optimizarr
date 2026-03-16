@@ -2744,13 +2744,20 @@ export default function App() {
                   autoComplete="current-password"
                 />
               </FormField>
-              <FormField label="2FA Code (if enabled)">
-                <TextInput
-                  value={loginForm.otpCode}
-                  onChange={(event) => setLoginForm((prev) => ({ ...prev, otpCode: event.target.value }))}
-                  inputMode="numeric"
-                />
-              </FormField>
+              {authStatus.two_factor_enabled && (
+                <>
+                  <FormField label="2FA Code">
+                    <TextInput
+                      value={loginForm.otpCode}
+                      onChange={(event) => setLoginForm((prev) => ({ ...prev, otpCode: event.target.value }))}
+                      inputMode="numeric"
+                    />
+                  </FormField>
+                  <p className="text-xs text-slate-400">
+                    2FA is enabled for this account, so a valid 6-digit authenticator code is required.
+                  </p>
+                </>
+              )}
               {loginError && <p className="text-sm text-red-400">{loginError}</p>}
               <Btn variant="primary" size="lg" className="w-full" disabled={loginBusy} type="submit">
                 {loginBusy ? 'Signing In…' : 'Sign In'}
