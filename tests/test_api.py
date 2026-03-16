@@ -358,6 +358,12 @@ def test_auth_login_requires_totp_when_enabled():
         wrong_otp = client.post('/auth/login', json={'username': 'admin', 'password': 'VeryStrongPassword123', 'otp_code': '000000'})
         assert wrong_otp.status_code == 401
 
+        non_digit_otp = client.post(
+            '/auth/login',
+            json={'username': 'admin', 'password': 'VeryStrongPassword123', 'otp_code': 'abc123'},
+        )
+        assert non_digit_otp.status_code == 401
+
         ok = client.post(
             '/auth/login',
             json={

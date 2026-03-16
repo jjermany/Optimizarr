@@ -84,8 +84,8 @@ def _totp_code(secret: str, for_time: int) -> str:
 def verify_totp_code(secret: str, code: str, *, at_time: int | None = None, window: int = 1) -> bool:
     if not secret:
         return False
-    normalized_code = ''.join(ch for ch in code if ch.isdigit())
-    if len(normalized_code) != TOTP_DIGITS:
+    normalized_code = code.strip()
+    if len(normalized_code) != TOTP_DIGITS or not normalized_code.isdigit():
         return False
 
     current_time = int(at_time if at_time is not None else datetime.now(tz=timezone.utc).timestamp())
