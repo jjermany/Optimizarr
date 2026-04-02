@@ -134,6 +134,8 @@ def test_metrics_endpoint(monkeypatch):
 
 
 def test_get_and_update_settings():
+    workspace_root = str(Path(os.environ['OPTIMIZARR_WORKSPACE_ROOT_BASE']) / 'optimizarr-cache-settings' / 'workspaces')
+
     with TestClient(app) as client:
         get_response = client.get('/settings')
         assert get_response.status_code == 200
@@ -159,7 +161,7 @@ def test_get_and_update_settings():
                 'discovery_method': 'watcher',
                 'discovery_interval_minutes': 15,
                 'queue_sort': 'newest',
-                'workspace_root': '/tmp/optimizarr-cache-settings/workspaces',
+                'workspace_root': workspace_root,
                 'scan_probe_workers': 9999,
                 'requeue_interrupted_jobs': False,
                 'cleanup_workspaces_on_startup': False,
@@ -174,7 +176,7 @@ def test_get_and_update_settings():
         assert updated['discovery_method'] == 'watcher'
         assert updated['discovery_interval_minutes'] == 15
         assert updated['queue_sort'] == 'newest'
-        assert updated['workspace_root'] == '/tmp/optimizarr-cache-settings/workspaces'
+        assert updated['workspace_root'] == workspace_root
         assert updated['scan_probe_workers'] == max(1, os.cpu_count() or 1)
         assert updated['requeue_interrupted_jobs'] is False
         assert updated['cleanup_workspaces_on_startup'] is False
@@ -624,8 +626,10 @@ def test_fs_dirs_stays_within_media_root(monkeypatch, tmp_path):
 
 
 def test_update_settings_rejects_workspace_root_outside_allowed_base():
+    outside_root = str(Path(os.environ['OPTIMIZARR_WORKSPACE_ROOT_BASE']).resolve().parent / 'optimizarr-workspaces-outside-base')
+
     with TestClient(app) as client:
-        response = client.post('/settings', json={'workspace_root': '/etc/optimizarr-workspaces'})
+        response = client.post('/settings', json={'workspace_root': outside_root})
 
     assert response.status_code == 422
     assert 'within' in response.text.lower()
@@ -1242,10 +1246,11 @@ def test_scan_endpoints_pause_queue_before_queueing(monkeypatch, tmp_path):
     monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
 
     paused_reasons = []
+    resumed_reasons = []
     from app.workers import queue as worker_queue
 
     monkeypatch.setattr(worker_queue, 'pause_queue', lambda reason='manual': paused_reasons.append(reason))
-    monkeypatch.setattr(worker_queue, 'resume_queue', lambda reason='manual': (_ for _ in ()).throw(AssertionError('scan endpoints should not auto-resume queue')))
+    monkeypatch.setattr(worker_queue, 'resume_queue', lambda reason='manual': resumed_reasons.append(reason))
     monkeypatch.setattr(routes, 'scan_enabled_libraries', lambda db: [])
     monkeypatch.setattr(routes, 'scan_library', lambda db, library, include_disabled=False: [])
 
@@ -1261,6 +1266,7 @@ def test_scan_endpoints_pause_queue_before_queueing(monkeypatch, tmp_path):
         assert scan_all.status_code == 200
 
     assert paused_reasons == ['manual_scan', 'manual_scan']
+    assert resumed_reasons == ['manual_scan', 'manual_scan']
 
 
 def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):

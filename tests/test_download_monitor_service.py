@@ -3254,6 +3254,8 @@ def test_import_file_sab_falls_back_to_copy_when_rename_hits_cross_device(monkey
 def test_import_file_sends_completion_notification(monkeypatch, tmp_path):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_job_complete = True
         db.query(LibraryProfile).delete()
         db.query(Library).delete()
         db.commit()
@@ -3366,6 +3368,8 @@ def test_import_file_sab_no_video_retries_and_purges_completed_directory(monkeyp
 def test_mark_failed_sends_failure_notification(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_job_failed = True
         db.query(LibraryProfile).delete()
         db.query(Library).delete()
         db.commit()

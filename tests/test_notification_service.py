@@ -110,6 +110,11 @@ def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
     queued = []
     monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
 
+    with SessionLocal() as db:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_batch_complete = True
+        db.commit()
+
     notification_service._batches.clear()
     notification_service.register_scan_batch([42], library_name='Movies')
 

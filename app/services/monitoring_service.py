@@ -164,7 +164,13 @@ def _get_intel_gpu_metrics() -> dict[str, float] | None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            ready, _, _ = select.select([process.stdout], [], [], remaining)
+            try:
+                ready, _, _ = select.select([process.stdout], [], [], remaining)
+            except (OSError, ValueError):
+                # Windows select() only supports sockets, but the tests and the
+                # real intel_gpu_top probe both use pipe-backed stdout.
+                raw_stdout = process.stdout.read()
+                break
             if not ready:
                 break
             line = process.stdout.readline()
