@@ -2115,6 +2115,67 @@ def test_check_download_progress_missing_client_item_retries_without_fallback(mo
         assert fallback_calls == []
 
 
+def test_check_download_progress_missing_qbit_item_recovers_existing_torrent_before_retry(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Missing.But.Recoverable.Client.Item.mkv',
+            release_name='Missing.But.Recoverable.Client.Item.2025.1080p.WEB-DL',
+            download_hash='missinghash',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'download_speed_bps': None,
+            'is_complete': False,
+            'is_moving': False,
+            'is_stalled': False,
+            'save_path': None,
+            'not_found': True,
+        })
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            'hash': 'recoveredhash',
+            'name': 'Missing.But.Recoverable.Client.Item.2025.1080p.WEB-DL',
+            'added_on': 999,
+            'progress': 0.42,
+            'eta': 120,
+            'dlspeed': 2048,
+            'state': 'downloading',
+            'content_path': '/downloads/recovered',
+            'tags': 'optimizarr',
+        }])
+
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.download_hash == 'recoveredhash'
+        assert dj.retry_count == 0
+        assert dj.error_message is None
+        assert fallback_calls == []
+
+
 def test_check_download_progress_marks_moving_and_preserves_nonzero_progress(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
@@ -2548,8 +2609,8 @@ def test_do_search_uses_tv_category_when_source_looks_like_episode(monkeypatch):
         _do_search(db, dj, prowlarr_stub, qbt, sab)
 
         assert search_calls == [
-            {'query': 'Severance 1080p {season:1}{episode:3}', 'categories': [5000], 'search_type': 'tvsearch'},
-            {'query': 'Severance 1080p HEVC {season:1}{episode:3}', 'categories': [5000], 'search_type': 'tvsearch'},
+            {'query': 'Severance 1080p {Season:1}{Episode:3}', 'categories': [5000], 'search_type': 'tvsearch'},
+            {'query': 'Severance 1080p HEVC {Season:1}{Episode:3}', 'categories': [5000], 'search_type': 'tvsearch'},
             {'query': 'Severance S01E03 1080p', 'categories': [5000], 'search_type': None},
             {'query': 'Severance S01E03 1080p HEVC', 'categories': [5000], 'search_type': None},
         ]
@@ -2942,6 +3003,72 @@ def test_do_search_excludes_usenet_when_protocol_marker_present(monkeypatch):
         assert dj.status == DownloadJobStatus.downloading.value
 
 
+def test_do_search_reuses_existing_qbit_torrent_by_hash_instead_of_grabbing(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Reattach.Existing.Torrent.mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+
+        release = {
+            'title': 'Reattach.Existing.Torrent.2025.1080p.WEB-DL',
+            'seeders': 11,
+            'size': 1000,
+            'protocol': 'torrent',
+            'guid': 'guid-1',
+            'indexerId': 1,
+            'infoHash': '0123456789abcdef0123456789abcdef01234567',
+        }
+        monkeypatch.setattr(prowlarr_service, 'search', lambda *_args, **_kw: [release])
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
+
+        grab_calls = []
+        monkeypatch.setattr(
+            prowlarr_service,
+            'grab',
+            lambda *_args, **_kwargs: (grab_calls.append(True) or {'downloadId': 'should-not-happen'}),
+        )
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            'hash': '0123456789abcdef0123456789abcdef01234567',
+            'name': 'Existing qBit torrent',
+            'added_on': 1234,
+            'tags': '',
+        }])
+        tag_calls = []
+        monkeypatch.setattr(
+            download_client_service,
+            'tag_qbt_torrent',
+            lambda _qbt, torrent_hash, max_attempts=5: tag_calls.append((torrent_hash, max_attempts)) or True,
+        )
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+        db.refresh(dj)
+
+        assert grab_calls == []
+        assert dj.client_type == 'qbittorrent'
+        assert dj.download_hash == '0123456789abcdef0123456789abcdef01234567'
+        assert dj.release_name == 'Reattach.Existing.Torrent.2025.1080p.WEB-DL'
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert tag_calls and tag_calls[0][0] == '0123456789abcdef0123456789abcdef01234567'
+
+
 def test_do_search_rejects_unrelated_episode_title_for_single_word_movie(monkeypatch):
     from app.services import prowlarr_service
     from app.services.download_monitor_service import _do_search
@@ -3172,7 +3299,7 @@ def test_import_file_sends_completion_notification(monkeypatch, tmp_path):
         assert queued == [
             (
                 'Optimizarr job complete',
-                'Library: Movies\nFile: The Gorge (2025)\nStatus: Download imported successfully.\n',
+                'Job Type: Download\nLibrary: Movies\nFile: The Gorge (2025)\nStatus: Download imported successfully.\n',
             )
         ]
 

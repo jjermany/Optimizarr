@@ -1684,6 +1684,39 @@ def _extract_hash_from_release(release: dict) -> str:
     return ''
 
 
+def _find_existing_qbt_torrent_for_release(release: dict, torrents: list[dict]) -> dict | None:
+    """Return an already-present qBit torrent for a release when safely identifiable.
+
+    Exact infohash matches are preferred because they are stable across retries
+    and avoid duplicate grabs of the same underlying torrent. As a fallback,
+    reuse an exact-name match only when that torrent is already tagged by
+    Optimizarr, which keeps the match conservative and avoids attaching to an
+    unrelated manually-added torrent with the same title.
+    """
+    if not torrents:
+        return None
+
+    release_hash = _extract_hash_from_release(release)
+    if release_hash:
+        release_hash = release_hash.lower()
+        for torrent in torrents:
+            torrent_hash = str(torrent.get('hash') or '').strip().lower()
+            if torrent_hash and torrent_hash == release_hash:
+                return torrent
+
+    release_title = str(release.get('title') or '').strip()
+    if not release_title:
+        return None
+
+    exact_tagged_matches = [
+        torrent for torrent in torrents
+        if str(torrent.get('name') or '').strip() == release_title and _is_optimizarr_tagged(torrent)
+    ]
+    if not exact_tagged_matches:
+        return None
+    return max(exact_tagged_matches, key=lambda torrent: int(torrent.get('added_on') or 0))
+
+
 def _extract_year_from_path(path: str | None) -> int | None:
     if not path:
         return None
@@ -2152,15 +2185,57 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         dj.search_query = matched_query
         db.commit()
 
+    release_title = str(best.get('title') or '').strip()
+    indexer_id_raw = best.get('indexerId')
+    try:
+        indexer_id = int(indexer_id_raw) if indexer_id_raw is not None else None
+    except (TypeError, ValueError):
+        indexer_id = None
+    indexer_name = str(best.get('_indexer_name') or best.get('indexer') or '').strip() or None
+    selected_release_key = _release_selection_key_from_release(best)
+
     # Safety check: refuse to grab if another download is already active.
     # Guards against any state inconsistency that slips past the outer check.
     if db.query(DownloadJob).filter(DownloadJob.status.in_([
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.moving.value,
         DownloadJobStatus.importing.value,
-    ])).count() > 0:
+        ])).count() > 0:
         logger.warning('Download job %s: active download detected before grab; deferring', dj.id)
         return
+
+    if str(best.get('protocol') or '').strip().lower() == 'torrent' and qbt.enabled:
+        existing_torrent = _find_existing_qbt_torrent_for_release(
+            best,
+            download_client_service.get_all_qbt_torrents(qbt),
+        )
+        if existing_torrent is not None:
+            existing_hash = str(existing_torrent.get('hash') or '').strip().lower()
+            if existing_hash:
+                logger.warning(
+                    'Download job %s: reusing existing qBit torrent hash=%s for release %r instead of re-grabbing',
+                    dj.id,
+                    existing_hash,
+                    release_title,
+                )
+                dj.indexer_id = indexer_id
+                dj.indexer_name = indexer_name
+                dj.release_name = release_title or None
+                dj.selected_release_key = selected_release_key
+                dj.download_hash = existing_hash
+                dj.client_type = 'qbittorrent'
+                dj.status = DownloadJobStatus.downloading.value
+                dj.error_message = None
+                dj.download_started_at = dj.download_started_at or datetime.now(timezone.utc)
+                dj.progress_percent = 0
+                dj.eta_seconds = None
+                dj.download_speed_bps = None
+                db.commit()
+                db.refresh(dj)
+                _publish_download_job(dj)
+                if download_client_service.tag_qbt_torrent(qbt, existing_hash):
+                    _tagged_job_ids.add(dj.id)
+                return
 
     logger.info(
         'Download job %s: grabbing release %r (protocol=%s)',
@@ -2197,15 +2272,10 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     # Store the release name (torrent name as reported by Prowlarr) so that
     # hash recovery can find the torrent in qBit by exact name instead of
     # relying on imprecise timestamp filtering.
-    release_title = best.get('title', '') or ''
-    indexer_id_raw = best.get('indexerId')
-    try:
-        dj.indexer_id = int(indexer_id_raw) if indexer_id_raw is not None else None
-    except (TypeError, ValueError):
-        dj.indexer_id = None
-    dj.indexer_name = str(best.get('_indexer_name') or best.get('indexer') or '').strip() or None
-    dj.release_name = release_title
-    dj.selected_release_key = _release_selection_key_from_release(best)
+    dj.indexer_id = indexer_id
+    dj.indexer_name = indexer_name
+    dj.release_name = release_title or None
+    dj.selected_release_key = selected_release_key
 
     if not download_hash:
         # Prowlarr grab succeeded but returned no client download id/hash.
@@ -2456,15 +2526,40 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     # If the tracked item was removed/not found in the client, retry by
     # searching for another release instead of immediately falling back.
     if status.get('not_found'):
-        _retry_failed_download(
-            db,
-            dj,
-            library,
-            profile,
-            reason=f'Removed from {client_type}',
-            failed_release_key=_release_selection_key_from_job(dj),
-        )
-        return
+        if client_type == 'qbittorrent' and qbt.enabled:
+            all_torrents = download_client_service.get_all_qbt_torrents(qbt)
+            replacement = _find_qbt_torrent_for_release(dj, all_torrents)
+            if replacement and replacement.get('hash'):
+                replacement_hash = str(replacement.get('hash') or '').strip().lower()
+                logger.warning(
+                    'Download job %s: qBit lookup missed torrent %s; recovered existing torrent %s via release match',
+                    dj.id,
+                    dj.download_hash,
+                    replacement_hash,
+                )
+                dj.download_hash = replacement_hash
+                db.commit()
+                db.refresh(dj)
+                status = {
+                    'progress_percent': int((replacement.get('progress', 0) or 0) * 100),
+                    'eta_seconds': replacement.get('eta'),
+                    'download_speed_bps': replacement.get('dlspeed'),
+                    'is_complete': replacement.get('state', '') in download_client_service._QBT_COMPLETE_STATES,
+                    'is_moving': replacement.get('state', '') in download_client_service._QBT_MOVING_STATES,
+                    'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
+                    'save_path': replacement.get('content_path') or replacement.get('save_path'),
+                    'not_found': False,
+                }
+        if status.get('not_found'):
+            _retry_failed_download(
+                db,
+                dj,
+                library,
+                profile,
+                reason=f'Removed from {client_type}',
+                failed_release_key=_release_selection_key_from_job(dj),
+            )
+            return
     progress = status.get('progress_percent', 0)
     try:
         progress = int(float(progress))
