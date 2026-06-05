@@ -3054,6 +3054,37 @@ def _find_qbt_torrent_for_release(dj: DownloadJob, torrents: list[dict]) -> dict
                 chosen.get('name'),
             )
             return chosen
+
+    token_sources = [str(dj.release_name or '')]
+    source_title, _source_year = _extract_source_title_and_year(dj.source_file_path)
+    if source_title:
+        token_sources.append(source_title)
+
+    token_matches: list[dict] = []
+    quality_tokens = {'480p', '720p', '1080p', '2160p', '4k', 'h264', 'h265', 'x264', 'x265', 'hevc', 'av1'}
+    for token_source in token_sources:
+        source_tokens = {
+            token for token in _title_tokens_for_matching(token_source)
+            if token not in quality_tokens and not re.fullmatch(r'(?:19|20)\d{2}', token)
+        }
+        if len(source_tokens) < 2:
+            continue
+        for torrent in torrents:
+            torrent_tokens = set(_title_tokens_for_matching(str(torrent.get('name') or '')))
+            if source_tokens.issubset(torrent_tokens):
+                token_matches.append(torrent)
+
+    if token_matches:
+        chosen = max(token_matches, key=lambda t: (1 if _is_optimizarr_tagged(t) else 0, t.get('added_on', 0)))
+        logger.info(
+            'Download job %s match: title-token match (%d candidate(s)); picked hash=%s name=%r',
+            dj.id,
+            len(token_matches),
+            str(chosen.get('hash', '')).lower(),
+            chosen.get('name'),
+        )
+        return chosen
+
     logger.info(
         'Download job %s match: no qBit name matched normalized keys=%s (release=%r source=%r)',
         dj.id,

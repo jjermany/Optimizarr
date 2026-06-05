@@ -999,6 +999,70 @@ def test_check_download_progress_recovers_qbit_hash_using_source_when_release_na
 # Search query construction tests
 # ─────────────────────────────────────────────────────────────────────────────
 
+def test_check_download_progress_recovers_completed_qbit_torrent_from_sparse_release_tokens(monkeypatch):
+    imported_paths = []
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Animal Farm (2026).mkv',
+            release_name='Animal Farm 1080p',
+            download_hash='stalehash',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            progress_percent=0,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'download_speed_bps': None,
+            'is_complete': False,
+            'is_moving': False,
+            'is_stalled': False,
+            'save_path': None,
+            'not_found': True,
+        })
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            'name': 'Animal.Farm.2025.1080p.AMZN.WEB-DL.DDP5.1.Atmos.H.264-SCOPE',
+            'hash': 'animalhash',
+            'state': 'seeding',
+            'progress': 1.0,
+            'eta': 0,
+            'dlspeed': 0,
+            'content_path': '/downloads/Animal.Farm.2025.1080p.AMZN.WEB-DL.DDP5.1.Atmos.H.264-SCOPE',
+            'added_on': 1,
+            'tags': 'optimizarr',
+        }])
+        monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kwargs: True)
+
+        def _fake_import(_db, _dj, save_path, *_args):
+            imported_paths.append(save_path)
+            _dj.status = DownloadJobStatus.complete.value
+            _db.commit()
+
+        monkeypatch.setattr('app.services.download_monitor_service._import_file', _fake_import)
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.download_hash == 'animalhash'
+        assert dj.progress_percent == 100
+        assert imported_paths == ['/downloads/Animal.Farm.2025.1080p.AMZN.WEB-DL.DDP5.1.Atmos.H.264-SCOPE']
+
+
 def _full_profile(quality: DownloadQualityProfileEnum):
     """A profile stub with all fields _build_search_query reads."""
     return SimpleNamespace(
