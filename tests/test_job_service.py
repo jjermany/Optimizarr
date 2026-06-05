@@ -110,6 +110,93 @@ def test_create_job_reuses_existing_source_and_enriches_missing_metadata():
         assert db.query(Job).filter(Job.input_path == '/media/movies/shared-title.mkv').count() == 1
 
 
+def test_create_job_reuses_active_movie_identity_for_upgraded_release_filename():
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        existing = Job(
+            input_path='/media/movies/Example Movie (2026)/Example Movie (2026) [WEBDL-2160p x265].mkv',
+            status='queued',
+            library_id=library.id,
+        )
+        db.add(existing)
+        db.commit()
+        db.refresh(existing)
+
+        reused = create_job(
+            db,
+            '/media/movies/Example Movie (2026)/Example Movie (2026) [Bluray-2160p Remux].mkv',
+            library_id=library.id,
+        )
+
+        assert reused.id == existing.id
+        assert db.query(Job).filter(Job.library_id == library.id).count() == 1
+
+
+def test_job_exists_for_source_dedupes_active_tv_episode_upgrade_by_identity():
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='TV', path='/media/tv', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        existing = Job(
+            input_path='/media/tv/Example Show/Season 02/Example Show - S02E03 - Old HDTV.mkv',
+            status='running',
+            library_id=library.id,
+        )
+        db.add(existing)
+        db.commit()
+
+        assert job_exists_for_source(
+            db,
+            '/media/tv/Example Show/Season 02/Example Show - S02E03 - New WEB-DL.mkv',
+            library_id=library.id,
+        ) is True
+
+
+def test_job_exists_for_source_does_not_block_upgrade_from_completed_history(tmp_path):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        output_path = tmp_path / 'Example Movie (2026)-1080p.mkv'
+        output_path.write_text('encoded')
+        db.add(
+            Job(
+                input_path='/media/movies/Example Movie (2026)/Example Movie (2026) [WEBDL-2160p x265].mkv',
+                status='complete',
+                output_path=str(output_path),
+                library_id=library.id,
+            )
+        )
+        db.commit()
+
+        assert job_exists_for_source(
+            db,
+            '/media/movies/Example Movie (2026)/Example Movie (2026) [Bluray-2160p Remux].mkv',
+            library_id=library.id,
+        ) is False
+
+
 def test_prune_job_history_removes_stale_terminal_jobs():
     with SessionLocal() as db:
         stale_terminal = Job(

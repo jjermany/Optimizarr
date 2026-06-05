@@ -1,6 +1,7 @@
 from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
+import re
 
 from sqlalchemy.orm import Session
 
@@ -52,7 +53,7 @@ def create_job(
     source_is_hdr: bool | None = None,
     status: str = 'queued',
 ) -> Job:
-    existing = get_existing_job_for_source(db, source_path)
+    existing = get_existing_job_for_source(db, source_path, library_id=library_id)
     if existing is not None:
         changed = False
         if existing.library_id is None and library_id is not None:
@@ -109,10 +110,63 @@ def refresh_queued_job_snapshots(db: Session, library_id: int, profile: LibraryP
 
 
 def job_exists_for_source(db: Session, source_path: str, library_id: int | None = None) -> bool:
-    return get_existing_job_for_source(db, source_path) is not None
+    return get_existing_job_for_source(db, source_path, library_id=library_id) is not None
 
 
-def get_existing_job_for_source(db: Session, source_path: str) -> Job | None:
+def _path_parts(path_value: str) -> list[str]:
+    return [part for part in re.split(r'[\\/]+', str(path_value or '').strip()) if part]
+
+
+def _normalize_identity_text(value: str) -> str:
+    return re.sub(r'\s+', ' ', re.sub(r'[^a-zA-Z0-9]+', ' ', value)).strip().lower()
+
+
+def _strip_release_suffix(value: str) -> str:
+    stripped = re.sub(r'\[[^\]]+\]', ' ', value)
+    stripped = re.sub(r'\([^\)]*(?:2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|av1|web|bluray|remux)[^\)]*\)', ' ', stripped, flags=re.IGNORECASE)
+    return stripped.replace('.', ' ').replace('_', ' ').strip()
+
+
+def media_identity_key(source_path: str) -> str | None:
+    parts = _path_parts(source_path)
+    if not parts:
+        return None
+
+    stem = re.sub(r'\.[^.\\/]+$', '', parts[-1])
+    searchable = _strip_release_suffix(' '.join(parts[-3:]))
+    episode_match = re.search(r'\bS(\d{1,2})\s*E(\d{1,3})\b', searchable, flags=re.IGNORECASE)
+    if episode_match:
+        title = searchable[:episode_match.start()].strip(' ._-')
+        if not title and len(parts) >= 3:
+            title = parts[-3]
+        normalized_title = _normalize_identity_text(title)
+        if normalized_title:
+            season = int(episode_match.group(1))
+            episode = int(episode_match.group(2))
+            return f'tv:{normalized_title}:s{season:02d}:e{episode:03d}'
+
+    candidates = [_strip_release_suffix(stem)]
+    if len(parts) >= 2:
+        candidates.append(_strip_release_suffix(parts[-2]))
+
+    for candidate in candidates:
+        paren_match = re.search(r'\(((?:19|20)\d{2})\)', candidate)
+        year_match = paren_match or re.search(r'\b((?:19|20)\d{2})\b', candidate)
+        if not year_match:
+            continue
+        title = candidate[:year_match.start()].strip(' ._-')
+        normalized_title = _normalize_identity_text(title)
+        if normalized_title:
+            return f'movie:{normalized_title}:{year_match.group(1)}'
+
+    return None
+
+
+def _job_blocks_identity_dedupe(job: Job) -> bool:
+    return job.status not in TERMINAL_STATUSES
+
+
+def get_existing_job_for_source(db: Session, source_path: str, library_id: int | None = None) -> Job | None:
     # Completed jobs normally block re-queuing, but stale "complete" rows whose
     # output no longer exists are treated as retryable.
     _RETRYABLE_STATUSES = {'failed', 'skipped', 'cancelled'}
@@ -127,6 +181,24 @@ def get_existing_job_for_source(db: Session, source_path: str) -> Job | None:
             return job
         output = Path(job.output_path) if job.output_path else None
         if output and output.exists():
+            return job
+
+    identity_key = media_identity_key(source_path)
+    if not identity_key or library_id is None:
+        return None
+
+    identity_candidates = (
+        db.query(Job)
+        .filter(
+            Job.input_path != source_path,
+            Job.library_id == library_id,
+            ~Job.status.in_(TERMINAL_STATUSES),
+        )
+        .order_by(Job.created_at.asc(), Job.id.asc())
+        .all()
+    )
+    for job in identity_candidates:
+        if _job_blocks_identity_dedupe(job) and media_identity_key(job.input_path) == identity_key:
             return job
     return None
 

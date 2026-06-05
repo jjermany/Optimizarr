@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from app.core.database import SessionLocal
 from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
-from app.models.library import DownloadQualityProfileEnum
+from app.models.library import DownloadQualityProfileEnum, Library, LibraryProfile
 from app.models.settings import QueueSortEnum, Settings
 from app.services import download_client_service, notification_service
 from app.services.download_monitor_service import (
@@ -702,6 +702,32 @@ def test_download_job_exists_for_source_treats_moving_as_active_non_terminal():
         assert download_job_exists_for_source(db, source_path) is True
 
 
+def test_download_job_exists_for_source_dedupes_active_movie_upgrade_by_identity():
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        pending_job = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/Example Movie (2026)/Example Movie (2026) [WEBDL-2160p x265].mkv',
+            status=DownloadJobStatus.pending.value,
+        )
+        db.add(pending_job)
+        db.commit()
+
+        assert download_job_exists_for_source(
+            db,
+            '/media/movies/Example Movie (2026)/Example Movie (2026) [Bluray-2160p Remux].mkv',
+            library_id=library.id,
+        ) is True
+
+
 def test_download_job_exists_for_source_ignores_stale_complete_without_imported_file():
     source_path = '/media/download-complete-stale.mkv'
     with SessionLocal() as db:
@@ -717,9 +743,6 @@ def test_download_job_exists_for_source_ignores_stale_complete_without_imported_
         db.commit()
 
         assert download_job_exists_for_source(db, source_path) is False
-from app.models.library import Library, LibraryProfile
-
-
 def _seed_library_with_profile(db):
     library = Library(name='Movies', path='/tmp/movies', enabled=True)
     db.add(library)

@@ -22,7 +22,7 @@ from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum, Library, LibraryProfile
 from app.models.settings import QueueSortEnum, Settings
 from app.services import download_client_service, notification_service, prowlarr_service
-from app.services.job_service import create_job
+from app.services.job_service import create_job, media_identity_key
 from app.services.optimization_service import is_hdr_video, probe_video_height, stop_active_ffmpeg
 from app.services.realtime_service import broker
 
@@ -201,7 +201,7 @@ def can_attempt_download(db: Session) -> bool:
     return bool(qbt.enabled or sab.enabled)
 
 
-def download_job_exists_for_source(db: Session, source_path: str) -> bool:
+def download_job_exists_for_source(db: Session, source_path: str, library_id: int | None = None) -> bool:
     active_statuses = {
         DownloadJobStatus.pending.value,
         DownloadJobStatus.searching.value,
@@ -226,7 +226,22 @@ def download_job_exists_for_source(db: Session, source_path: str) -> bool:
         imported = Path(dj.imported_file_path) if dj.imported_file_path else None
         if imported and imported.exists():
             return True
-    return False
+
+    identity_key = media_identity_key(source_path)
+    if not identity_key or library_id is None:
+        return False
+
+    identity_rows = (
+        db.query(DownloadJob)
+        .filter(
+            DownloadJob.library_id == library_id,
+            DownloadJob.source_file_path != source_path,
+            DownloadJob.status.in_(active_statuses - {DownloadJobStatus.complete.value}),
+        )
+        .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
+        .all()
+    )
+    return any(media_identity_key(dj.source_file_path) == identity_key for dj in identity_rows)
 
 
 _ACTIVE_DOWNLOAD_STATUSES = (
@@ -260,6 +275,29 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
         )
         if existing is not None:
             return existing
+
+    existing = (
+        db.query(DownloadJob)
+        .filter(
+            DownloadJob.library_id == library.id,
+            DownloadJob.status.in_({
+                DownloadJobStatus.pending.value,
+                DownloadJobStatus.searching.value,
+                DownloadJobStatus.downloading.value,
+                DownloadJobStatus.moving.value,
+                DownloadJobStatus.stalled.value,
+                DownloadJobStatus.importing.value,
+                DownloadJobStatus.waiting_encode.value,
+            }),
+        )
+        .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
+        .all()
+    )
+    identity_key = media_identity_key(source_path)
+    if identity_key:
+        for dj in existing:
+            if media_identity_key(dj.source_file_path) == identity_key:
+                return dj
 
     dj = DownloadJob(
         library_id=library.id,

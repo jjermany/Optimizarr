@@ -769,7 +769,7 @@ def _prepare_probe_candidate(
     if download_enabled:
         from app.services.download_monitor_service import download_job_exists_for_source
 
-        if download_job_exists_for_source(db, source_path):
+        if download_job_exists_for_source(db, source_path, library_id=library.id):
             return None
         if _blocking_encode_job_exists_for_download_route(db, source_path, library.id):
             return None
@@ -846,7 +846,7 @@ def _finalize_candidate_with_probe(
                 library_id=library.id,
             )
             return None
-        if download_job_exists_for_source(db, source_path):
+        if download_job_exists_for_source(db, source_path, library_id=library.id):
             return None
         if can_attempt_download(db):
             create_download_job(db, source_path, library, profile)
