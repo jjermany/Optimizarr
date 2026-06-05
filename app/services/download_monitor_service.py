@@ -2511,8 +2511,11 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                     dj.id, dj.download_hash, replacement_hash,
                 )
                 dj.download_hash = replacement_hash
+                _tagged_job_ids.discard(dj.id)
                 db.commit()
                 db.refresh(dj)
+                if download_client_service.tag_qbt_torrent(qbt, replacement_hash, max_attempts=3):
+                    _tagged_job_ids.add(dj.id)
             status = {
                 'progress_percent': int((replacement.get('progress', 0) or 0) * 100),
                 'eta_seconds': replacement.get('eta'),
@@ -2538,8 +2541,11 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                     replacement_hash,
                 )
                 dj.download_hash = replacement_hash
+                _tagged_job_ids.discard(dj.id)
                 db.commit()
                 db.refresh(dj)
+                if download_client_service.tag_qbt_torrent(qbt, replacement_hash, max_attempts=3):
+                    _tagged_job_ids.add(dj.id)
                 status = {
                     'progress_percent': int((replacement.get('progress', 0) or 0) * 100),
                     'eta_seconds': replacement.get('eta'),
@@ -2981,33 +2987,39 @@ def _find_qbt_torrent_for_release(dj: DownloadJob, torrents: list[dict]) -> dict
             )
             return chosen
 
-    release_key = _normalize_release_key(dj.release_name)
-    source_key = _normalize_release_key(Path(dj.source_file_path).stem)
-    key = release_key or source_key
-    if not key:
+    candidate_keys = [
+        _normalize_release_key(dj.release_name),
+        _normalize_release_key(Path(dj.source_file_path).stem),
+    ]
+    keys = []
+    for key in candidate_keys:
+        if key and key not in keys:
+            keys.append(key)
+    if not keys:
         logger.info('Download job %s match: no normalized key available from release/source name', dj.id)
         return None
 
-    partial_matches = [
-        t for t in torrents
-        if key in _normalize_release_key(t.get('name', ''))
-    ]
-    if partial_matches:
-        # Prefer optimizarr-tagged torrents first, then newest.
-        chosen = max(partial_matches, key=lambda t: (1 if _is_optimizarr_tagged(t) else 0, t.get('added_on', 0)))
-        logger.info(
-            'Download job %s match: normalized key=%r matched %d torrent(s); picked hash=%s name=%r',
-            dj.id,
-            key,
-            len(partial_matches),
-            str(chosen.get('hash', '')).lower(),
-            chosen.get('name'),
-        )
-        return chosen
+    for key in keys:
+        partial_matches = [
+            t for t in torrents
+            if key in _normalize_release_key(t.get('name', ''))
+        ]
+        if partial_matches:
+            # Prefer optimizarr-tagged torrents first, then newest.
+            chosen = max(partial_matches, key=lambda t: (1 if _is_optimizarr_tagged(t) else 0, t.get('added_on', 0)))
+            logger.info(
+                'Download job %s match: normalized key=%r matched %d torrent(s); picked hash=%s name=%r',
+                dj.id,
+                key,
+                len(partial_matches),
+                str(chosen.get('hash', '')).lower(),
+                chosen.get('name'),
+            )
+            return chosen
     logger.info(
-        'Download job %s match: no qBit name matched normalized key=%r (release=%r source=%r)',
+        'Download job %s match: no qBit name matched normalized keys=%s (release=%r source=%r)',
         dj.id,
-        key,
+        keys,
         dj.release_name,
         dj.source_file_path,
     )

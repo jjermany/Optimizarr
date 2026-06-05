@@ -915,6 +915,63 @@ def test_check_download_progress_recovers_hash_when_qbit_title_is_renamed(monkey
         assert imported_paths == ['/downloads/The.Gorge.2025.1080p.WEB-DL-GROUP']
 
 
+def test_check_download_progress_recovers_qbit_hash_using_source_when_release_name_is_sparse(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Protector (2026).mkv',
+            release_name='Protector 1080p',
+            download_hash='stalehash',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'is_complete': False,
+            'is_stalled': False,
+            'save_path': None,
+            'not_found': True,
+        })
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
+            'name': 'Protector.2026.1080p.WEB-DL.H.264.Dual.YG',
+            'hash': 'protectorhash',
+            'state': 'downloading',
+            'progress': 0.349,
+            'eta': 196,
+            'dlspeed': 13_900_000,
+            'content_path': '/downloads/Protector.2026.1080p.WEB-DL.H.264.Dual.YG',
+            'added_on': 1,
+            'tags': '',
+        }])
+        tag_calls = []
+        monkeypatch.setattr(
+            download_client_service,
+            'tag_qbt_torrent',
+            lambda _qbt, torrent_hash, max_attempts=5: tag_calls.append((torrent_hash, max_attempts)) or True,
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.download_hash == 'protectorhash'
+        assert dj.progress_percent == 34
+        assert dj.eta_seconds == 196
+        assert tag_calls[-1][0] == 'protectorhash'
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Search query construction tests
 # ─────────────────────────────────────────────────────────────────────────────
