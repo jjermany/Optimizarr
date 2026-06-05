@@ -99,9 +99,13 @@ def _qbt_session(s: QBittorrentSettings) -> httpx.Client:
     qbt_password = secrets_store.decrypt_secret(s.password)
     resp = client.post('/api/v2/auth/login', data={'username': s.username, 'password': qbt_password})
     resp.raise_for_status()
-    # qBittorrent returns HTTP 200 with body "Fails." on bad credentials.
-    if resp.text.strip() != 'Ok.':
-        raise RuntimeError(f'qBittorrent login failed: {resp.text.strip()!r}')
+    # qBittorrent commonly returns HTTP 200 with body "Ok."; some versions and
+    # reverse-proxy setups return 204 No Content on successful login.
+    login_body = resp.text.strip()
+    if resp.status_code == 204:
+        return client
+    if login_body != 'Ok.':
+        raise RuntimeError(f'qBittorrent login failed: {login_body!r}')
     return client
 
 

@@ -90,6 +90,35 @@ def test_get_qbt_status_marks_moving_state(monkeypatch):
     assert status['not_found'] is False
 
 
+def test_qbt_session_accepts_204_login_success(monkeypatch):
+    posts = []
+
+    class Response:
+        status_code = 204
+        text = ''
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def post(self, path, data=None):
+            posts.append((path, data))
+            return Response()
+
+    monkeypatch.setattr(download_client_service.httpx, 'Client', Client)
+    monkeypatch.setattr(download_client_service.secrets_store, 'decrypt_secret', lambda value: value)
+
+    settings = SimpleNamespace(host='http://qbit.local', port=8080, username='user', password='pass')
+
+    client = download_client_service._qbt_session(settings)
+
+    assert isinstance(client, Client)
+    assert posts == [('/api/v2/auth/login', {'username': 'user', 'password': 'pass'})]
+
+
 def test_get_sab_status_marks_moving_state(monkeypatch):
     queue_payload = {
         'queue': {
