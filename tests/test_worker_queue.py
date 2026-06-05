@@ -16,6 +16,13 @@ from app.services import notification_service
 from app.workers import queue
 
 
+def _media_path(tmp_path, name: str) -> str:
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('x')
+    return str(path)
+
+
 def _wait_for_terminal_status(client: TestClient, job_id: int, timeout: float = 3.0) -> dict:
     end = time.time() + timeout
     while time.time() < end:
@@ -27,9 +34,10 @@ def _wait_for_terminal_status(client: TestClient, job_id: int, timeout: float = 
     return client.get(f'/jobs/{job_id}').json()
 
 
-def test_worker_retries_a_failed_job_once(monkeypatch):
+def test_worker_retries_a_failed_job_once(monkeypatch, tmp_path):
     queue.resume_queue()
-    target_input = '/media/test.mkv'
+    target_input = str(tmp_path / 'test.mkv')
+    (tmp_path / 'test.mkv').write_text('x')
     call_count = {'count': 0}
 
     def always_fail(*args, **kwargs):
@@ -70,14 +78,16 @@ def test_worker_retries_a_failed_job_once(monkeypatch):
     assert terminal_updates[-1] == (job_id, 'failed')
 
 
-def test_worker_auto_retries_from_partial_then_fails_for_manual_retry(monkeypatch):
+def test_worker_auto_retries_from_partial_then_fails_for_manual_retry(monkeypatch, tmp_path):
     queue.resume_queue()
     call_count = {'count': 0}
+    target_input = str(tmp_path / 'partial-test.mkv')
+    (tmp_path / 'partial-test.mkv').write_text('x')
 
     def always_fail(*args, **kwargs):
         call_count['count'] += 1
         return OptimizationMetrics(
-            input_path='/media/partial-test.mkv',
+            input_path=target_input,
             output_path=None,
             status='failed',
             skipped_reason='vaapi_encode_failed',
@@ -100,7 +110,7 @@ def test_worker_auto_retries_from_partial_then_fails_for_manual_retry(monkeypatc
         settings_response = client.post('/settings', json={'enable_optimizer': True, 'global_quiet_enabled': False})
         assert settings_response.status_code == 200
 
-        create_response = client.post('/jobs', json={'source_path': '/media/partial-test.mkv'})
+        create_response = client.post('/jobs', json={'source_path': target_input})
         assert create_response.status_code == 201
         job_id = create_response.json()['id']
 
@@ -113,8 +123,10 @@ def test_worker_auto_retries_from_partial_then_fails_for_manual_retry(monkeypatc
     assert failure_notifications == [job_id]
 
 
-def test_worker_marks_job_failed_when_unhandled_exception_occurs(monkeypatch):
+def test_worker_marks_job_failed_when_unhandled_exception_occurs(monkeypatch, tmp_path):
     queue.resume_queue()
+    target_input = str(tmp_path / 'test-crash.mkv')
+    (tmp_path / 'test-crash.mkv').write_text('x')
 
     def raise_unhandled(*args, **kwargs):
         raise RuntimeError('boom')
@@ -129,7 +141,7 @@ def test_worker_marks_job_failed_when_unhandled_exception_occurs(monkeypatch):
         session.commit()
 
     with TestClient(app) as client:
-        create_response = client.post('/jobs', json={'source_path': '/media/test-crash.mkv'})
+        create_response = client.post('/jobs', json={'source_path': target_input})
         assert create_response.status_code == 201
         job_id = create_response.json()['id']
 
@@ -388,9 +400,9 @@ def test_claim_next_queued_job_honors_oldest_sort_without_resume_priority(tmp_pa
         db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
         db.commit()
 
-        first = Job(input_path='/media/older.mkv', status='queued', progress_percent=5)
-        second = Job(input_path='/media/resumable.mkv', status='queued', progress_percent=10, resume_position_seconds=120.0)
-        third = Job(input_path='/media/newer.mkv', status='queued', progress_percent=90)
+        first = Job(input_path=_media_path(tmp_path, 'older.mkv'), status='queued', progress_percent=5)
+        second = Job(input_path=_media_path(tmp_path, 'resumable.mkv'), status='queued', progress_percent=10, resume_position_seconds=120.0)
+        third = Job(input_path=_media_path(tmp_path, 'newer.mkv'), status='queued', progress_percent=90)
         db.add_all([first, second, third])
         db.commit()
 
@@ -411,9 +423,9 @@ def test_claim_next_queued_job_honors_newest_sort_without_resume_priority(tmp_pa
         db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False, queue_sort=QueueSortEnum.newest))
         db.commit()
 
-        oldest = Job(input_path='/media/oldest.mkv', status='queued', progress_percent=0)
-        newest = Job(input_path='/media/newest.mkv', status='queued', progress_percent=0)
-        resumable = Job(input_path='/media/resume.mkv', status='queued', progress_percent=5, resume_position_seconds=90.0)
+        oldest = Job(input_path=_media_path(tmp_path, 'oldest.mkv'), status='queued', progress_percent=0)
+        newest = Job(input_path=_media_path(tmp_path, 'newest.mkv'), status='queued', progress_percent=0)
+        resumable = Job(input_path=_media_path(tmp_path, 'resume.mkv'), status='queued', progress_percent=5, resume_position_seconds=90.0)
         db.add_all([oldest, newest, resumable])
         db.commit()
 
@@ -433,8 +445,8 @@ def test_claim_next_queued_job_honors_newest_sort_when_no_resume_priority(tmp_pa
         db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False, queue_sort=QueueSortEnum.newest))
         db.commit()
 
-        oldest = Job(input_path='/media/oldest.mkv', status='queued', progress_percent=0)
-        newest = Job(input_path='/media/newest.mkv', status='queued', progress_percent=0)
+        oldest = Job(input_path=_media_path(tmp_path, 'oldest.mkv'), status='queued', progress_percent=0)
+        newest = Job(input_path=_media_path(tmp_path, 'newest.mkv'), status='queued', progress_percent=0)
         db.add_all([oldest, newest])
         db.commit()
 
@@ -454,8 +466,8 @@ def test_claim_next_queued_job_honors_oldest_sort_when_no_resume_priority(tmp_pa
         db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False, queue_sort=QueueSortEnum.oldest))
         db.commit()
 
-        oldest = Job(input_path='/media/oldest.mkv', status='queued', progress_percent=0)
-        newest = Job(input_path='/media/newest.mkv', status='queued', progress_percent=0)
+        oldest = Job(input_path=_media_path(tmp_path, 'oldest.mkv'), status='queued', progress_percent=0)
+        newest = Job(input_path=_media_path(tmp_path, 'newest.mkv'), status='queued', progress_percent=0)
         db.add_all([oldest, newest])
         db.commit()
 
@@ -465,7 +477,73 @@ def test_claim_next_queued_job_honors_oldest_sort_when_no_resume_priority(tmp_pa
         assert selected_id == oldest.id
 
 
-def test_claim_next_queued_job_skips_download_enabled_source_with_active_download():
+def test_claim_next_queued_job_skips_missing_source_before_start(monkeypatch, tmp_path):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        missing = tmp_path / 'missing.mkv'
+        job = Job(input_path=str(missing), status='queued', progress_percent=0)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+        terminal_updates = []
+        monkeypatch.setattr(queue, 'handle_job_terminal_state', lambda job_id, status: terminal_updates.append((job_id, status)))
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        db.refresh(job)
+
+        assert selected_id is None
+        assert job.status == 'skipped'
+        assert job.error_message == 'Input missing'
+        assert terminal_updates == [(job_id, 'skipped')]
+
+
+def test_claim_next_queued_job_skips_hdr_job_when_target_sdr_sibling_exists(monkeypatch, tmp_path):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        source = tmp_path / 'Movie (2024) 2160p HDR.mkv'
+        sibling = tmp_path / 'Movie (2024) 1080p.mkv'
+        source.write_text('hdr')
+        sibling.write_text('sdr')
+
+        job = Job(
+            input_path=str(source),
+            status='queued',
+            profile_snapshot_json=json.dumps({
+                'hdr_only': True,
+                'tone_map_hdr': False,
+                'target_resolution': 1080,
+            }),
+        )
+        db.add(job)
+        db.commit()
+
+        monkeypatch.setattr(queue, 'probe_video_height', lambda path: 1080 if str(path) == str(sibling) else 2160)
+        monkeypatch.setattr(queue, 'is_hdr_video', lambda path: str(path) == str(source))
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        db.refresh(job)
+
+        assert selected_id is None
+        assert job.status == 'skipped'
+        assert job.error_message == 'Target SDR file already exists'
+
+
+def test_claim_next_queued_job_skips_download_enabled_source_with_active_download(tmp_path):
     queue.resume_queue()
 
     with SessionLocal() as db:
@@ -486,7 +564,7 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_active_downloa
         db.add(profile)
         db.commit()
 
-        source_path = '/media/movies/title.mkv'
+        source_path = _media_path(tmp_path, 'movies/title.mkv')
         job = Job(input_path=source_path, status='queued', library_id=library.id)
         db.add(job)
         db.commit()
@@ -507,7 +585,7 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_active_downloa
         assert job.status == 'queued'
 
 
-def test_claim_next_queued_job_skips_download_enabled_source_with_pending_download():
+def test_claim_next_queued_job_skips_download_enabled_source_with_pending_download(tmp_path):
     queue.resume_queue()
 
     with SessionLocal() as db:
@@ -528,7 +606,7 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_pending_downlo
         db.add(profile)
         db.commit()
 
-        source_path = '/media/movies/title-pending.mkv'
+        source_path = _media_path(tmp_path, 'movies/title-pending.mkv')
         job = Job(input_path=source_path, status='queued', library_id=library.id)
         db.add(job)
         db.commit()
@@ -549,7 +627,7 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_pending_downlo
         assert job.status == 'queued'
 
 
-def test_claim_next_queued_job_skips_download_enabled_source_with_moving_download():
+def test_claim_next_queued_job_skips_download_enabled_source_with_moving_download(tmp_path):
     queue.resume_queue()
 
     with SessionLocal() as db:
@@ -570,7 +648,7 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_moving_downloa
         db.add(profile)
         db.commit()
 
-        source_path = '/media/movies/title-moving.mkv'
+        source_path = _media_path(tmp_path, 'movies/title-moving.mkv')
         job = Job(input_path=source_path, status='queued', library_id=library.id)
         db.add(job)
         db.commit()
@@ -591,7 +669,7 @@ def test_claim_next_queued_job_skips_download_enabled_source_with_moving_downloa
         assert job.status == 'queued'
 
 
-def test_claim_next_queued_job_removes_placeholder_when_download_already_imported(monkeypatch):
+def test_claim_next_queued_job_removes_placeholder_when_download_already_imported(monkeypatch, tmp_path):
     queue.resume_queue()
 
     with SessionLocal() as db:
@@ -612,7 +690,7 @@ def test_claim_next_queued_job_removes_placeholder_when_download_already_importe
         db.add(profile)
         db.commit()
 
-        source_path = '/media/movies/title-imported.mkv'
+        source_path = _media_path(tmp_path, 'movies/title-imported.mkv')
         placeholder = Job(input_path=source_path, status='queued', library_id=library.id)
         db.add(placeholder)
         db.commit()
@@ -643,7 +721,7 @@ def test_claim_next_queued_job_removes_placeholder_when_download_already_importe
         assert events == [('job_removed', {'job_id': placeholder_id})]
 
 
-def test_claim_next_queued_job_prechecks_completed_artifact_and_removes_placeholder(monkeypatch):
+def test_claim_next_queued_job_prechecks_completed_artifact_and_removes_placeholder(monkeypatch, tmp_path):
     queue.resume_queue()
 
     with SessionLocal() as db:
@@ -665,7 +743,7 @@ def test_claim_next_queued_job_prechecks_completed_artifact_and_removes_placehol
         db.commit()
         db.refresh(profile)
 
-        source_path = '/media/movies/Shrek 2 (2004).mkv'
+        source_path = _media_path(tmp_path, 'movies/Shrek 2 (2004).mkv')
         placeholder = Job(input_path=source_path, status='queued', library_id=library.id)
         db.add(placeholder)
         db.commit()
@@ -702,7 +780,7 @@ def test_claim_next_queued_job_prechecks_completed_artifact_and_removes_placehol
         assert events == [('job_removed', {'job_id': placeholder_id})]
 
 
-def test_claim_next_queued_job_routes_to_download_and_removes_placeholder(monkeypatch):
+def test_claim_next_queued_job_routes_to_download_and_removes_placeholder(monkeypatch, tmp_path):
     queue.resume_queue()
 
     with SessionLocal() as db:
@@ -723,7 +801,7 @@ def test_claim_next_queued_job_routes_to_download_and_removes_placeholder(monkey
         db.add(profile)
         db.commit()
 
-        source_path = '/media/movies/title-route.mkv'
+        source_path = _media_path(tmp_path, 'movies/title-route.mkv')
         placeholder = Job(input_path=source_path, status='queued', library_id=library.id)
         db.add(placeholder)
         db.commit()
@@ -746,7 +824,7 @@ def test_claim_next_queued_job_routes_to_download_and_removes_placeholder(monkey
         assert remaining_placeholder is None
 
 
-def test_claim_next_queued_job_starts_fallback_encode_without_rerouting(monkeypatch):
+def test_claim_next_queued_job_starts_fallback_encode_without_rerouting(monkeypatch, tmp_path):
     queue.resume_queue()
 
     with SessionLocal() as db:
@@ -767,7 +845,7 @@ def test_claim_next_queued_job_starts_fallback_encode_without_rerouting(monkeypa
         db.add(profile)
         db.commit()
 
-        source_path = '/media/movies/title-fallback.mkv'
+        source_path = _media_path(tmp_path, 'movies/title-fallback.mkv')
         encode_job = Job(input_path=source_path, status='queued', library_id=library.id)
         db.add(encode_job)
         db.commit()

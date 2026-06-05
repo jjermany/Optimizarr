@@ -595,6 +595,117 @@ def _extract_year_from_path(path: str | None) -> int | None:
     return None
 
 
+def _coerce_profile_value(profile: LibraryProfile | None, snapshot: dict, name: str, default):
+    if profile is not None and hasattr(profile, name):
+        value = getattr(profile, name)
+        return getattr(value, 'value', value)
+    return snapshot.get(name, default)
+
+
+def _release_matches_target_resolution_label(path: Path, target_resolution: int) -> bool:
+    stem_lower = path.stem.lower()
+    target = int(target_resolution)
+    if f'{target}p' in stem_lower:
+        return True
+    if target == 2160 and '4k' in stem_lower:
+        return True
+    if re.search(rf'\b\d{{3,4}}x{target}\b', stem_lower):
+        return True
+    if re.search(rf'\b{target}i\b', stem_lower):
+        return True
+    return False
+
+
+def _candidate_title_prefix(path: Path) -> str:
+    stem = path.stem
+    for marker in ('[', '{'):
+        idx = stem.find(marker)
+        if idx > 0:
+            return stem[:idx].rstrip(' ._-')
+
+    spaced = re.sub(r'[._-]+', ' ', stem).strip()
+    year_match = re.search(r'\b(19|20)\d{2}\b', spaced)
+    if year_match and year_match.start() > 0:
+        return re.sub(r'[\s()\[\]{}._-]+$', '', spaced[:year_match.start()]).strip()
+    return stem
+
+
+def _normalized_title_key(text: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(text or '').lower())
+
+
+def _is_same_release_family(source_file: Path, candidate: Path) -> bool:
+    source_prefix = _normalized_title_key(_candidate_title_prefix(source_file))
+    candidate_prefix = _normalized_title_key(_candidate_title_prefix(candidate))
+    if not source_prefix or not candidate_prefix:
+        return False
+    return source_prefix in candidate_prefix or candidate_prefix in source_prefix
+
+
+def _has_existing_target_sdr_sibling(media_file: Path, target_resolution: int) -> bool:
+    parent = media_file.parent
+    if not parent.exists() or not parent.is_dir():
+        return False
+
+    for sibling in parent.iterdir():
+        if sibling == media_file or not sibling.is_file() or sibling.suffix.lower() not in {'.mkv', '.mp4'}:
+            continue
+        if not _is_same_release_family(media_file, sibling):
+            continue
+
+        matches_target = _release_matches_target_resolution_label(sibling, target_resolution)
+        if not matches_target:
+            sibling_height = probe_video_height(str(sibling))
+            matches_target = sibling_height is not None and abs(int(sibling_height) - int(target_resolution)) <= 32
+        if not matches_target:
+            continue
+
+        if is_hdr_video(str(sibling)):
+            continue
+        return True
+    return False
+
+
+def _skip_stale_queued_job(db: Session, job: Job, reason: str) -> None:
+    job.status = 'skipped'
+    job.error_message = reason
+    job.fps = None
+    job.eta_seconds = None
+    job.cancel_requested = False
+    _mark_finished(job)
+    db.commit()
+    _publish_job(job, throttle_progress=False)
+    handle_job_terminal_state(job.id, job.status)
+
+
+def _queued_job_still_matches_disk(db: Session, job: Job, profile: LibraryProfile | None) -> bool:
+    source_path = Path(job.input_path)
+    if not source_path.exists():
+        logger.info('Queue precheck: skipping job %s because source is missing: %r', job.id, job.input_path)
+        _skip_stale_queued_job(db, job, 'Input missing')
+        return False
+
+    snapshot = _profile_snapshot(job)
+    hdr_required = bool(
+        _coerce_profile_value(profile, snapshot, 'hdr_only', False)
+        or _coerce_profile_value(profile, snapshot, 'tone_map_hdr', False)
+    )
+    if not hdr_required:
+        return True
+
+    target_resolution = int(_coerce_profile_value(profile, snapshot, 'target_resolution', 1080) or 1080)
+    if _has_existing_target_sdr_sibling(source_path, target_resolution):
+        logger.info(
+            'Queue precheck: skipping job %s for %r because a target SDR sibling already exists',
+            job.id,
+            job.input_path,
+        )
+        _skip_stale_queued_job(db, job, 'Target SDR file already exists')
+        return False
+
+    return True
+
+
 def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> int | None:
     raw_sort_option = getattr(settings, 'queue_sort', QueueSortEnum.default) or QueueSortEnum.default
     sort_option = str(getattr(raw_sort_option, 'value', raw_sort_option))
@@ -652,6 +763,9 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
 
     for job, library, profile in queued:
         if not _library_job_can_start(settings, now, library, profile):
+            continue
+
+        if not _queued_job_still_matches_disk(db, job, profile):
             continue
 
         # If this library uses download mode and the source file is still

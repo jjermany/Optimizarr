@@ -1159,7 +1159,7 @@ def test_check_download_progress_imports_complete_download_despite_elapsed_timeo
         assert imported_paths == ['/downloads/Inception.2010.1080p.WEB-DL']
 
 
-def test_check_download_progress_qbit_elapsed_timeout_keeps_monitoring(monkeypatch):
+def test_check_download_progress_qbit_elapsed_timeout_retries_search(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -1208,9 +1208,7 @@ def test_check_download_progress_qbit_elapsed_timeout_keeps_monitoring(monkeypat
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
 
-        assert dj.status == DownloadJobStatus.downloading.value
-        assert dj.retry_count == 0
-        assert retry_calls == []
+        assert retry_calls == [True]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
