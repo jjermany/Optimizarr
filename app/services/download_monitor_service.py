@@ -1692,6 +1692,27 @@ def _extract_hash_from_guid(guid: str) -> str:
     return match.group(1) if match else ''
 
 
+def _normalize_qbt_info_hash(value: object) -> str:
+    candidate = str(value or '').strip().lower()
+    return candidate if re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', candidate) else ''
+
+
+def _extract_qbt_info_hash(value: object) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    normalized = _normalize_qbt_info_hash(text)
+    if normalized:
+        return normalized
+    btih = re.search(r'btih:([A-Za-z0-9]{32,64})', text, re.IGNORECASE)
+    if btih:
+        normalized = _normalize_qbt_info_hash(btih.group(1))
+        if normalized:
+            return normalized
+    match = re.search(r'(?<![0-9a-fA-F])([0-9a-fA-F]{40}|[0-9a-fA-F]{64})(?![0-9a-fA-F])', text)
+    return match.group(1).lower() if match else ''
+
+
 def _extract_hash_from_release(release: dict) -> str:
     """Best-effort info-hash extraction from a Prowlarr release payload."""
     if not isinstance(release, dict):
@@ -1707,18 +1728,9 @@ def _extract_hash_from_release(release: dict) -> str:
         release.get('comments'),
     ]
     for raw in candidates:
-        value = str(raw or '')
-        if not value:
-            continue
-        # Magnet links often carry btih in either hex or base32.
-        btih = re.search(r'btih:([A-Za-z0-9]{32,40})', value, re.IGNORECASE)
-        if btih:
-            token = btih.group(1)
-            if re.fullmatch(r'[0-9a-fA-F]{40}', token):
-                return token.lower()
-        extracted = _extract_hash_from_guid(value)
+        extracted = _extract_qbt_info_hash(raw)
         if extracted:
-            return extracted.lower()
+            return extracted
     return ''
 
 
@@ -2298,15 +2310,17 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         )
         return
 
-    download_hash = (
-        grab_result.get('downloadId')  # infohash returned by the download client
-        or grab_result.get('hash')     # secondary hash field used by some Prowlarr versions
-        or _extract_hash_from_release(best)  # hash/magnet data from search payload
-        or _extract_hash_from_guid(grab_result.get('guid', ''))  # hash embedded in GUID URL
-        or ''
-        # downloadClientId (integer Prowlarr client config ID) and id (record ID)
-        # are intentionally excluded — neither is a torrent infohash.
-    )
+    raw_download_hash_candidates = [
+        grab_result.get('downloadId'),  # infohash returned by the download client when available
+        grab_result.get('hash'),        # secondary hash field used by some Prowlarr versions
+        grab_result.get('infoHash'),
+        grab_result.get('magnetUrl'),
+        grab_result.get('downloadUrl'),
+        grab_result.get('guid'),
+        _extract_hash_from_release(best),  # hash/magnet data from search payload
+        _extract_hash_from_guid(grab_result.get('guid', '')),  # hash embedded in GUID URL
+        # downloadClientId and id are intentionally excluded because neither is a torrent infohash.
+    ]
     # Store the release name (torrent name as reported by Prowlarr) so that
     # hash recovery can find the torrent in qBit by exact name instead of
     # relying on imprecise timestamp filtering.
@@ -2314,6 +2328,16 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     dj.indexer_name = indexer_name
     dj.release_name = release_title or None
     dj.selected_release_key = selected_release_key
+
+    client_type = _client_type_for_protocol(best.get('protocol', ''))
+    if client_type == 'qbittorrent':
+        download_hash = ''
+        for candidate in raw_download_hash_candidates:
+            download_hash = _extract_qbt_info_hash(candidate)
+            if download_hash:
+                break
+    else:
+        download_hash = next((str(candidate) for candidate in raw_download_hash_candidates if candidate), '')
 
     if not download_hash:
         # Prowlarr grab succeeded but returned no client download id/hash.
@@ -2326,7 +2350,6 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
             'will attempt client-side recovery using release %r. result=%s',
             dj.id, release_title, json.dumps(grab_result)[:200],
         )
-        client_type = _client_type_for_protocol(best.get('protocol', ''))
         dj.download_hash = None
         dj.client_type = client_type
         dj.status = DownloadJobStatus.downloading.value
@@ -2361,9 +2384,6 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
 
         _publish_download_job(dj)
         return
-
-    # Determine which client received this download based on the release protocol
-    client_type = _client_type_for_protocol(best.get('protocol', ''))
 
     # qBittorrent stores hashes in lowercase; normalise so lookups always match.
     normalised_hash = str(download_hash).lower() if client_type == 'qbittorrent' else str(download_hash)
@@ -2420,6 +2440,18 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     profile = library.profile
     client_type = dj.client_type or 'qbittorrent'
 
+    invalid_qbt_hash = False
+    if client_type == 'qbittorrent' and dj.download_hash and not _normalize_qbt_info_hash(dj.download_hash):
+        logger.warning(
+            'Download job %s: stored qBit hash %r is not a valid infohash; recovering from qBit by release/source',
+            dj.id,
+            dj.download_hash,
+        )
+        invalid_qbt_hash = True
+        dj.download_hash = None
+        db.commit()
+        db.refresh(dj)
+
     # If the hash is unknown (grab succeeded but Prowlarr returned no hash),
     # look up the torrent in qBit using the release name stored at grab time.
     if not dj.download_hash and client_type == 'qbittorrent' and qbt.enabled:
@@ -2456,6 +2488,16 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                         dj.id, dj.release_name,
                     )
                 else:
+                    if invalid_qbt_hash:
+                        _retry_failed_download(
+                            db,
+                            dj,
+                            library,
+                            profile,
+                            reason='Stored qBittorrent hash was invalid and no matching torrent was found',
+                            failed_release_key=_release_selection_key_from_job(dj),
+                        )
+                        return
                     logger.debug(
                         'Download job %s: release %r not found in qBit yet; waiting',
                         dj.id, dj.release_name,
@@ -2467,6 +2509,16 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             job_ts = dj.created_at.replace(tzinfo=timezone.utc).timestamp()
             recent = [t for t in all_torrents if t.get('added_on', 0) >= job_ts]
             if not recent:
+                if invalid_qbt_hash:
+                    _retry_failed_download(
+                        db,
+                        dj,
+                        library,
+                        profile,
+                        reason='Stored qBittorrent hash was invalid and no recent torrent was found',
+                        failed_release_key=_release_selection_key_from_job(dj),
+                    )
+                    return
                 logger.debug('Download job %s: no recent qBit torrent found yet; waiting', dj.id)
                 return
             if len(recent) == 1:
@@ -2478,6 +2530,16 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                 )
                 recovered_hash = _recover_qbt_hash_for_job(dj, all_torrents)
                 if not recovered_hash:
+                    if invalid_qbt_hash:
+                        _retry_failed_download(
+                            db,
+                            dj,
+                            library,
+                            profile,
+                            reason='Stored qBittorrent hash was invalid and no matching torrent was found',
+                            failed_release_key=_release_selection_key_from_job(dj),
+                        )
+                        return
                     return
                 recovered = next((t for t in all_torrents if str(t.get('hash', '')).lower() == recovered_hash), None)
                 if recovered is None:
@@ -2533,7 +2595,6 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     if (
         client_type == 'qbittorrent'
         and qbt.enabled
-        and dj.release_name
         and dj.download_hash
         and not status.get('is_complete')
         and not status.get('is_moving')

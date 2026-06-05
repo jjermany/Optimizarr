@@ -16,6 +16,7 @@ from app.services.download_monitor_service import (
     _build_prowlarr_query,
     _build_second_pass_search_query,
     _extract_hash_from_release,
+    _extract_qbt_info_hash,
     _find_completed_download_match,
     _build_search_query,
     _check_download_progress,
@@ -75,6 +76,12 @@ def test_extract_hash_from_release_reads_magnet_btih():
         'magnetUrl': 'magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567&dn=Example',
     }
     assert _extract_hash_from_release(release) == '0123456789abcdef0123456789abcdef01234567'
+
+
+def test_extract_qbt_info_hash_rejects_non_hash_ids_and_reads_embedded_hex():
+    assert _extract_qbt_info_hash(12345) == ''
+    assert _extract_qbt_info_hash('animal-farm-1080p') == ''
+    assert _extract_qbt_info_hash('https://indexer.example/0123456789abcdef0123456789abcdef01234567/release') == '0123456789abcdef0123456789abcdef01234567'
 
 
 
