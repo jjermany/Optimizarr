@@ -3278,6 +3278,66 @@ def test_do_search_reuses_existing_qbit_torrent_by_hash_instead_of_grabbing(monk
         assert tag_calls and tag_calls[0][0] == '0123456789abcdef0123456789abcdef01234567'
 
 
+def test_do_search_reuses_existing_sab_job_instead_of_grabbing_duplicate(monkeypatch):
+    from app.services import prowlarr_service
+    from app.services.download_monitor_service import _do_search
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Reattach.Existing.Sab.Job.mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        prowlarr_stub = SimpleNamespace(enabled=True, host='http://prowlarr', api_key='key')
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        release = {
+            'title': 'Reattach.Existing.Sab.Job.2025.1080p.WEB-DL',
+            'seeders': 0,
+            'size': 1000,
+            'protocol': 'usenet',
+            'guid': 'usenet-guid-1',
+            'indexerId': 1,
+        }
+        monkeypatch.setattr(prowlarr_service, 'search', lambda *_args, **_kw: [release])
+        monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
+
+        grab_calls = []
+        monkeypatch.setattr(
+            prowlarr_service,
+            'grab',
+            lambda *_args, **_kwargs: (grab_calls.append(True) or {'downloadId': 'should-not-happen'}),
+        )
+        monkeypatch.setattr(download_client_service, 'find_sab_nzo_for_release', lambda _sab, release_name: 'SABNZBD_NZO_existing')
+        category_calls = []
+        monkeypatch.setattr(
+            download_client_service,
+            'set_sab_category',
+            lambda _sab, nzo_id, category='optimizarr': category_calls.append((nzo_id, category)) or True,
+        )
+
+        _do_search(db, dj, prowlarr_stub, qbt, sab)
+        db.refresh(dj)
+
+        assert grab_calls == []
+        assert dj.client_type == 'sabnzbd'
+        assert dj.download_hash == 'SABNZBD_NZO_existing'
+        assert dj.release_name == 'Reattach.Existing.Sab.Job.2025.1080p.WEB-DL'
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert category_calls == [('SABNZBD_NZO_existing', 'optimizarr')]
+
+
 def test_do_search_rejects_unrelated_episode_title_for_single_word_movie(monkeypatch):
     from app.services import prowlarr_service
     from app.services.download_monitor_service import _do_search

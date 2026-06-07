@@ -2287,6 +2287,34 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
                     _tagged_job_ids.add(dj.id)
                 return
 
+    if str(best.get('protocol') or '').strip().lower() == 'usenet' and sab.enabled and release_title:
+        existing_nzo = download_client_service.find_sab_nzo_for_release(sab, release_title)
+        if existing_nzo:
+            logger.warning(
+                'Download job %s: reusing existing SABnzbd NZO %s for release %r instead of re-grabbing',
+                dj.id,
+                existing_nzo,
+                release_title,
+            )
+            dj.indexer_id = indexer_id
+            dj.indexer_name = indexer_name
+            dj.release_name = release_title or None
+            dj.selected_release_key = selected_release_key
+            dj.download_hash = existing_nzo
+            dj.client_type = 'sabnzbd'
+            dj.status = DownloadJobStatus.downloading.value
+            dj.error_message = None
+            dj.download_started_at = dj.download_started_at or datetime.now(timezone.utc)
+            dj.progress_percent = 0
+            dj.eta_seconds = None
+            dj.download_speed_bps = None
+            db.commit()
+            db.refresh(dj)
+            _publish_download_job(dj)
+            if download_client_service.set_sab_category(sab, existing_nzo, category='optimizarr'):
+                _categorized_sab_job_ids.add(dj.id)
+            return
+
     logger.info(
         'Download job %s: grabbing release %r (protocol=%s)',
         dj.id,
