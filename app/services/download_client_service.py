@@ -29,6 +29,9 @@ _QBT_COMPLETE_STATES = {
     'stoppedUP',  # qBittorrent 5.0+ (Web API v2.11.0+): renamed from pausedUP
 }
 _QBT_MOVING_STATES = {'moving'}
+_QBT_WAITING_STATES = {
+    'queuedDL',
+}
 
 MEDIA_SUFFIXES = {'.mkv', '.mp4'}
 
@@ -227,7 +230,9 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
                 'download_speed_bps': None,
                 'is_complete': False,
                 'is_moving': False,
+                'is_waiting': False,
                 'is_stalled': False,
+                'qbt_state': None,
                 'save_path': None,
                 'not_found': True,
             }
@@ -251,6 +256,7 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
             download_speed_bps = None
         is_complete = state in _QBT_COMPLETE_STATES
         is_moving = state in _QBT_MOVING_STATES and not is_complete
+        is_waiting = state in _QBT_WAITING_STATES and not is_complete
         is_stalled = state in ('stalledDL', 'missingFiles', 'error', 'stoppedDL')
         # content_path is the actual file/folder; fall back to save_path (directory)
         save_path = info.get('content_path') or info.get('save_path')
@@ -260,7 +266,9 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
             'download_speed_bps': download_speed_bps,
             'is_complete': is_complete,
             'is_moving': is_moving,
+            'is_waiting': is_waiting,
             'is_stalled': is_stalled,
+            'qbt_state': state,
             'save_path': save_path,
             'not_found': False,
         }
@@ -272,7 +280,9 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
             'download_speed_bps': None,
             'is_complete': False,
             'is_moving': False,
+            'is_waiting': False,
             'is_stalled': False,
+            'qbt_state': None,
             'save_path': None,
             'not_found': False,
         }
@@ -662,7 +672,9 @@ def get_download_status(client_type: str, qbt: QBittorrentSettings | None, sab: 
         'download_speed_bps': None,
         'is_complete': False,
         'is_moving': False,
+        'is_waiting': False,
         'is_stalled': False,
+        'qbt_state': None,
         'save_path': None,
         'not_found': False,
     }

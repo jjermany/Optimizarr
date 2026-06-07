@@ -2598,6 +2598,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         and dj.download_hash
         and not status.get('is_complete')
         and not status.get('is_moving')
+        and not status.get('is_waiting')
         and int(status.get('progress_percent', 0) or 0) == 0
     ):
         all_torrents = download_client_service.get_all_qbt_torrents(qbt)
@@ -2620,7 +2621,10 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                 'eta_seconds': replacement.get('eta'),
                 'download_speed_bps': replacement.get('dlspeed'),
                 'is_complete': replacement.get('state', '') in download_client_service._QBT_COMPLETE_STATES,
+                'is_moving': replacement.get('state', '') in download_client_service._QBT_MOVING_STATES,
+                'is_waiting': replacement.get('state', '') in download_client_service._QBT_WAITING_STATES,
                 'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
+                'qbt_state': replacement.get('state', ''),
                 'save_path': replacement.get('content_path') or replacement.get('save_path'),
                 'not_found': False,
             }
@@ -2651,7 +2655,9 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                     'download_speed_bps': replacement.get('dlspeed'),
                     'is_complete': replacement.get('state', '') in download_client_service._QBT_COMPLETE_STATES,
                     'is_moving': replacement.get('state', '') in download_client_service._QBT_MOVING_STATES,
+                    'is_waiting': replacement.get('state', '') in download_client_service._QBT_WAITING_STATES,
                     'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
+                    'qbt_state': replacement.get('state', ''),
                     'save_path': replacement.get('content_path') or replacement.get('save_path'),
                     'not_found': False,
                 }
@@ -2737,6 +2743,19 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             profile,
             reason=f'Download stalled in {client_type}',
             failed_release_key=_release_selection_key_from_job(dj),
+        )
+        return
+
+    if status.get('is_waiting') and client_type == 'qbittorrent':
+        # qBittorrent's queue is intentional backpressure, not a bad release.
+        # Keep the timeout clock parked while the client has not started it yet.
+        dj.download_started_at = datetime.now(timezone.utc)
+        db.commit()
+        db.refresh(dj)
+        logger.info(
+            'Download job %s: qBittorrent state=%s; waiting in client queue without consuming retry timeout',
+            dj.id,
+            status.get('qbt_state') or 'queued',
         )
         return
 

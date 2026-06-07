@@ -1273,7 +1273,7 @@ def test_check_download_progress_imports_complete_download_despite_elapsed_timeo
             library_id=library.id,
             source_file_path='/media/Inception (2010).mkv',
             release_name='Inception.2010.1080p.WEB-DL',
-            download_hash='aabbccdd',
+            download_hash='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             client_type='qbittorrent',
             status=DownloadJobStatus.downloading.value,
             # download started 5 minutes ago — well past the 1-minute timeout
@@ -2126,7 +2126,7 @@ def test_scan_recovery_imports_stalled_job_completed_in_qbit(monkeypatch):
             library_id=library.id,
             source_file_path='/media/Oppenheimer (2023).mkv',
             release_name='Oppenheimer.2023.1080p.WEB-DL',
-            download_hash='aabbccdd',
+            download_hash='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             client_type='qbittorrent',
             status=DownloadJobStatus.stalled.value,
             error_message='No seeders',
@@ -2140,7 +2140,7 @@ def test_scan_recovery_imports_stalled_job_completed_in_qbit(monkeypatch):
         monkeypatch.setattr(download_client_service, 'get_all_qbt_tagged_torrents', lambda _q: [])
         monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
             'name': 'Oppenheimer.2023.1080p.WEB-DL',
-            'hash': 'aabbccdd',
+            'hash': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
             'state': 'uploading',
             'progress': 1.0,
             'content_path': '/downloads/complete/Oppenheimer.2023.1080p.WEB-DL',
@@ -2228,7 +2228,7 @@ def test_check_download_progress_missing_client_item_retries_without_fallback(mo
             library_id=library.id,
             source_file_path='/media/Missing.Client.Item.mkv',
             release_name='Missing.Client.Item.2025.1080p.WEB-DL',
-            download_hash='missinghash',
+            download_hash='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
             client_type='qbittorrent',
             status=DownloadJobStatus.downloading.value,
         )
@@ -2276,7 +2276,7 @@ def test_check_download_progress_missing_qbit_item_recovers_existing_torrent_bef
             library_id=library.id,
             source_file_path='/media/Missing.But.Recoverable.Client.Item.mkv',
             release_name='Missing.But.Recoverable.Client.Item.2025.1080p.WEB-DL',
-            download_hash='missinghash',
+            download_hash='cccccccccccccccccccccccccccccccccccccccc',
             client_type='qbittorrent',
             status=DownloadJobStatus.downloading.value,
         )
@@ -2298,7 +2298,7 @@ def test_check_download_progress_missing_qbit_item_recovers_existing_torrent_bef
             'not_found': True,
         })
         monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [{
-            'hash': 'recoveredhash',
+            'hash': 'dddddddddddddddddddddddddddddddddddddddd',
             'name': 'Missing.But.Recoverable.Client.Item.2025.1080p.WEB-DL',
             'added_on': 999,
             'progress': 0.42,
@@ -2319,7 +2319,7 @@ def test_check_download_progress_missing_qbit_item_recovers_existing_torrent_bef
         db.refresh(dj)
 
         assert dj.status == DownloadJobStatus.downloading.value
-        assert dj.download_hash == 'recoveredhash'
+        assert dj.download_hash == 'dddddddddddddddddddddddddddddddddddddddd'
         assert dj.retry_count == 0
         assert dj.error_message is None
         assert fallback_calls == []
@@ -2337,7 +2337,7 @@ def test_check_download_progress_marks_moving_and_preserves_nonzero_progress(mon
             library_id=library.id,
             source_file_path='/media/Moving.Phase.Item.mkv',
             release_name='Moving.Phase.Item.2025.1080p.WEB-DL',
-            download_hash='movehash',
+            download_hash='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
             client_type='qbittorrent',
             status=DownloadJobStatus.downloading.value,
             progress_percent=88,
@@ -2436,7 +2436,7 @@ def test_check_download_progress_qbit_stalled_stays_tracked(monkeypatch):
             library_id=library.id,
             source_file_path='/media/Qbit.Stalled.Transient.mkv',
             release_name='Qbit.Stalled.Transient.2025.1080p.WEB-DL',
-            download_hash='qbit_stalled_transient',
+            download_hash='ffffffffffffffffffffffffffffffffffffffff',
             client_type='qbittorrent',
             status=DownloadJobStatus.downloading.value,
             retry_count=0,
@@ -2473,6 +2473,66 @@ def test_check_download_progress_qbit_stalled_stays_tracked(monkeypatch):
         assert dj.status == DownloadJobStatus.downloading.value
         assert dj.retry_count == 0
         assert dj.error_message is None
+        assert fallback_calls == []
+
+
+def test_check_download_progress_qbit_queued_does_not_timeout_or_retry(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        library.profile.download_timeout_minutes = 1
+        db.commit()
+        old_started_at = datetime.now(UTC) - timedelta(minutes=5)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Qbit.Client.Queued.mkv',
+            release_name='Qbit.Client.Queued.2025.1080p.WEB-DL',
+            download_hash='1111111111111111111111111111111111111111',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            max_retries=5,
+            progress_percent=0,
+            download_started_at=old_started_at,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': 8640000,
+            'download_speed_bps': 0,
+            'is_complete': False,
+            'is_moving': False,
+            'is_waiting': True,
+            'is_stalled': False,
+            'qbt_state': 'queuedDL',
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kwargs: True)
+
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.retry_count == 0
+        assert dj.error_message is None
+        assert dj.download_started_at.replace(tzinfo=UTC) > old_started_at
         assert fallback_calls == []
 
 

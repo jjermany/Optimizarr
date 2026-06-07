@@ -90,6 +90,29 @@ def test_get_qbt_status_marks_moving_state(monkeypatch):
     assert status['not_found'] is False
 
 
+def test_get_qbt_status_marks_queued_download_as_waiting(monkeypatch):
+    monkeypatch.setattr(download_client_service, '_qbt_session', lambda _s: object())
+    monkeypatch.setattr(
+        download_client_service,
+        '_qbt_torrent_info',
+        lambda _client, _hash: {
+            'state': 'queuedDL',
+            'progress': 0,
+            'eta': 8640000,
+            'dlspeed': 0,
+            'content_path': '/downloads/incomplete/Queued.Movie.2025.1080p',
+        },
+    )
+
+    status = download_client_service.get_qbt_status(SimpleNamespace(), 'abc123')
+
+    assert status['is_waiting'] is True
+    assert status['qbt_state'] == 'queuedDL'
+    assert status['is_stalled'] is False
+    assert status['is_complete'] is False
+    assert status['not_found'] is False
+
+
 def test_qbt_session_accepts_204_login_success(monkeypatch):
     posts = []
 
