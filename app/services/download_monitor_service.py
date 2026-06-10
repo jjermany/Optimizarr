@@ -254,6 +254,60 @@ def download_job_exists_for_source(db: Session, source_path: str, library_id: in
     return False
 
 
+_IDENTITY_BLOCKING_DOWNLOAD_STATUSES = {
+    DownloadJobStatus.searching.value,
+    DownloadJobStatus.queued.value,
+    DownloadJobStatus.downloading.value,
+    DownloadJobStatus.moving.value,
+    DownloadJobStatus.stalled.value,
+    DownloadJobStatus.importing.value,
+    DownloadJobStatus.waiting_encode.value,
+    DownloadJobStatus.complete.value,
+}
+
+
+def _download_job_identity_blocker(db: Session, dj: DownloadJob) -> DownloadJob | None:
+    source_path = str(dj.source_file_path or '')
+    identity_key = media_identity_key(source_path)
+    rows = (
+        db.query(DownloadJob)
+        .filter(
+            DownloadJob.id != dj.id,
+            DownloadJob.status.in_(_IDENTITY_BLOCKING_DOWNLOAD_STATUSES),
+        )
+        .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
+        .all()
+    )
+    for other in rows:
+        same_identity = False
+        if source_path and other.source_file_path == source_path:
+            same_identity = True
+        elif identity_key:
+            same_identity = media_identity_key(other.source_file_path) == identity_key
+        if not same_identity:
+            continue
+
+        if other.status != DownloadJobStatus.complete.value:
+            return other
+        imported = Path(other.imported_file_path) if other.imported_file_path else None
+        if imported and imported.exists():
+            return other
+    return None
+
+
+def _remove_duplicate_unstarted_download_job(db: Session, dj: DownloadJob, blocker: DownloadJob) -> None:
+    job_id = dj.id
+    logger.info(
+        'Download job %s removed as duplicate of active/completed download job %s for %r',
+        job_id,
+        blocker.id,
+        dj.source_file_path,
+    )
+    db.delete(dj)
+    db.commit()
+    broker.publish_system_event('download_job_removed', download_job_id=job_id)
+
+
 _ACTIVE_DOWNLOAD_STATUSES = (
     DownloadJobStatus.pending.value,
     DownloadJobStatus.searching.value,
@@ -1809,27 +1863,34 @@ def _select_next_pending_download_job(db: Session) -> DownloadJob | None:
     base_query = db.query(DownloadJob).filter(DownloadJob.status == DownloadJobStatus.pending.value)
 
     if sort_option == QueueSortEnum.newest.value:
-        return base_query.order_by(DownloadJob.created_at.desc(), DownloadJob.id.desc()).first()
-
-    if sort_option in {QueueSortEnum.default.value, QueueSortEnum.oldest.value}:
-        return base_query.order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc()).first()
-
-    pending_jobs = base_query.all()
+        pending_jobs = base_query.order_by(DownloadJob.created_at.desc(), DownloadJob.id.desc()).all()
+    elif sort_option in {QueueSortEnum.default.value, QueueSortEnum.oldest.value}:
+        pending_jobs = base_query.order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc()).all()
+    else:
+        pending_jobs = base_query.all()
     if not pending_jobs:
         return None
 
-    def sort_key(job: DownloadJob) -> tuple[int, int]:
-        if sort_option == QueueSortEnum.year_newest.value:
-            year = _extract_year_from_path(job.source_file_path)
-            return (-(year if year is not None else 0), -job.id)
-        if sort_option == QueueSortEnum.year_oldest.value:
-            year = _extract_year_from_path(job.source_file_path)
-            return ((year if year is not None else 9999), job.id)
-        created_ts = job.created_at.timestamp() if job.created_at else 0
-        return (int(created_ts), job.id)
+    if sort_option not in {QueueSortEnum.default.value, QueueSortEnum.oldest.value, QueueSortEnum.newest.value}:
+        def sort_key(job: DownloadJob) -> tuple[int, int]:
+            if sort_option == QueueSortEnum.year_newest.value:
+                year = _extract_year_from_path(job.source_file_path)
+                return (-(year if year is not None else 0), -job.id)
+            if sort_option == QueueSortEnum.year_oldest.value:
+                year = _extract_year_from_path(job.source_file_path)
+                return ((year if year is not None else 9999), job.id)
+            created_ts = job.created_at.timestamp() if job.created_at else 0
+            return (int(created_ts), job.id)
 
-    pending_jobs.sort(key=sort_key)
-    return pending_jobs[0]
+        pending_jobs.sort(key=sort_key)
+
+    for job in pending_jobs:
+        blocker = _download_job_identity_blocker(db, job)
+        if blocker is not None:
+            _remove_duplicate_unstarted_download_job(db, job, blocker)
+            continue
+        return job
+    return None
 
 
 def _extract_title_tokens(source_path: str) -> list[str]:
@@ -2086,19 +2147,6 @@ def _process_searching_jobs(db: Session) -> None:
         _do_search(db, searching_job, prowlarr, qbt, sab)
         return
 
-    # If a download/import is currently active, do not start a new search.
-    active_download = (
-        db.query(DownloadJob)
-        .filter(DownloadJob.status.in_([
-            DownloadJobStatus.downloading.value,
-            DownloadJobStatus.moving.value,
-            DownloadJobStatus.importing.value,
-        ]))
-        .count()
-    )
-    if active_download > 0:
-        return
-
     global _startup_grace_until
     if _startup_grace_until is not None:
         if datetime.now(timezone.utc) < _startup_grace_until:
@@ -2261,14 +2309,9 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     indexer_name = str(best.get('_indexer_name') or best.get('indexer') or '').strip() or None
     selected_release_key = _release_selection_key_from_release(best)
 
-    # Safety check: refuse to grab if another download is already active.
-    # Guards against any state inconsistency that slips past the outer check.
-    if db.query(DownloadJob).filter(DownloadJob.status.in_([
-        DownloadJobStatus.downloading.value,
-        DownloadJobStatus.moving.value,
-        DownloadJobStatus.importing.value,
-        ])).count() > 0:
-        logger.warning('Download job %s: active download detected before grab; deferring', dj.id)
+    identity_blocker = _download_job_identity_blocker(db, dj)
+    if identity_blocker is not None:
+        _remove_duplicate_unstarted_download_job(db, dj, identity_blocker)
         return
 
     if str(best.get('protocol') or '').strip().lower() == 'torrent' and qbt.enabled:

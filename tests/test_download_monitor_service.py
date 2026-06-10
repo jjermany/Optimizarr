@@ -2082,6 +2082,93 @@ def test_process_searching_jobs_continues_when_existing_download_is_client_queue
         assert calls == [pending.id]
 
 
+def test_process_searching_jobs_continues_when_different_download_is_active(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        active = DownloadJob(
+            source_file_path='/media/Already.Active.2026.mkv',
+            status=DownloadJobStatus.downloading.value,
+        )
+        pending = DownloadJob(
+            source_file_path='/media/Different.Next.Item.2026.mkv',
+            status=DownloadJobStatus.pending.value,
+        )
+        db.add_all([active, pending])
+        db.commit()
+        db.refresh(pending)
+
+        monkeypatch.setattr('app.services.download_monitor_service.prowlarr_service.get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr('app.services.download_monitor_service._startup_grace_until', None)
+        monkeypatch.setattr('app.workers.queue.is_queue_paused', lambda: False)
+
+        calls = []
+        monkeypatch.setattr('app.services.download_monitor_service._do_search', lambda _db, job, *_args: calls.append(job.id))
+
+        _process_searching_jobs(db)
+        db.refresh(active)
+        db.refresh(pending)
+
+        assert active.status == DownloadJobStatus.downloading.value
+        assert pending.status == DownloadJobStatus.searching.value
+        assert calls == [pending.id]
+
+
+def test_process_searching_jobs_removes_same_identity_pending_duplicate(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        blocker = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/Anora (2024)/Anora.2024.1080p.WEB-DL.H264.mkv',
+            status=DownloadJobStatus.queued.value,
+        )
+        duplicate = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/Anora (2024)/Anora.2024.1080p.DSNP.WEB-DL.DDP5.1.H264.mkv',
+            status=DownloadJobStatus.pending.value,
+        )
+        next_item = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/Gladiator II (2024)/Gladiator.II.2024.1080p.WEB-DL.mkv',
+            status=DownloadJobStatus.pending.value,
+        )
+        db.add_all([blocker, duplicate, next_item])
+        db.commit()
+        duplicate_id = duplicate.id
+        next_item_id = next_item.id
+
+        monkeypatch.setattr('app.services.download_monitor_service.prowlarr_service.get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr('app.services.download_monitor_service._startup_grace_until', None)
+        monkeypatch.setattr('app.workers.queue.is_queue_paused', lambda: False)
+
+        removed_events = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.broker.publish_system_event',
+            lambda event, **data: removed_events.append((event, data)),
+        )
+        calls = []
+        monkeypatch.setattr('app.services.download_monitor_service._do_search', lambda _db, job, *_args: calls.append(job.id))
+
+        _process_searching_jobs(db)
+
+        assert db.query(DownloadJob).filter(DownloadJob.id == duplicate_id).first() is None
+        assert calls == [next_item_id]
+        assert removed_events == [('download_job_removed', {'download_job_id': duplicate_id})]
+
+
 def test_process_searching_jobs_uses_newest_sort_for_pending(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
