@@ -18,6 +18,7 @@ TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
 ACTIVE_ENCODE_STATUSES = {'starting', 'running', 'preflight'}
 ACTIVE_DOWNLOAD_STATUSES = {
     DownloadJobStatus.searching.value,
+    DownloadJobStatus.queued.value,
     DownloadJobStatus.downloading.value,
     DownloadJobStatus.moving.value,
     DownloadJobStatus.importing.value,

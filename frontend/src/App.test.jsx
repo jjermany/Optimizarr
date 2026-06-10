@@ -306,6 +306,7 @@ describe('shouldShowDownloadElapsed', () => {
   });
 
   it('shows elapsed time for actively progressing download states', () => {
+    expect(shouldShowDownloadElapsed('queued')).toBe(true);
     expect(shouldShowDownloadElapsed('downloading')).toBe(true);
     expect(shouldShowDownloadElapsed('importing')).toBe(true);
   });

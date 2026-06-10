@@ -147,6 +147,7 @@ def _monitor_loop() -> None:
             has_downloading = (
                 db.query(DownloadJob)
                 .filter(DownloadJob.status.in_([
+                    DownloadJobStatus.queued.value,
                     DownloadJobStatus.downloading.value,
                     DownloadJobStatus.moving.value,
                 ]))
@@ -205,6 +206,7 @@ def download_job_exists_for_source(db: Session, source_path: str, library_id: in
     active_statuses = {
         DownloadJobStatus.pending.value,
         DownloadJobStatus.searching.value,
+        DownloadJobStatus.queued.value,
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
@@ -255,6 +257,7 @@ def download_job_exists_for_source(db: Session, source_path: str, library_id: in
 _ACTIVE_DOWNLOAD_STATUSES = (
     DownloadJobStatus.pending.value,
     DownloadJobStatus.searching.value,
+    DownloadJobStatus.queued.value,
     DownloadJobStatus.downloading.value,
     DownloadJobStatus.moving.value,
     DownloadJobStatus.importing.value,
@@ -291,6 +294,7 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
             DownloadJob.status.in_({
                 DownloadJobStatus.pending.value,
                 DownloadJobStatus.searching.value,
+                DownloadJobStatus.queued.value,
                 DownloadJobStatus.downloading.value,
                 DownloadJobStatus.moving.value,
                 DownloadJobStatus.stalled.value,
@@ -2086,6 +2090,7 @@ def _process_searching_jobs(db: Session) -> None:
     active_download = (
         db.query(DownloadJob)
         .filter(DownloadJob.status.in_([
+            DownloadJobStatus.queued.value,
             DownloadJobStatus.downloading.value,
             DownloadJobStatus.moving.value,
             DownloadJobStatus.importing.value,
@@ -2260,6 +2265,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     # Safety check: refuse to grab if another download is already active.
     # Guards against any state inconsistency that slips past the outer check.
     if db.query(DownloadJob).filter(DownloadJob.status.in_([
+        DownloadJobStatus.queued.value,
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.moving.value,
         DownloadJobStatus.importing.value,
@@ -2462,6 +2468,7 @@ def _process_downloading_jobs(db: Session) -> None:
     jobs = (
         db.query(DownloadJob)
         .filter(DownloadJob.status.in_([
+            DownloadJobStatus.queued.value,
             DownloadJobStatus.downloading.value,
             DownloadJobStatus.moving.value,
         ]))
@@ -2731,7 +2738,13 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     speed_bps = status.get('download_speed_bps')
     speed_bps = int(speed_bps) if isinstance(speed_bps, (int, float)) and speed_bps >= 0 else None
 
-    expected_status = DownloadJobStatus.moving.value if is_moving else DownloadJobStatus.downloading.value
+    is_waiting = bool(status.get('is_waiting')) and client_type in {'qbittorrent', 'sabnzbd'}
+    if is_waiting:
+        expected_status = DownloadJobStatus.queued.value
+        eta_seconds = None
+        speed_bps = 0
+    else:
+        expected_status = DownloadJobStatus.moving.value if is_moving else DownloadJobStatus.downloading.value
     should_update = (
         progress != dj.progress_percent
         or eta_seconds != dj.eta_seconds
@@ -2787,7 +2800,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         )
         return
 
-    if status.get('is_waiting') and client_type in {'qbittorrent', 'sabnzbd'}:
+    if is_waiting:
         # Client-side queueing is intentional backpressure, not a bad release.
         # Keep the timeout clock parked while the client has not started it yet.
         dj.download_started_at = datetime.now(timezone.utc)
@@ -3412,6 +3425,7 @@ def run_download_startup_recovery(db: Session) -> dict:
         db.query(DownloadJob)
         .filter(
             DownloadJob.status.in_([
+                DownloadJobStatus.queued.value,
                 DownloadJobStatus.downloading.value,
                 DownloadJobStatus.moving.value,
                 DownloadJobStatus.importing.value,
@@ -3426,6 +3440,7 @@ def run_download_startup_recovery(db: Session) -> dict:
     # was persisted on the DownloadJob row.
     _skip_statuses = {
         DownloadJobStatus.downloading.value,  # already covered by in_flight_jobs loop
+        DownloadJobStatus.queued.value,
         DownloadJobStatus.moving.value,
         DownloadJobStatus.importing.value,     # already covered by in_flight_jobs loop
         DownloadJobStatus.pending.value,       # not yet started — nothing to recover
@@ -3765,6 +3780,7 @@ def run_scan_recovery(db: Session) -> dict:
     try:
         _skip_statuses = {
             DownloadJobStatus.pending.value,
+            DownloadJobStatus.queued.value,
             DownloadJobStatus.downloading.value,
             DownloadJobStatus.moving.value,
             DownloadJobStatus.importing.value,

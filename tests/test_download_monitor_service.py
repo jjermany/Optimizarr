@@ -709,6 +709,19 @@ def test_download_job_exists_for_source_treats_moving_as_active_non_terminal():
         assert download_job_exists_for_source(db, source_path) is True
 
 
+def test_download_job_exists_for_source_treats_client_queued_as_active():
+    source_path = '/media/download-client-queued.mkv'
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        queued_job = DownloadJob(source_file_path=source_path, status=DownloadJobStatus.queued.value)
+        db.add(queued_job)
+        db.commit()
+
+        assert download_job_exists_for_source(db, source_path) is True
+
+
 def test_download_job_exists_for_source_dedupes_active_movie_upgrade_by_identity():
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
@@ -2561,7 +2574,7 @@ def test_check_download_progress_qbit_queued_does_not_timeout_or_retry(monkeypat
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
 
-        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.status == DownloadJobStatus.queued.value
         assert dj.retry_count == 0
         assert dj.error_message is None
         assert dj.download_started_at.replace(tzinfo=UTC) > old_started_at
@@ -2621,7 +2634,7 @@ def test_check_download_progress_sab_queued_does_not_timeout_or_retry(monkeypatc
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
 
-        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.status == DownloadJobStatus.queued.value
         assert dj.retry_count == 0
         assert dj.error_message is None
         assert dj.download_started_at.replace(tzinfo=UTC) > old_started_at

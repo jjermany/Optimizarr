@@ -719,6 +719,7 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
     _ACTIVE_DOWNLOAD_STATUSES = (
         DownloadJobStatus.pending.value,
         DownloadJobStatus.searching.value,
+        DownloadJobStatus.queued.value,
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,

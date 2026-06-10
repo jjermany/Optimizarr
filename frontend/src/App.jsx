@@ -170,7 +170,7 @@ const QUEUED_STATUSES = new Set(['pending', 'queued', 'created']);
 const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']);
 
 // Download-job status buckets
-const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode']);
+const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'queued', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode']);
 const TERMINAL_DL_STATUSES = new Set(['complete', 'failed', 'timed_out', 'fallback_queued']);
 const QUEUE_DEDUPE_DL_STATUSES = new Set([...ACTIVE_DL_STATUSES, 'complete', 'fallback_queued']);
 const ACTIVE_ENCODE_DEDUPE_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting', 'paused', 'paused_schedule']);
@@ -305,7 +305,7 @@ export function libraryQueueCount(library, jobs, downloadJobs) {
 }
 
 export function shouldShowDownloadElapsed(status) {
-  return ['searching', 'downloading', 'moving', 'stalled', 'importing'].includes(String(status ?? '').toLowerCase());
+  return ['searching', 'queued', 'downloading', 'moving', 'stalled', 'importing'].includes(String(status ?? '').toLowerCase());
 }
 
 function jobSortRank(job) {
@@ -3583,7 +3583,7 @@ export default function App() {
                             </div>
                             <div className="flex items-start justify-between gap-2">
                               <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={dj.source_file_path}>{title || 'Unknown Title'}</p>
-                              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'importing' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : dj.status === 'searching' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : dj.status === 'downloading' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : dj.status === 'moving' ? 'border-indigo-500/40 bg-indigo-950/30 text-indigo-300' : dj.status === 'stalled' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'waiting_encode' ? 'border-fuchsia-500/40 bg-fuchsia-950/30 text-fuchsia-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>
+                              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'importing' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : dj.status === 'searching' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : dj.status === 'queued' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'downloading' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : dj.status === 'moving' ? 'border-indigo-500/40 bg-indigo-950/30 text-indigo-300' : dj.status === 'stalled' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'waiting_encode' ? 'border-fuchsia-500/40 bg-fuchsia-950/30 text-fuchsia-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>
                                 {statusLabel}
                               </span>
                             </div>
@@ -3609,7 +3609,7 @@ export default function App() {
                             )}
                             {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
                             <MobileActionMenu>
-                              {['searching', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
+                              {['searching', 'queued', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
                                 <Btn size="sm" variant="danger" disabled={Boolean(downloadActionPending)} onClick={() => handleCancelDownloadJob(dj.id)}>
                                   {downloadActionPending === 'remove_reset' ? 'Working…' : 'Reset Search'}
                                 </Btn>
@@ -3636,7 +3636,7 @@ export default function App() {
                       const title = getDisplayTitle(job.source_path);
                       const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
                       const activeDj = downloadJobBySource[job.source_path];
-                      const djIsActive = activeDj && ['searching', 'downloading', 'moving', 'importing'].includes(activeDj.status);
+                      const djIsActive = activeDj && ['searching', 'queued', 'downloading', 'moving', 'importing'].includes(activeDj.status);
                       const jobLibProfile = libraryProfiles[job.library_id];
                       const jobDownloadEnabled = !!jobLibProfile?.download_enabled;
                       const queueWaitingForRoute = jobDownloadEnabled
@@ -3670,6 +3670,7 @@ export default function App() {
                           {job.status === 'failed' && job.error_message && <p className="mt-2.5 text-xs text-red-400">{job.error_message}</p>}
                           {queueWaitingForRoute && <p className="mt-2.5 text-xs text-sky-400">Auto-routing: download first, encode fallback.</p>}
                           {djIsActive && activeDj.status === 'searching' && <p className="mt-2.5 text-xs text-sky-400">Searching…</p>}
+                          {djIsActive && activeDj.status === 'queued' && <p className="mt-2.5 text-xs text-amber-300">Queued in client</p>}
                           {djIsActive && activeDj.status === 'downloading' && (
                             <p className="mt-2.5 text-xs text-violet-400">
                               Downloading {activeDj.progress_percent}%
@@ -3743,6 +3744,7 @@ export default function App() {
                             const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
                             const downloadActionPending = pendingDownloadActions[dj.id];
                             const statusColor =
+                              dj.status === 'queued' ? 'text-amber-400' :
                               dj.status === 'downloading' ? 'text-cyan-400' :
                               dj.status === 'moving' ? 'text-indigo-400' :
                               dj.status === 'importing' ? 'text-violet-400' :
@@ -3802,7 +3804,7 @@ export default function App() {
                                 </td>
                                 <td className="px-4 py-3">
                                   <div className="flex flex-wrap gap-1.5">
-                                    {['searching', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
+                                    {['searching', 'queued', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
                                       <Btn size="sm" variant="danger" disabled={Boolean(downloadActionPending)} onClick={() => handleCancelDownloadJob(dj.id)}>
                                         {downloadActionPending === 'remove_reset' ? 'Working…' : 'Reset Search'}
                                       </Btn>
@@ -3831,7 +3833,7 @@ export default function App() {
                           const title = getDisplayTitle(job.source_path);
                           const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
                           const activeDj = downloadJobBySource[job.source_path];
-                          const djIsActive = activeDj && ['searching', 'downloading', 'moving', 'importing'].includes(activeDj.status);
+                          const djIsActive = activeDj && ['searching', 'queued', 'downloading', 'moving', 'importing'].includes(activeDj.status);
                           const jobLibProfile = libraryProfiles[job.library_id];
                           const jobDownloadEnabled = !!jobLibProfile?.download_enabled;
                           const queueWaitingForRoute = jobDownloadEnabled
@@ -3859,6 +3861,12 @@ export default function App() {
                                   <p className="mt-0.5 flex items-center gap-1 text-xs text-sky-400">
                                     <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />
                                     Searching…
+                                  </p>
+                                )}
+                                {djIsActive && activeDj.status === 'queued' && (
+                                  <p className="mt-0.5 flex items-center gap-1 text-xs text-amber-300">
+                                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-300" />
+                                    Queued in client
                                   </p>
                                 )}
                                 {djIsActive && activeDj.status === 'downloading' && (

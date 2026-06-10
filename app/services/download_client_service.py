@@ -448,7 +448,8 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
     try:
         # Check active queue first
         queue_data = _sab_api(s, mode='queue')
-        for slot in queue_data.get('queue', {}).get('slots', []):
+        slots = queue_data.get('queue', {}).get('slots', [])
+        for slot_index, slot in enumerate(slots):
             if slot.get('nzo_id') == nzo_id:
                 pct = slot.get('percentage', 0)
                 try:
@@ -459,22 +460,21 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                 status_text = str(status or '').strip().lower()
                 is_stalled = status_text in {'stalled', 'failed'}
                 is_moving = _sab_is_moving_status(status)
-                is_waiting = _sab_is_waiting_status(status)
-                slot_eta_seconds = _parse_sab_eta_seconds(slot.get('timeleft'))
-                eta_seconds = slot_eta_seconds
-                if eta_seconds is None and not is_waiting:
+                is_waiting = _sab_is_waiting_status(status) or slot_index > 0
+                eta_seconds = None if is_waiting else _parse_sab_eta_seconds(slot.get('timeleft'))
+                if eta_seconds is None and not is_waiting and slot_index == 0:
                     eta_seconds = _parse_sab_eta_seconds(queue_data.get('queue', {}).get('timeleft'))
                 speed_bps: int | None = None
                 # Prefer explicit speed metrics. "mb" is a size field, not speed.
                 queue_info = queue_data.get('queue', {})
                 speed_sources: list[tuple[object, str]] = []
-                if slot.get('mbps') is not None:
+                if not is_waiting and slot.get('mbps') is not None:
                     speed_sources.append((slot.get('mbps'), 'mbps'))
-                if slot.get('kbpersec') is not None:
+                if not is_waiting and slot.get('kbpersec') is not None:
                     speed_sources.append((slot.get('kbpersec'), 'kbps'))
-                if not is_waiting and queue_info.get('mbps') is not None:
+                if not is_waiting and slot_index == 0 and queue_info.get('mbps') is not None:
                     speed_sources.append((queue_info.get('mbps'), 'mbps'))
-                if not is_waiting and queue_info.get('kbpersec') is not None:
+                if not is_waiting and slot_index == 0 and queue_info.get('kbpersec') is not None:
                     speed_sources.append((queue_info.get('kbpersec'), 'kbps'))
 
                 for raw_value, unit_hint in speed_sources:
@@ -492,7 +492,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                         speed_bps = None
                     if speed_bps is not None:
                         break
-                if is_waiting and speed_bps is None:
+                if is_waiting:
                     speed_bps = 0
                 return {
                     'progress_percent': pct,
