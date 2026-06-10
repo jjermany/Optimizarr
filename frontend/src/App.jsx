@@ -305,7 +305,7 @@ export function libraryQueueCount(library, jobs, downloadJobs) {
 }
 
 export function shouldShowDownloadElapsed(status) {
-  return ['searching', 'queued', 'downloading', 'moving', 'stalled', 'importing'].includes(String(status ?? '').toLowerCase());
+  return ['searching', 'downloading', 'moving', 'stalled', 'importing'].includes(String(status ?? '').toLowerCase());
 }
 
 function jobSortRank(job) {
@@ -3593,6 +3593,7 @@ export default function App() {
                             </div>
                             <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
                               {showEta && <span>ETA: {etaLabel}</span>}
+                              {dj.status === 'queued' && <span>Elapsed: waiting</span>}
                               {showElapsed && <span>Elapsed: {elapsedLabel}</span>}
                               {speedLabel && <span>Speed: {speedLabel}</span>}
                               {retryLabel && <span>{retryLabel}</span>}
@@ -3785,6 +3786,9 @@ export default function App() {
                                     <p className="mt-0.5 text-xs text-slate-500" title={elapsedSeconds == null ? 'Missing created_at timestamp' : `${elapsedSeconds}s elapsed`}>
                                       Elapsed: {elapsedLabel}
                                     </p>
+                                  )}
+                                  {dj.status === 'queued' && (
+                                    <p className="mt-0.5 text-xs text-slate-500">Elapsed: waiting</p>
                                   )}
                                   {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
                                 </td>

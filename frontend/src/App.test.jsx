@@ -303,10 +303,10 @@ describe('libraryQueueCount', () => {
 describe('shouldShowDownloadElapsed', () => {
   it('hides elapsed time for waiting_encode placeholders', () => {
     expect(shouldShowDownloadElapsed('waiting_encode')).toBe(false);
+    expect(shouldShowDownloadElapsed('queued')).toBe(false);
   });
 
   it('shows elapsed time for actively progressing download states', () => {
-    expect(shouldShowDownloadElapsed('queued')).toBe(true);
     expect(shouldShowDownloadElapsed('downloading')).toBe(true);
     expect(shouldShowDownloadElapsed('importing')).toBe(true);
   });

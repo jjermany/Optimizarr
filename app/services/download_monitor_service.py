@@ -2090,7 +2090,6 @@ def _process_searching_jobs(db: Session) -> None:
     active_download = (
         db.query(DownloadJob)
         .filter(DownloadJob.status.in_([
-            DownloadJobStatus.queued.value,
             DownloadJobStatus.downloading.value,
             DownloadJobStatus.moving.value,
             DownloadJobStatus.importing.value,
@@ -2265,7 +2264,6 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     # Safety check: refuse to grab if another download is already active.
     # Guards against any state inconsistency that slips past the outer check.
     if db.query(DownloadJob).filter(DownloadJob.status.in_([
-        DownloadJobStatus.queued.value,
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.moving.value,
         DownloadJobStatus.importing.value,

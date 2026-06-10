@@ -2047,6 +2047,41 @@ def test_process_searching_jobs_retries_existing_searching_job(monkeypatch):
         assert calls == [dj.id]
 
 
+def test_process_searching_jobs_continues_when_existing_download_is_client_queued(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        queued = DownloadJob(
+            source_file_path='/media/Already.Handed.Off.2026.mkv',
+            status=DownloadJobStatus.queued.value,
+        )
+        pending = DownloadJob(
+            source_file_path='/media/Next.Item.2026.mkv',
+            status=DownloadJobStatus.pending.value,
+        )
+        db.add_all([queued, pending])
+        db.commit()
+        db.refresh(pending)
+
+        monkeypatch.setattr('app.services.download_monitor_service.prowlarr_service.get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr('app.services.download_monitor_service._startup_grace_until', None)
+        monkeypatch.setattr('app.workers.queue.is_queue_paused', lambda: False)
+
+        calls = []
+        monkeypatch.setattr('app.services.download_monitor_service._do_search', lambda _db, job, *_args: calls.append(job.id))
+
+        _process_searching_jobs(db)
+        db.refresh(queued)
+        db.refresh(pending)
+
+        assert queued.status == DownloadJobStatus.queued.value
+        assert pending.status == DownloadJobStatus.searching.value
+        assert calls == [pending.id]
+
+
 def test_process_searching_jobs_uses_newest_sort_for_pending(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
