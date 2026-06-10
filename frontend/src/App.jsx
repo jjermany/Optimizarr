@@ -1689,6 +1689,41 @@ export default function App() {
     }
   }
 
+  async function refreshSettingsPanel() {
+    try {
+      const [
+        nextSettings,
+        nextAccountSettings,
+        nextNotificationSettings,
+        nextPlexSettings,
+        nextProwlarrSettings,
+        nextQbtSettings,
+        nextSabSettings,
+      ] = await Promise.all([
+        fetchSettings(),
+        fetchAccountSettings(),
+        fetchNotificationSettings(),
+        fetchPlexSettings(),
+        fetchProwlarrSettings().catch(() => null),
+        fetchQBittorrentSettings().catch(() => null),
+        fetchSabnzbdSettings().catch(() => null),
+      ]);
+      setSettings(nextSettings);
+      setAccountSettings(nextAccountSettings);
+      setNotificationSettings(nextNotificationSettings);
+      setPlexSettings(nextPlexSettings);
+      if (nextProwlarrSettings) setProwlarrSettings(nextProwlarrSettings);
+      if (nextQbtSettings) setQbtSettings(nextQbtSettings);
+      if (nextSabSettings) setSabSettings(nextSabSettings);
+    } catch (refreshError) {
+      if (refreshError.status === 401) {
+        await refreshAuthStatus();
+        return;
+      }
+      pushToast(refreshError.message || 'Could not refresh settings.', 'error');
+    }
+  }
+
 
 
   async function handleQueueSortChange(nextSort) {
@@ -1846,6 +1881,22 @@ export default function App() {
     const timer = setInterval(refreshQueueSnapshot, QUEUE_RECONCILE_POLL_MS);
     return () => clearInterval(timer);
   }, [authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
+
+  useEffect(() => {
+    if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return;
+    if (activePage !== 'settings') return;
+    if (settings && accountSettings && notificationSettings && plexSettings) return;
+    refreshSettingsPanel();
+  }, [
+    activePage,
+    settings,
+    accountSettings,
+    notificationSettings,
+    plexSettings,
+    authStatus.loading,
+    authStatus.setup_required,
+    authStatus.authenticated,
+  ]);
 
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
@@ -4254,6 +4305,15 @@ export default function App() {
         )}
 
         {/* ── Settings ───────────────────────────────────────────────────────── */}
+        {activePage === 'settings' && !(settings && accountSettings && notificationSettings && plexSettings) && (
+          <section className="animate-fade-in">
+            <SectionCard>
+              <SectionTitle>Settings</SectionTitle>
+              <p className="text-sm text-slate-300">Loading settings...</p>
+            </SectionCard>
+          </section>
+        )}
+
         {activePage === 'settings' && settings && accountSettings && notificationSettings && plexSettings && (
           <section className="animate-fade-in space-y-5">
             <SectionCard>
