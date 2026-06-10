@@ -6,7 +6,7 @@ import re
 from sqlalchemy.orm import Session
 
 from app.models.job import Job
-from app.models.library import LibraryProfile
+from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
 from app.services import optimization_service
 from app.services.job_timing_service import reset_encode_timing, stop_encode_timing
@@ -465,6 +465,47 @@ def cleanup_optimized_outputs(db: Session) -> tuple[int, list[int]]:
             removed_job_ids.append(job.id)
 
     return removed_files, removed_job_ids
+
+
+def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
+    libraries = db.query(Library).all()
+
+    removed_files = 0
+    affected_library_ids: list[int] = []
+    affected_library_ids_seen: set[int] = set()
+
+    for library in libraries:
+        profile = library.profile
+        if profile is None:
+            continue
+
+        library_path = Path(str(library.path or '').strip())
+        if not library_path.exists() or not library_path.is_dir():
+            continue
+
+        output_suffix = str(profile.output_suffix or '').strip()
+        if not output_suffix:
+            continue
+
+        container = str(profile.container.value if hasattr(profile.container, 'value') else profile.container).lower().strip('.')
+        if not container:
+            continue
+
+        duplicate_pattern = re.compile(rf'{re.escape(output_suffix)}-v\d+$', re.IGNORECASE)
+        for candidate in library_path.rglob(f'*.{container}'):
+            if not candidate.is_file():
+                continue
+            if not duplicate_pattern.search(candidate.stem):
+                continue
+
+            candidate.unlink(missing_ok=True)
+            if not candidate.exists():
+                removed_files += 1
+                if library.id not in affected_library_ids_seen:
+                    affected_library_ids.append(library.id)
+                    affected_library_ids_seen.add(library.id)
+
+    return removed_files, affected_library_ids
 
 
 def abort_all_jobs(db: Session) -> list[Job]:

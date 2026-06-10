@@ -275,6 +275,10 @@ export function runOptimizedCleanup() {
   return request('/cleanup/optimized', { method: 'POST' });
 }
 
+export function runDuplicateOptimizedCleanup() {
+  return request('/cleanup/optimized/duplicates', { method: 'POST' });
+}
+
 export function fetchPlexSettings() {
   return request('/plex/settings');
 }

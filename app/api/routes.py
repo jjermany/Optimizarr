@@ -51,6 +51,7 @@ from app.services.job_service import (
     abort_job,
     cancel_all_queued_jobs,
     cancel_job,
+    cleanup_duplicate_optimized_outputs,
     cleanup_optimized_outputs,
     create_job,
     delete_job,
@@ -737,6 +738,11 @@ class CleanupResponse(BaseModel):
 class OptimizedCleanupResponse(BaseModel):
     deleted_files: int
     affected_job_ids: list[int]
+
+
+class DuplicateOptimizedCleanupResponse(BaseModel):
+    deleted_files: int
+    affected_library_ids: list[int]
 
 
 class AbortAllJobsResponse(BaseModel):
@@ -1956,6 +1962,20 @@ def run_optimized_cleanup_endpoint(_: None = Depends(require_ui_auth), db: Sessi
         affected_jobs=len(affected_job_ids),
     )
     return OptimizedCleanupResponse(deleted_files=deleted_files, affected_job_ids=affected_job_ids)
+
+
+@router.post('/cleanup/optimized/duplicates', response_model=DuplicateOptimizedCleanupResponse)
+def run_duplicate_optimized_cleanup_endpoint(
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> DuplicateOptimizedCleanupResponse:
+    deleted_files, affected_library_ids = cleanup_duplicate_optimized_outputs(db)
+    broker.publish_system_event(
+        'duplicate_optimized_cleanup_summary',
+        deleted_files=deleted_files,
+        affected_libraries=len(affected_library_ids),
+    )
+    return DuplicateOptimizedCleanupResponse(deleted_files=deleted_files, affected_library_ids=affected_library_ids)
 
 
 

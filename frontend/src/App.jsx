@@ -44,6 +44,7 @@ import {
   retryJob,
   startJob,
   runCleanup,
+  runDuplicateOptimizedCleanup,
   runOptimizedCleanup,
   runRecovery,
   scanLibrary,
@@ -2609,6 +2610,16 @@ export default function App() {
     }
   }
 
+  async function handleDuplicateOptimizedCleanupRun() {
+    try {
+      const result = await runDuplicateOptimizedCleanup();
+      pushToast(`Deleted ${result.deleted_files} duplicate optimized file(s) from ${result.affected_library_ids.length} librar${result.affected_library_ids.length === 1 ? 'y' : 'ies'}.`, 'success');
+      await refreshAll();
+    } catch (cleanupError) {
+      pushToast(cleanupError.message || 'Duplicate cleanup failed.', 'error');
+    }
+  }
+
   // ── Render ──────────────────────────────────────────────────────────────────
 
   if (authStatus.loading) {
@@ -4402,6 +4413,7 @@ export default function App() {
               <div className="mt-5 flex flex-wrap gap-3">
                 <Btn variant="indigo" onClick={handleRecoveryRun}>Run Recovery Now</Btn>
                 <Btn variant="primary" onClick={handleCleanupRun}>Run Workspace Cleanup</Btn>
+                <Btn variant="warning" onClick={handleDuplicateOptimizedCleanupRun}>Remove Duplicate Optimized Outputs</Btn>
                 <Btn variant="warning" onClick={handleOptimizedCleanupRun}>Remove Optimized Outputs</Btn>
               </div>
 

@@ -1687,3 +1687,40 @@ def test_cleanup_optimized_endpoint_deletes_recorded_outputs(tmp_path):
         assert job_id in payload['affected_job_ids']
 
     assert not output_file.exists()
+
+
+def test_cleanup_duplicate_optimized_endpoint_deletes_versioned_outputs(tmp_path):
+    from app.core.database import SessionLocal
+    from app.models.library import Library, LibraryProfile
+
+    library_path = tmp_path / 'movies'
+    library_path.mkdir()
+    source_file = library_path / 'movie.mkv'
+    canonical_output = library_path / 'movie-1080p.mkv'
+    duplicate_v2 = library_path / 'movie-1080p-v2.mkv'
+    duplicate_v10 = library_path / 'movie-1080p-v10.mkv'
+    wrong_container = library_path / 'movie-1080p-v3.mp4'
+    for path in [source_file, canonical_output, duplicate_v2, duplicate_v10, wrong_container]:
+        path.write_text(path.name)
+
+    with SessionLocal() as db:
+        library = Library(name='Duplicate Movies', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+        db.add(LibraryProfile(library_id=library.id))
+        db.commit()
+        library_id = library.id
+
+    with TestClient(app) as client:
+        cleanup_response = client.post('/cleanup/optimized/duplicates')
+        assert cleanup_response.status_code == 200
+        payload = cleanup_response.json()
+        assert payload['deleted_files'] == 2
+        assert payload['affected_library_ids'] == [library_id]
+
+    assert source_file.exists()
+    assert canonical_output.exists()
+    assert not duplicate_v2.exists()
+    assert not duplicate_v10.exists()
+    assert wrong_container.exists()
