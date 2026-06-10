@@ -166,3 +166,36 @@ def test_get_sab_status_marks_moving_state(monkeypatch):
     assert status['is_moving'] is True
     assert status['is_complete'] is False
     assert status['not_found'] is False
+
+
+def test_get_sab_status_marks_queued_status_as_waiting(monkeypatch):
+    queue_payload = {
+        'queue': {
+            'kbpersec': '1234',
+            'mbps': '67',
+            'timeleft': '0:01:30',
+            'slots': [
+                {
+                    'nzo_id': 'NZO-QUEUED',
+                    'percentage': '0',
+                    'status': 'Queued',
+                    'timeleft': '-',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-QUEUED')
+
+    assert status['is_waiting'] is True
+    assert status['sab_status'] == 'Queued'
+    assert status['eta_seconds'] is None
+    assert status['download_speed_bps'] == 0
+    assert status['is_stalled'] is False
+    assert status['is_complete'] is False
+    assert status['not_found'] is False

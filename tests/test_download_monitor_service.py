@@ -750,6 +750,38 @@ def test_download_job_exists_for_source_ignores_stale_complete_without_imported_
         db.commit()
 
         assert download_job_exists_for_source(db, source_path) is False
+
+
+def test_download_job_exists_for_source_dedupes_completed_import_by_identity(tmp_path):
+    imported_path = tmp_path / 'Example Movie (2026).mkv'
+    imported_path.write_text('downloaded')
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        completed_job = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/Example Movie (2026)/Example Movie (2026) [WEBDL-2160p x265].mkv',
+            status=DownloadJobStatus.complete.value,
+            imported_file_path=str(imported_path),
+        )
+        db.add(completed_job)
+        db.commit()
+
+        assert download_job_exists_for_source(
+            db,
+            '/media/movies/Example Movie (2026)/Example Movie (2026) [Bluray-2160p Remux].mkv',
+            library_id=library.id,
+        ) is True
+
+
 def _seed_library_with_profile(db):
     library = Library(name='Movies', path='/tmp/movies', enabled=True)
     db.add(library)
@@ -2519,6 +2551,66 @@ def test_check_download_progress_qbit_queued_does_not_timeout_or_retry(monkeypat
             'not_found': False,
         })
         monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kwargs: True)
+
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.retry_count == 0
+        assert dj.error_message is None
+        assert dj.download_started_at.replace(tzinfo=UTC) > old_started_at
+        assert fallback_calls == []
+
+
+def test_check_download_progress_sab_queued_does_not_timeout_or_retry(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        library.profile.download_timeout_minutes = 1
+        db.commit()
+        old_started_at = datetime.now(UTC) - timedelta(minutes=5)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Sab.Client.Queued.mkv',
+            release_name='Sab.Client.Queued.2025.1080p.WEB-DL',
+            download_hash='SAB_QUEUED_NZO',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            max_retries=5,
+            progress_percent=0,
+            download_started_at=old_started_at,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'download_speed_bps': 0,
+            'is_complete': False,
+            'is_moving': False,
+            'is_waiting': True,
+            'is_stalled': False,
+            'sab_status': 'Queued',
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
 
         fallback_calls = []
         monkeypatch.setattr(

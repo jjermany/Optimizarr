@@ -434,6 +434,15 @@ def _sab_is_moving_status(status: object) -> bool:
     return status_text in {'moving', 'move'}
 
 
+def _sab_is_waiting_status(status: object) -> bool:
+    status_text = str(status or '').strip().lower()
+    return status_text in {
+        'queued',
+        'paused',
+        'idle',
+    }
+
+
 def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
     """Returns progress, eta, speed, completion, and save_path for an NZO."""
     try:
@@ -447,9 +456,14 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                 except (TypeError, ValueError):
                     pct = 0
                 status = slot.get('status', '')
-                is_stalled = status in ('Stalled', 'Failed')
+                status_text = str(status or '').strip().lower()
+                is_stalled = status_text in {'stalled', 'failed'}
                 is_moving = _sab_is_moving_status(status)
-                eta_seconds = _parse_sab_eta_seconds(slot.get('timeleft')) or _parse_sab_eta_seconds(queue_data.get('queue', {}).get('timeleft'))
+                is_waiting = _sab_is_waiting_status(status)
+                slot_eta_seconds = _parse_sab_eta_seconds(slot.get('timeleft'))
+                eta_seconds = slot_eta_seconds
+                if eta_seconds is None and not is_waiting:
+                    eta_seconds = _parse_sab_eta_seconds(queue_data.get('queue', {}).get('timeleft'))
                 speed_bps: int | None = None
                 # Prefer explicit speed metrics. "mb" is a size field, not speed.
                 queue_info = queue_data.get('queue', {})
@@ -458,9 +472,9 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     speed_sources.append((slot.get('mbps'), 'mbps'))
                 if slot.get('kbpersec') is not None:
                     speed_sources.append((slot.get('kbpersec'), 'kbps'))
-                if queue_info.get('mbps') is not None:
+                if not is_waiting and queue_info.get('mbps') is not None:
                     speed_sources.append((queue_info.get('mbps'), 'mbps'))
-                if queue_info.get('kbpersec') is not None:
+                if not is_waiting and queue_info.get('kbpersec') is not None:
                     speed_sources.append((queue_info.get('kbpersec'), 'kbps'))
 
                 for raw_value, unit_hint in speed_sources:
@@ -478,13 +492,17 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                         speed_bps = None
                     if speed_bps is not None:
                         break
+                if is_waiting and speed_bps is None:
+                    speed_bps = 0
                 return {
                     'progress_percent': pct,
                     'eta_seconds': eta_seconds,
                     'download_speed_bps': speed_bps,
                     'is_complete': False,
                     'is_moving': is_moving,
+                    'is_waiting': is_waiting,
                     'is_stalled': is_stalled,
+                    'sab_status': status,
                     'save_path': None,
                     'not_found': False,
                 }
@@ -496,6 +514,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                 status = slot.get('status', '')
                 is_complete = status == 'Completed'
                 is_moving = _sab_is_moving_status(status) and not is_complete
+                is_waiting = _sab_is_waiting_status(status) and not is_complete
                 save_path = slot.get('storage') if is_complete else None
                 return {
                     'progress_percent': 100 if is_complete else 0,
@@ -503,7 +522,9 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     'download_speed_bps': 0 if is_complete else None,
                     'is_complete': is_complete,
                     'is_moving': is_moving,
+                    'is_waiting': is_waiting,
                     'is_stalled': status == 'Failed',
+                    'sab_status': status,
                     'save_path': save_path,
                     'not_found': False,
                 }
@@ -514,7 +535,9 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
             'download_speed_bps': None,
             'is_complete': False,
             'is_moving': False,
+            'is_waiting': False,
             'is_stalled': False,
+            'sab_status': None,
             'save_path': None,
             'not_found': True,
         }
@@ -526,7 +549,9 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
             'download_speed_bps': None,
             'is_complete': False,
             'is_moving': False,
+            'is_waiting': False,
             'is_stalled': False,
+            'sab_status': None,
             'save_path': None,
             'not_found': False,
         }

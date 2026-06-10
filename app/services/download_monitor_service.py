@@ -236,12 +236,20 @@ def download_job_exists_for_source(db: Session, source_path: str, library_id: in
         .filter(
             DownloadJob.library_id == library_id,
             DownloadJob.source_file_path != source_path,
-            DownloadJob.status.in_(active_statuses - {DownloadJobStatus.complete.value}),
+            DownloadJob.status.in_(active_statuses),
         )
         .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
         .all()
     )
-    return any(media_identity_key(dj.source_file_path) == identity_key for dj in identity_rows)
+    for dj in identity_rows:
+        if media_identity_key(dj.source_file_path) != identity_key:
+            continue
+        if dj.status != DownloadJobStatus.complete.value:
+            return True
+        imported = Path(dj.imported_file_path) if dj.imported_file_path else None
+        if imported and imported.exists():
+            return True
+    return False
 
 
 _ACTIVE_DOWNLOAD_STATUSES = (
@@ -288,6 +296,7 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
                 DownloadJobStatus.stalled.value,
                 DownloadJobStatus.importing.value,
                 DownloadJobStatus.waiting_encode.value,
+                DownloadJobStatus.complete.value,
             }),
         )
         .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
@@ -297,7 +306,11 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
     if identity_key:
         for dj in existing:
             if media_identity_key(dj.source_file_path) == identity_key:
-                return dj
+                if dj.status != DownloadJobStatus.complete.value:
+                    return dj
+                imported = Path(dj.imported_file_path) if dj.imported_file_path else None
+                if imported and imported.exists():
+                    return dj
 
     dj = DownloadJob(
         library_id=library.id,
@@ -2774,16 +2787,18 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         )
         return
 
-    if status.get('is_waiting') and client_type == 'qbittorrent':
-        # qBittorrent's queue is intentional backpressure, not a bad release.
+    if status.get('is_waiting') and client_type in {'qbittorrent', 'sabnzbd'}:
+        # Client-side queueing is intentional backpressure, not a bad release.
         # Keep the timeout clock parked while the client has not started it yet.
         dj.download_started_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(dj)
+        state_label = status.get('qbt_state') or status.get('sab_status') or 'queued'
         logger.info(
-            'Download job %s: qBittorrent state=%s; waiting in client queue without consuming retry timeout',
+            'Download job %s: %s state=%s; waiting in client queue without consuming retry timeout',
             dj.id,
-            status.get('qbt_state') or 'queued',
+            client_type,
+            state_label,
         )
         return
 
