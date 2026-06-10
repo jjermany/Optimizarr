@@ -14,6 +14,7 @@ import {
   libraryQueueCount,
   mergeDownloadJobsWithUpdate,
   mergeJobsWithUpdate,
+  removeJobById,
   shouldShowDownloadElapsed,
 } from './App';
 
@@ -48,6 +49,17 @@ describe('mergeJobsWithUpdate', () => {
 
     expect(merged.resetToFirstPage).toBe(false);
     expect(merged.jobs[0].fps).toBe(12.5);
+  });
+});
+
+describe('removeJobById', () => {
+  it('removes the matching encode job from local state', () => {
+    const jobs = [
+      { id: 10, status: 'queued' },
+      { id: 11, status: 'running' },
+    ];
+
+    expect(removeJobById(jobs, 10)).toEqual([{ id: 11, status: 'running' }]);
   });
 });
 

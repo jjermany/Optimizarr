@@ -666,7 +666,10 @@ def test_create_and_fetch_job():
         assert fetched['status'] in {'queued', 'starting', 'running', 'complete', 'failed', 'skipped', 'cancelled'}
 
 
-def test_delete_job_endpoint():
+def test_delete_job_endpoint(monkeypatch):
+    system_events = []
+    monkeypatch.setattr('app.api.routes.broker.publish_system_event', lambda event, **data: system_events.append((event, data)))
+
     with TestClient(app) as client:
         create_response = client.post('/jobs', json={'source_path': '/media/delete-me.mkv'})
         assert create_response.status_code == 201
@@ -677,6 +680,7 @@ def test_delete_job_endpoint():
 
         get_response = client.get(f'/jobs/{job_id}')
         assert get_response.status_code == 404
+        assert ('job_removed', {'job_id': job_id}) in system_events
 
 
 def test_scan_cancel_and_retry_endpoints(monkeypatch, tmp_path):

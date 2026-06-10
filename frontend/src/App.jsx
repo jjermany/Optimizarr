@@ -73,6 +73,7 @@ const WS_PATH = '/ws';
 const FALLBACK_AFTER_MS = 5000;
 const FALLBACK_POLL_MS = 10000;
 const METRICS_POLL_MS = 10000;
+const QUEUE_RECONCILE_POLL_MS = 15000;
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const JOBS_PAGE_SIZE = 50;
@@ -218,6 +219,10 @@ export function mergeDownloadJobsWithUpdate(previousJobs, nextDownloadJob) {
   const updated = [...previousJobs];
   updated[existingIndex] = { ...previousJob, ...nextDownloadJob };
   return updated;
+}
+
+export function removeJobById(previousJobs, jobId) {
+  return previousJobs.filter((job) => job.id !== jobId);
 }
 
 function libraryEncodeQueueCount(library, jobs) {
@@ -1667,6 +1672,23 @@ export default function App() {
     }
   }
 
+  async function refreshQueueSnapshot() {
+    try {
+      const [nextJobs, nextQueueStatus, nextDownloadJobs] = await Promise.all([
+        fetchJobs(),
+        fetchQueueStatus(),
+        fetchDownloadJobs().catch(() => []),
+      ]);
+      setJobs(nextJobs ?? []);
+      setQueuePaused(nextQueueStatus?.status === 'paused');
+      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+    } catch (refreshError) {
+      if (refreshError.status === 401) {
+        await refreshAuthStatus();
+      }
+    }
+  }
+
 
 
   async function handleQueueSortChange(nextSort) {
@@ -1821,6 +1843,12 @@ export default function App() {
 
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
+    const timer = setInterval(refreshQueueSnapshot, QUEUE_RECONCILE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
+
+  useEffect(() => {
+    if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
     const activeDownloadCount = downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length;
     if (activeDownloadCount <= 1) return undefined;
     if (downloadReconcileInFlightRef.current) return undefined;
@@ -1927,6 +1955,10 @@ export default function App() {
           }
           if (payload.type === 'system_event') {
             if (payload.data?.event === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
+            if (payload.data?.event === 'job_removed') {
+              setJobs((prev) => removeJobById(prev, payload.data?.job_id));
+              return;
+            }
             if (payload.data?.event === 'download_job_removed') {
               setDownloadJobs((prev) => prev.filter((dj) => dj.id !== payload.data?.download_job_id));
               return;
@@ -1993,7 +2025,7 @@ export default function App() {
       else if (action === 'start') mergeJobUpdate(await startJob(jobId));
       else if (action === 'abort') mergeJobUpdate(await abortJob(jobId));
       else if (action === 'discard') mergeJobUpdate(await discardJobProgress(jobId));
-      else if (action === 'remove') { await deleteJob(jobId); setJobs((prev) => prev.filter((j) => j.id !== jobId)); }
+      else if (action === 'remove') { await deleteJob(jobId); setJobs((prev) => removeJobById(prev, jobId)); }
     } catch (actionError) {
       pushToast(actionError.message || 'Job action failed.', 'error');
     } finally {

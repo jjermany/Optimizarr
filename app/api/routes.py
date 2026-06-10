@@ -1545,6 +1545,7 @@ def delete_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     deleted = delete_job(db, job_id)
     if not deleted:
         raise HTTPException(status_code=404, detail='Job not found')
+    broker.publish_system_event('job_removed', job_id=job_id)
 
 
 @router.post('/libraries/{library_id}/scan', response_model=ScanResponse)
