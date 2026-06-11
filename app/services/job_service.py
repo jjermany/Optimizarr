@@ -467,6 +467,39 @@ def cleanup_optimized_outputs(db: Session) -> tuple[int, list[int]]:
     return removed_files, removed_job_ids
 
 
+def _cleanup_title_key(path: Path) -> str:
+    stem = path.stem
+    spaced = re.sub(r'[._-]+', ' ', stem).strip()
+    year_match = re.search(r'\b(19|20)\d{2}\b', spaced)
+    if year_match and year_match.start() > 0:
+        stem = spaced[:year_match.start()]
+    else:
+        stem = re.sub(r'\b(?:480|720|1080|1440|2160)p\b', ' ', spaced, flags=re.IGNORECASE)
+        stem = re.sub(r'\b(?:2k|4k)\b', ' ', stem, flags=re.IGNORECASE)
+        stem = re.sub(r'\bv\d+\b', ' ', stem, flags=re.IGNORECASE)
+    return re.sub(r'[^a-z0-9]+', '', stem.lower())
+
+
+def _cleanup_matches_target_label(path: Path, target_resolution: int) -> bool:
+    stem_lower = path.stem.lower()
+    target = int(target_resolution)
+    if f'{target}p' in stem_lower:
+        return True
+    if target == 1080 and re.search(r'\b2k\b', stem_lower):
+        return True
+    if target == 2160 and '4k' in stem_lower:
+        return True
+    if re.search(rf'\b\d{{3,4}}x{target}\b', stem_lower):
+        return True
+    return False
+
+
+def _cleanup_is_same_title(a: Path, b: Path) -> bool:
+    a_key = _cleanup_title_key(a)
+    b_key = _cleanup_title_key(b)
+    return bool(a_key and b_key and (a_key in b_key or b_key in a_key))
+
+
 def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
     libraries = db.query(Library).all()
 
@@ -492,12 +525,32 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
             continue
 
         duplicate_pattern = re.compile(rf'{re.escape(output_suffix)}-v\d+$', re.IGNORECASE)
+        target_resolution = int(getattr(profile, 'target_resolution', 1080) or 1080)
+        canonical_outputs = [
+            candidate
+            for candidate in library_path.rglob(f'*{output_suffix}.{container}')
+            if candidate.is_file()
+        ]
+        canonical_by_title = {
+            _cleanup_title_key(candidate): candidate
+            for candidate in canonical_outputs
+            if _cleanup_title_key(candidate)
+        }
+
+        delete_targets: set[Path] = set()
         for candidate in library_path.rglob(f'*.{container}'):
             if not candidate.is_file():
                 continue
-            if not duplicate_pattern.search(candidate.stem):
-                continue
+            should_delete = bool(duplicate_pattern.search(candidate.stem))
+            if not should_delete and _cleanup_matches_target_label(candidate, target_resolution):
+                should_delete = any(
+                    canonical != candidate and _cleanup_is_same_title(canonical, candidate)
+                    for canonical in canonical_by_title.values()
+                )
+            if should_delete:
+                delete_targets.add(candidate)
 
+        for candidate in sorted(delete_targets):
             candidate.unlink(missing_ok=True)
             if not candidate.exists():
                 removed_files += 1

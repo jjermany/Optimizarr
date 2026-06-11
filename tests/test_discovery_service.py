@@ -301,6 +301,37 @@ def test_scan_library_hdr_only_skips_when_target_sdr_sibling_exists(monkeypatch,
         assert scan_response.json()['created_jobs'] == []
 
 
+def test_scan_library_hdr_only_treats_2k_sibling_as_existing_1080_target(monkeypatch, tmp_path):
+    media_root = tmp_path / 'media'
+    media_root.mkdir()
+    library_path = media_root / 'hdr-with-2k-sdr'
+    library_path.mkdir()
+
+    hdr_file = library_path / 'Movie.Title.2024.2160p.HDR10-GROUP.mkv'
+    hdr_file.write_text('hdr')
+    sdr_target = library_path / 'Movie.Title.2024.2K.BluRay-GROUP.mkv'
+    sdr_target.write_text('sdr')
+
+    monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
+    monkeypatch.setattr(discovery_service, 'probe_video_height', lambda path: 2080 if '2160p' in path else 1080)
+    monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda path: 'HDR10' in path)
+
+    with TestClient(app) as client:
+        create_response = client.post('/libraries', json={'name': 'HdrWith2kSdr', 'path': str(library_path), 'enabled': True})
+        assert create_response.status_code == 201
+        library_id = create_response.json()['id']
+
+        profile_response = client.put(
+            f'/libraries/{library_id}/profile',
+            json={'hdr_only': True, 'target_resolution': 1080, 'minimum_source_resolution': 2160},
+        )
+        assert profile_response.status_code == 200
+
+        scan_response = client.post(f'/libraries/{library_id}/scan')
+        assert scan_response.status_code == 200
+        assert scan_response.json()['created_jobs'] == []
+
+
 def test_scan_library_respects_minimum_source_and_target_resolution(monkeypatch, tmp_path):
     media_root = tmp_path / 'media'
     media_root.mkdir()

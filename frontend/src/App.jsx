@@ -2036,6 +2036,11 @@ export default function App() {
               )));
               return;
             }
+            if (payload.data?.event === 'optimized_cleanup_summary' || payload.data?.event === 'duplicate_optimized_cleanup_summary') {
+              refreshAll();
+              refreshLibrariesAndProfiles();
+              return;
+            }
             if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') pushToast('Recovery ran on startup.', 'info');
           }
         };

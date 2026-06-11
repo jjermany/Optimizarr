@@ -1973,11 +1973,15 @@ def run_duplicate_optimized_cleanup_endpoint(
     db: Session = Depends(get_db),
 ) -> DuplicateOptimizedCleanupResponse:
     deleted_files, affected_library_ids = cleanup_duplicate_optimized_outputs(db)
+    for library_id in affected_library_ids:
+        plex_service.trigger_scan_after_job(library_id)
     broker.publish_system_event(
         'duplicate_optimized_cleanup_summary',
         deleted_files=deleted_files,
         affected_libraries=len(affected_library_ids),
     )
+    for library_id in affected_library_ids:
+        broker.publish_library_update('updated', {'id': library_id})
     return DuplicateOptimizedCleanupResponse(deleted_files=deleted_files, affected_library_ids=affected_library_ids)
 
 

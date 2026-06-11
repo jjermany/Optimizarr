@@ -363,6 +363,48 @@ def test_build_encoder_command_av1_uses_svt_when_qsv_unavailable(monkeypatch):
     assert '-b:a' in command and '768k' in command
 
 
+def test_build_encoder_command_wide_source_uses_1080p_bounding_box(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_width', lambda _: 3840)
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1608)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    assert '-vf' in command and 'scale=1920:-2' in command
+
+
+def test_build_encoder_command_sixteen_by_nine_source_keeps_target_height(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_width', lambda _: 3840)
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 2160)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    assert '-vf' in command and 'scale=-2:1080' in command
+
+
 _HDR_TONEMAP_PREFIX = (
     'zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,'
     'tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p'

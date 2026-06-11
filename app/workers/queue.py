@@ -607,6 +607,8 @@ def _release_matches_target_resolution_label(path: Path, target_resolution: int)
     target = int(target_resolution)
     if f'{target}p' in stem_lower:
         return True
+    if target == 1080 and re.search(r'\b2k\b', stem_lower):
+        return True
     if target == 2160 and '4k' in stem_lower:
         return True
     if re.search(rf'\b\d{{3,4}}x{target}\b', stem_lower):

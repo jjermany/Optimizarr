@@ -407,7 +407,11 @@ def _build_command_with_selection(
     crf = int(profile.get('crf', 23) or 23)
 
     source_height = _probe_height(input_path)
-    should_scale = source_height is not None and source_height > target_height
+    source_width = _probe_width(input_path)
+    should_scale = _should_scale_to_target_box(source_width, source_height, target_height)
+    vaapi_scale_filter = _scale_filter_for_target_box(source_width, source_height, target_height, 'scale_vaapi', '-2')
+    qsv_scale_filter = _scale_filter_for_target_box(source_width, source_height, target_height, 'scale_qsv', '-1')
+    sw_scale_filter = _scale_filter_for_target_box(source_width, source_height, target_height, 'scale', '-2')
 
     video_preset_args: list[str] = []
 
@@ -465,7 +469,7 @@ def _build_command_with_selection(
 
     if selection.use_vaapi and selection.hw_decode and not apply_tonemap:
         # Full GPU pipeline (SDR): frames already in VAAPI surfaces — only scale if needed.
-        filters = [f'scale_vaapi=-2:{target_height}'] if should_scale else []
+        filters = [vaapi_scale_filter] if should_scale else []
         if filters:
             command.extend(['-vf', ','.join(filters)])
     elif selection.use_vaapi and selection.hw_decode and apply_tonemap:
@@ -483,7 +487,7 @@ def _build_command_with_selection(
             # Full GPU pipeline: hardware decode → tonemap_vaapi → VAAPI encode.
             filters = [_VAAPI_TONEMAP_FILTER]
         if should_scale:
-            filters.append(f'scale_vaapi=-2:{target_height}')
+            filters.append(vaapi_scale_filter)
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_vaapi:
         # Software decode fallback: CPU tone mapping → NV12 → hwupload → VAAPI encode.
@@ -492,7 +496,7 @@ def _build_command_with_selection(
             filters.extend(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload'])
         if should_scale:
-            filters.append(f'scale_vaapi=-2:{target_height}')
+            filters.append(vaapi_scale_filter)
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv and apply_tonemap and not selection.force_sw_tonemap:
         # QSV GPU tone mapping via Intel VPP (vpp_qsv=tonemap=1).
@@ -502,7 +506,7 @@ def _build_command_with_selection(
         # no VEBOX (tonemap_vaapi) involved, so DV/HDR10+ content is handled.
         filters = ['hwupload=extra_hw_frames=64', _VPP_QSV_TONEMAP_FILTER]
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(qsv_scale_filter)
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv and apply_tonemap:
         # QSV encode with CPU tone mapping — used when vpp_qsv=tonemap=1 failed
@@ -511,20 +515,20 @@ def _build_command_with_selection(
         filters = list(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(qsv_scale_filter)
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
         filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(qsv_scale_filter)
         command.extend(['-vf', ','.join(filters)])
     else:
         filters = []
         if apply_tonemap:
             filters.extend(_HDR_TONEMAP_FILTERS)
         if should_scale:
-            filters.append(f'scale=-2:{target_height}')
+            filters.append(sw_scale_filter)
         if filters:
             command.extend(['-vf', ','.join(filters)])
 
@@ -750,6 +754,45 @@ def _probe_height(input_path: str) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _probe_width(input_path: str) -> int | None:
+    try:
+        value = _run_ffprobe_value(input_path, 'stream=width')
+    except TypeError:
+        return None
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _target_max_width(target_height: int) -> int:
+    # Treat named heights as a standard 16:9 bounding box: 1080p => 1920x1080.
+    return int(round((int(target_height) * 16 / 9) / 2) * 2)
+
+
+def _should_scale_to_target_box(source_width: int | None, source_height: int | None, target_height: int) -> bool:
+    if source_height is None:
+        return False
+    return source_height > target_height or (
+        source_width is not None and source_width > _target_max_width(target_height)
+    )
+
+
+def _scale_filter_for_target_box(
+    source_width: int | None,
+    source_height: int | None,
+    target_height: int,
+    filter_name: str,
+    auto_dimension: str,
+) -> str:
+    max_width = _target_max_width(target_height)
+    if source_width and source_height and (source_width / source_height) > (max_width / target_height):
+        return f'{filter_name}={max_width}:{auto_dimension}'
+    return f'{filter_name}={auto_dimension}:{target_height}'
 
 
 def probe_video_height(input_path: str) -> int | None:
@@ -1107,7 +1150,11 @@ def _build_resume_command(
     crf = int(profile.get('crf', 23) or 23)
 
     source_height = _probe_height(input_path)
-    should_scale = source_height is not None and source_height > target_height
+    source_width = _probe_width(input_path)
+    should_scale = _should_scale_to_target_box(source_width, source_height, target_height)
+    vaapi_scale_filter = _scale_filter_for_target_box(source_width, source_height, target_height, 'scale_vaapi', '-2')
+    qsv_scale_filter = _scale_filter_for_target_box(source_width, source_height, target_height, 'scale_qsv', '-1')
+    sw_scale_filter = _scale_filter_for_target_box(source_width, source_height, target_height, 'scale', '-2')
 
     video_preset_args: list[str] = []
     if selection.encoder in {'h264_qsv', 'hevc_qsv', 'av1_qsv'}:
@@ -1146,7 +1193,7 @@ def _build_resume_command(
         command = ['ffmpeg'] + seek_args + ['-i', input_path]
 
     if selection.use_vaapi and selection.hw_decode and not apply_tonemap:
-        filters = [f'scale_vaapi=-2:{target_height}'] if should_scale else []
+        filters = [vaapi_scale_filter] if should_scale else []
         if filters:
             command.extend(['-vf', ','.join(filters)])
     elif selection.use_vaapi and selection.hw_decode and apply_tonemap:
@@ -1160,7 +1207,7 @@ def _build_resume_command(
             # HDR10/HLG: static metadata — VEBOX handles it reliably.
             filters = [_VAAPI_TONEMAP_FILTER]
         if should_scale:
-            filters.append(f'scale_vaapi=-2:{target_height}')
+            filters.append(vaapi_scale_filter)
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_vaapi:
         filters = []
@@ -1168,7 +1215,7 @@ def _build_resume_command(
             filters.extend(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload'])
         if should_scale:
-            filters.append(f'scale_vaapi=-2:{target_height}')
+            filters.append(vaapi_scale_filter)
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv and apply_tonemap and not selection.force_sw_tonemap:
         # QSV GPU tone mapping via Intel VPP.  SW decode keeps native 10-bit HDR
@@ -1176,27 +1223,27 @@ def _build_resume_command(
         # to SDR fully on-GPU without involving VEBOX / tonemap_vaapi.
         filters = ['hwupload=extra_hw_frames=64', _VPP_QSV_TONEMAP_FILTER]
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(qsv_scale_filter)
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv and apply_tonemap:
         # CPU tone-map fallback (vpp_qsv unsupported on this host).
         filters = list(_HDR_TONEMAP_FILTERS)
         filters.extend(['format=nv12', 'hwupload=extra_hw_frames=64'])
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(qsv_scale_filter)
         command.extend(['-vf', ','.join(filters)])
     elif selection.use_qsv:
         # SDR path: software decode → format=nv12 → hwupload → scale_qsv → QSV encode.
         filters = ['format=nv12', 'hwupload=extra_hw_frames=64']
         if should_scale:
-            filters.append(f'scale_qsv=-1:{target_height}')
+            filters.append(qsv_scale_filter)
         command.extend(['-vf', ','.join(filters)])
     else:
         filters = []
         if apply_tonemap:
             filters.extend(_HDR_TONEMAP_FILTERS)
         if should_scale:
-            filters.append(f'scale=-2:{target_height}')
+            filters.append(sw_scale_filter)
         if filters:
             command.extend(['-vf', ','.join(filters)])
 

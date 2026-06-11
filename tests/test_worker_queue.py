@@ -543,6 +543,44 @@ def test_claim_next_queued_job_skips_hdr_job_when_target_sdr_sibling_exists(monk
         assert job.error_message == 'Target SDR file already exists'
 
 
+def test_claim_next_queued_job_treats_2k_sibling_as_existing_1080_target(monkeypatch, tmp_path):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        source = tmp_path / 'Movie (2024) 2160p HDR.mkv'
+        sibling = tmp_path / 'Movie (2024) 2K.mkv'
+        source.write_text('hdr')
+        sibling.write_text('sdr')
+
+        job = Job(
+            input_path=str(source),
+            status='queued',
+            profile_snapshot_json=json.dumps({
+                'hdr_only': True,
+                'tone_map_hdr': False,
+                'target_resolution': 1080,
+            }),
+        )
+        db.add(job)
+        db.commit()
+
+        monkeypatch.setattr(queue, 'probe_video_height', lambda path: 1080 if str(path) == str(sibling) else 2160)
+        monkeypatch.setattr(queue, 'is_hdr_video', lambda path: str(path) == str(source))
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        db.refresh(job)
+
+        assert selected_id is None
+        assert job.status == 'skipped'
+        assert job.error_message == 'Target SDR file already exists'
+
+
 def test_claim_next_queued_job_skips_download_enabled_source_with_active_download(tmp_path):
     queue.resume_queue()
 
