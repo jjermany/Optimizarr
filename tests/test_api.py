@@ -1730,7 +1730,7 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_versioned_outputs(tmp_path
     assert wrong_container.exists()
 
 
-def test_cleanup_duplicate_optimized_endpoint_deletes_2k_sibling_when_canonical_exists(tmp_path):
+def test_cleanup_duplicate_optimized_endpoint_keeps_2k_sibling_when_canonical_exists(tmp_path):
     from app.core.database import SessionLocal
     from app.models.library import Library, LibraryProfile
 
@@ -1755,9 +1755,9 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_2k_sibling_when_canonical_
         cleanup_response = client.post('/cleanup/optimized/duplicates')
         assert cleanup_response.status_code == 200
         payload = cleanup_response.json()
-        assert payload['deleted_files'] == 1
-        assert payload['affected_library_ids'] == [library_id]
+        assert payload['deleted_files'] == 0
+        assert payload['affected_library_ids'] == []
 
     assert source_file.exists()
     assert canonical_output.exists()
-    assert not duplicate_2k.exists()
+    assert duplicate_2k.exists()
