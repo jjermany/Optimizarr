@@ -1761,3 +1761,64 @@ def test_cleanup_duplicate_optimized_endpoint_keeps_2k_sibling_when_canonical_ex
     assert source_file.exists()
     assert canonical_output.exists()
     assert duplicate_2k.exists()
+
+
+def test_cleanup_duplicate_optimized_endpoint_deletes_recorded_duplicate_artifacts_across_labels(tmp_path):
+    from datetime import UTC, datetime
+
+    from app.core.database import SessionLocal
+    from app.models.download_job import DownloadJob, DownloadJobStatus
+    from app.models.job import Job
+    from app.models.library import Library, LibraryProfile
+
+    library_path = tmp_path / 'movies'
+    library_path.mkdir()
+    source_file = library_path / 'Movie Title (2024) 2160p HDR.mkv'
+    encoded_2k = library_path / 'Movie Title (2024)-1080p.mkv'
+    downloaded_1080p = library_path / 'Movie Title (2024) 1080p WEB-DL.mkv'
+    for path in [source_file, encoded_2k, downloaded_1080p]:
+        path.write_text(path.name)
+
+    with SessionLocal() as db:
+        library = Library(name='Recorded Duplicate Movies', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+        db.add(LibraryProfile(library_id=library.id, target_resolution=1080))
+        db.commit()
+        encode_job = Job(
+            input_path=str(source_file),
+            output_path=str(encoded_2k),
+            status='complete',
+            library_id=library.id,
+            completed_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+        download_job = DownloadJob(
+            library_id=library.id,
+            source_file_path=str(source_file),
+            status=DownloadJobStatus.complete.value,
+            imported_file_path=str(downloaded_1080p),
+            completed_at=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+        db.add_all([encode_job, download_job])
+        db.commit()
+        library_id = library.id
+        encode_job_id = encode_job.id
+        download_job_id = download_job.id
+
+    with TestClient(app) as client:
+        cleanup_response = client.post('/cleanup/optimized/duplicates')
+        assert cleanup_response.status_code == 200
+        payload = cleanup_response.json()
+        assert payload['deleted_files'] == 1
+        assert payload['affected_library_ids'] == [library_id]
+
+    with SessionLocal() as db:
+        encode_job = db.query(Job).filter(Job.id == encode_job_id).first()
+        download_job = db.query(DownloadJob).filter(DownloadJob.id == download_job_id).first()
+        assert encode_job.output_path is None
+        assert download_job.imported_file_path == str(downloaded_1080p)
+
+    assert source_file.exists()
+    assert not encoded_2k.exists()
+    assert downloaded_1080p.exists()

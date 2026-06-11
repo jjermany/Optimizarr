@@ -5,6 +5,7 @@ import re
 
 from sqlalchemy.orm import Session
 
+from app.models.download_job import DownloadJob
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
@@ -504,6 +505,88 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
                 if library.id not in affected_library_ids_seen:
                     affected_library_ids.append(library.id)
                     affected_library_ids_seen.add(library.id)
+
+        artifact_groups: dict[str, list[dict]] = {}
+        completed_encode_jobs = (
+            db.query(Job)
+            .filter(
+                Job.library_id == library.id,
+                Job.status == 'complete',
+                Job.output_path.is_not(None),
+            )
+            .all()
+        )
+        for job in completed_encode_jobs:
+            output_path = Path(str(job.output_path or '').strip())
+            if not output_path.exists() or not output_path.is_file():
+                continue
+            if output_path == Path(str(job.input_path or '').strip()):
+                continue
+            identity_key = media_identity_key(job.input_path)
+            if not identity_key:
+                continue
+            artifact_groups.setdefault(identity_key, []).append({
+                'path': output_path,
+                'completed_at': job.completed_at,
+                'kind': 'encode',
+                'record': job,
+            })
+
+        completed_download_jobs = (
+            db.query(DownloadJob)
+            .filter(
+                DownloadJob.library_id == library.id,
+                DownloadJob.status == 'complete',
+                DownloadJob.imported_file_path.is_not(None),
+            )
+            .all()
+        )
+        for download_job in completed_download_jobs:
+            imported_path = Path(str(download_job.imported_file_path or '').strip())
+            if not imported_path.exists() or not imported_path.is_file():
+                continue
+            if imported_path == Path(str(download_job.source_file_path or '').strip()):
+                continue
+            identity_key = media_identity_key(download_job.source_file_path)
+            if not identity_key:
+                continue
+            artifact_groups.setdefault(identity_key, []).append({
+                'path': imported_path,
+                'completed_at': download_job.completed_at,
+                'kind': 'download',
+                'record': download_job,
+            })
+
+        for artifacts in artifact_groups.values():
+            unique_by_path = {str(artifact['path']): artifact for artifact in artifacts}
+            if len(unique_by_path) <= 1:
+                continue
+            keep_path = str(max(
+                unique_by_path.values(),
+                key=lambda artifact: (
+                    artifact['completed_at'] is not None,
+                    artifact['completed_at'],
+                    artifact['kind'] == 'download',
+                    str(artifact['path']),
+                ),
+            )['path'])
+            for artifact in unique_by_path.values():
+                artifact_path = Path(artifact['path'])
+                if str(artifact_path) == keep_path:
+                    continue
+                artifact_path.unlink(missing_ok=True)
+                if artifact_path.exists():
+                    continue
+                removed_files += 1
+                if artifact['kind'] == 'encode':
+                    artifact['record'].output_path = None
+                else:
+                    artifact['record'].imported_file_path = None
+                if library.id not in affected_library_ids_seen:
+                    affected_library_ids.append(library.id)
+                    affected_library_ids_seen.add(library.id)
+
+    db.commit()
 
     return removed_files, affected_library_ids
 
