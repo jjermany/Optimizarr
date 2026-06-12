@@ -23,6 +23,8 @@ from app.services.download_monitor_service import (
     _import_file,
     _mark_failed,
     _process_searching_jobs,
+    _reconcile_duplicate_qbt_downloads,
+    _reconcile_duplicate_sab_downloads,
     _release_matches_source_title,
     _release_title_matches_profile,
     _select_best_release,
@@ -2167,6 +2169,128 @@ def test_process_searching_jobs_removes_same_identity_pending_duplicate(monkeypa
         assert db.query(DownloadJob).filter(DownloadJob.id == duplicate_id).first() is None
         assert calls == [next_item_id]
         assert removed_events == [('download_job_removed', {'download_job_id': duplicate_id})]
+
+
+def test_reconcile_duplicate_qbt_downloads_removes_incomplete_alternatives(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        active = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/28 Years Later The Bone Temple (2026)/28.Years.Later.The.Bone.Temple.2026.2160p.HDR.mkv',
+            release_name='28.Years.Later.The.Bone.Temple.2026.1080p.WEB-DL.DDP5.1.x264-LuCY',
+            download_hash='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(active)
+        db.commit()
+
+        torrents = [
+            {
+                'hash': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'name': '28.Years.Later.The.Bone.Temple.2026.1080p.WEB-DL.DDP5.1.x264-LuCY',
+                'progress': 0.17,
+                'state': 'downloading',
+                'added_on': 100,
+            },
+            {
+                'hash': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                'name': '28.Years.Later.The.Bone.Temple.2026.1080p.NF.WEB-DL.DDP5.1.Atmos.H.264-ALT',
+                'progress': 0.0,
+                'state': 'queuedDL',
+                'added_on': 101,
+            },
+            {
+                'hash': 'cccccccccccccccccccccccccccccccccccccccc',
+                'name': '28.Years.Later.The.Bone.Temple.2026.1080p.iT.WEB-DL.DDP5.1.Atmos.H.264-SEED',
+                'progress': 1.0,
+                'state': 'uploading',
+                'added_on': 102,
+            },
+        ]
+        removed: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.download_client_service.get_all_qbt_torrents',
+            lambda _qbt: torrents,
+        )
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.download_client_service.remove_qbt_torrent',
+            lambda _qbt, torrent_hash, *, delete_files=False: removed.append((torrent_hash, delete_files)) or True,
+        )
+
+        removed_count = _reconcile_duplicate_qbt_downloads(db, SimpleNamespace(enabled=True))
+
+        assert removed_count == 1
+        assert removed == [('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', True)]
+
+
+def test_reconcile_duplicate_sab_downloads_removes_incomplete_alternatives(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        active = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/Thrash (2026)/Thrash.2026.2160p.HDR.mkv',
+            release_name='Thrash.2026.1080p.NF.WEB-DL.DDP5.1.Atmos.H264-HHWEB',
+            download_hash='SAB_NZO_KEEP',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(active)
+        db.commit()
+
+        queue_items = [
+            {
+                'nzo_id': 'SAB_NZO_KEEP',
+                'name': 'Thrash.2026.1080p.NF.WEB-DL.DDP5.1.Atmos.H264-HHWEB',
+                'percentage': 20,
+                'status': 'Downloading',
+                'index': 0,
+            },
+            {
+                'nzo_id': 'SAB_NZO_ALT1',
+                'name': 'Thrash.2026.1080p.Netflix.WEB-DL.AVC.DDP5.1.Atmos-DBTV',
+                'percentage': 0,
+                'status': 'Queued',
+                'index': 1,
+            },
+            {
+                'nzo_id': 'SAB_NZO_ALT2',
+                'name': 'Thrash.2026.1080p.DUAL.WEB-DL.x264.EAC3.5.1.Atmos-HdT',
+                'percentage': 0,
+                'status': 'Queued',
+                'index': 2,
+            },
+        ]
+        removed: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.download_client_service.get_sab_queue_items',
+            lambda _sab: queue_items,
+        )
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.download_client_service.remove_sab_job',
+            lambda _sab, nzo_id, *, delete_files=False: removed.append((nzo_id, delete_files)) or True,
+        )
+
+        removed_count = _reconcile_duplicate_sab_downloads(db, SimpleNamespace(enabled=True))
+
+        assert removed_count == 2
+        assert removed == [('SAB_NZO_ALT1', True), ('SAB_NZO_ALT2', True)]
 
 
 def test_process_searching_jobs_uses_newest_sort_for_pending(monkeypatch):

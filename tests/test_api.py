@@ -1780,6 +1780,12 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_recorded_duplicate_artifac
         path.write_text(path.name)
 
     with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
         library = Library(name='Recorded Duplicate Movies', path=str(library_path), enabled=True)
         db.add(library)
         db.commit()
@@ -1791,14 +1797,14 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_recorded_duplicate_artifac
             output_path=str(encoded_2k),
             status='complete',
             library_id=library.id,
-            completed_at=datetime(2026, 1, 1, tzinfo=UTC),
+            completed_at=datetime.now(UTC),
         )
         download_job = DownloadJob(
             library_id=library.id,
             source_file_path=str(source_file),
             status=DownloadJobStatus.complete.value,
             imported_file_path=str(downloaded_1080p),
-            completed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            completed_at=datetime.now(UTC),
         )
         db.add_all([encode_job, download_job])
         db.commit()

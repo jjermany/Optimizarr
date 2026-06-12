@@ -308,6 +308,249 @@ def _remove_duplicate_unstarted_download_job(db: Session, dj: DownloadJob, block
     broker.publish_system_event('download_job_removed', download_job_id=job_id)
 
 
+def _release_identity_key(value: str | None) -> str | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    return media_identity_key(f'/downloads/{raw}.mkv')
+
+
+def _torrent_identity_key(torrent: dict) -> str | None:
+    return _release_identity_key(str(torrent.get('name') or ''))
+
+
+def _qbt_torrent_progress(torrent: dict) -> float:
+    try:
+        return float(torrent.get('progress') or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _qbt_torrent_added_on(torrent: dict) -> int:
+    try:
+        return int(torrent.get('added_on') or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _is_incomplete_qbt_torrent(torrent: dict) -> bool:
+    state = str(torrent.get('state') or '').strip()
+    return state not in download_client_service._QBT_COMPLETE_STATES and _qbt_torrent_progress(torrent) < 1.0
+
+
+def _active_download_identity_keys(db: Session) -> set[str]:
+    active_statuses = {
+        DownloadJobStatus.searching.value,
+        DownloadJobStatus.queued.value,
+        DownloadJobStatus.downloading.value,
+        DownloadJobStatus.moving.value,
+        DownloadJobStatus.stalled.value,
+        DownloadJobStatus.importing.value,
+    }
+    keys: set[str] = set()
+    rows = db.query(DownloadJob).filter(DownloadJob.status.in_(active_statuses)).all()
+    for dj in rows:
+        for value in (dj.source_file_path, dj.release_name):
+            key = media_identity_key(value) or _release_identity_key(value)
+            if key:
+                keys.add(key)
+    return keys
+
+
+def _tracked_qbt_hashes_by_identity(db: Session) -> dict[str, set[str]]:
+    hashes_by_key: dict[str, set[str]] = {}
+    rows = (
+        db.query(DownloadJob)
+        .filter(
+            DownloadJob.client_type == 'qbittorrent',
+            DownloadJob.download_hash.is_not(None),
+            DownloadJob.status.in_({
+                DownloadJobStatus.queued.value,
+                DownloadJobStatus.downloading.value,
+                DownloadJobStatus.moving.value,
+                DownloadJobStatus.stalled.value,
+                DownloadJobStatus.importing.value,
+            }),
+        )
+        .all()
+    )
+    for dj in rows:
+        key = media_identity_key(dj.source_file_path) or _release_identity_key(dj.release_name)
+        torrent_hash = str(dj.download_hash or '').strip().lower()
+        if key and torrent_hash:
+            hashes_by_key.setdefault(key, set()).add(torrent_hash)
+    return hashes_by_key
+
+
+def _tracked_sab_nzos_by_identity(db: Session) -> dict[str, set[str]]:
+    nzos_by_key: dict[str, set[str]] = {}
+    rows = (
+        db.query(DownloadJob)
+        .filter(
+            DownloadJob.client_type == 'sabnzbd',
+            DownloadJob.download_hash.is_not(None),
+            DownloadJob.status.in_({
+                DownloadJobStatus.queued.value,
+                DownloadJobStatus.downloading.value,
+                DownloadJobStatus.moving.value,
+                DownloadJobStatus.stalled.value,
+                DownloadJobStatus.importing.value,
+            }),
+        )
+        .all()
+    )
+    for dj in rows:
+        key = media_identity_key(dj.source_file_path) or _release_identity_key(dj.release_name)
+        nzo_id = str(dj.download_hash or '').strip()
+        if key and nzo_id:
+            nzos_by_key.setdefault(key, set()).add(nzo_id)
+    return nzos_by_key
+
+
+def _reconcile_duplicate_qbt_downloads(db: Session, qbt) -> int:
+    if not getattr(qbt, 'enabled', False):
+        return 0
+
+    active_keys = _active_download_identity_keys(db)
+    if not active_keys:
+        return 0
+
+    torrents_by_key: dict[str, list[dict]] = {}
+    for torrent in download_client_service.get_all_qbt_torrents(qbt):
+        torrent_hash = str(torrent.get('hash') or '').strip().lower()
+        if not torrent_hash or not _is_incomplete_qbt_torrent(torrent):
+            continue
+        key = _torrent_identity_key(torrent)
+        if key not in active_keys:
+            continue
+        torrents_by_key.setdefault(key, []).append(torrent)
+
+    tracked_hashes = _tracked_qbt_hashes_by_identity(db)
+    removed = 0
+    for key, torrents in torrents_by_key.items():
+        if len(torrents) <= 1:
+            continue
+        tracked = tracked_hashes.get(key, set())
+
+        def keep_score(torrent: dict) -> tuple[int, float, int]:
+            torrent_hash = str(torrent.get('hash') or '').strip().lower()
+            return (
+                1 if torrent_hash in tracked else 0,
+                _qbt_torrent_progress(torrent),
+                -_qbt_torrent_added_on(torrent),
+            )
+
+        keep = max(torrents, key=keep_score)
+        keep_hash = str(keep.get('hash') or '').strip().lower()
+        for torrent in torrents:
+            torrent_hash = str(torrent.get('hash') or '').strip().lower()
+            if not torrent_hash or torrent_hash == keep_hash:
+                continue
+            if download_client_service.remove_qbt_torrent(qbt, torrent_hash, delete_files=True):
+                removed += 1
+                logger.warning(
+                    'Removed duplicate qBittorrent alternative for %s: hash=%s name=%r; keeping hash=%s',
+                    key,
+                    torrent_hash,
+                    torrent.get('name'),
+                    keep_hash,
+                )
+                duplicate_rows = (
+                    db.query(DownloadJob)
+                    .filter(
+                        DownloadJob.client_type == 'qbittorrent',
+                        DownloadJob.download_hash == torrent_hash,
+                    )
+                    .all()
+                )
+                for duplicate in duplicate_rows:
+                    duplicate.download_hash = None
+                    duplicate.status = DownloadJobStatus.searching.value
+                    duplicate.error_message = 'Removed duplicate download alternative; retrying search'
+                if duplicate_rows:
+                    db.commit()
+                    for duplicate in duplicate_rows:
+                        db.refresh(duplicate)
+                        _publish_download_job(duplicate)
+    return removed
+
+
+def _reconcile_duplicate_sab_downloads(db: Session, sab) -> int:
+    if not getattr(sab, 'enabled', False):
+        return 0
+
+    active_keys = _active_download_identity_keys(db)
+    if not active_keys:
+        return 0
+
+    items_by_key: dict[str, list[dict]] = {}
+    for item in download_client_service.get_sab_queue_items(sab):
+        nzo_id = str(item.get('nzo_id') or '').strip()
+        if not nzo_id:
+            continue
+        key = _release_identity_key(str(item.get('name') or ''))
+        if key not in active_keys:
+            continue
+        items_by_key.setdefault(key, []).append(item)
+
+    tracked_nzos = _tracked_sab_nzos_by_identity(db)
+    removed = 0
+    for key, items in items_by_key.items():
+        if len(items) <= 1:
+            continue
+        tracked = tracked_nzos.get(key, set())
+
+        def keep_score(item: dict) -> tuple[int, float, int]:
+            nzo_id = str(item.get('nzo_id') or '').strip()
+            try:
+                percentage = float(item.get('percentage') or 0)
+            except (TypeError, ValueError):
+                percentage = 0.0
+            try:
+                index = int(item.get('index') or 0)
+            except (TypeError, ValueError):
+                index = 0
+            return (
+                1 if nzo_id in tracked else 0,
+                percentage,
+                -index,
+            )
+
+        keep = max(items, key=keep_score)
+        keep_nzo = str(keep.get('nzo_id') or '').strip()
+        for item in items:
+            nzo_id = str(item.get('nzo_id') or '').strip()
+            if not nzo_id or nzo_id == keep_nzo:
+                continue
+            if download_client_service.remove_sab_job(sab, nzo_id, delete_files=True):
+                removed += 1
+                logger.warning(
+                    'Removed duplicate SABnzbd alternative for %s: nzo=%s name=%r; keeping nzo=%s',
+                    key,
+                    nzo_id,
+                    item.get('name'),
+                    keep_nzo,
+                )
+                duplicate_rows = (
+                    db.query(DownloadJob)
+                    .filter(
+                        DownloadJob.client_type == 'sabnzbd',
+                        DownloadJob.download_hash == nzo_id,
+                    )
+                    .all()
+                )
+                for duplicate in duplicate_rows:
+                    duplicate.download_hash = None
+                    duplicate.status = DownloadJobStatus.searching.value
+                    duplicate.error_message = 'Removed duplicate download alternative; retrying search'
+                if duplicate_rows:
+                    db.commit()
+                    for duplicate in duplicate_rows:
+                        db.refresh(duplicate)
+                        _publish_download_job(duplicate)
+    return removed
+
+
 _ACTIVE_DOWNLOAD_STATUSES = (
     DownloadJobStatus.pending.value,
     DownloadJobStatus.searching.value,
@@ -2460,6 +2703,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
                 logger.info('Download job %s: recovered qBit hash immediately after grab: %s', dj.id, recovered)
                 if download_client_service.tag_qbt_torrent(qbt, recovered):
                     _tagged_job_ids.add(dj.id)
+                _reconcile_duplicate_qbt_downloads(db, qbt)
         elif client_type == 'sabnzbd' and sab.enabled and dj.release_name:
             recovered = download_client_service.find_sab_nzo_for_release(sab, dj.release_name)
             if recovered:
@@ -2469,6 +2713,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
                 logger.info('Download job %s: recovered SABnzbd NZO id immediately after grab: %s', dj.id, recovered)
                 if download_client_service.set_sab_category(sab, recovered, category='optimizarr'):
                     _categorized_sab_job_ids.add(dj.id)
+                _reconcile_duplicate_sab_downloads(db, sab)
 
         _publish_download_job(dj)
         return
@@ -2493,9 +2738,11 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     if client_type == 'qbittorrent' and qbt.enabled:
         if download_client_service.tag_qbt_torrent(qbt, normalised_hash):
             _tagged_job_ids.add(dj.id)
+        _reconcile_duplicate_qbt_downloads(db, qbt)
     elif client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
         if download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr'):
             _categorized_sab_job_ids.add(dj.id)
+        _reconcile_duplicate_sab_downloads(db, sab)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2505,6 +2752,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
 def _process_downloading_jobs(db: Session) -> None:
     qbt = download_client_service.get_or_create_qbt_settings(db)
     sab = download_client_service.get_or_create_sab_settings(db)
+    _reconcile_duplicate_qbt_downloads(db, qbt)
+    _reconcile_duplicate_sab_downloads(db, sab)
 
     jobs = (
         db.query(DownloadJob)

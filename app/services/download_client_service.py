@@ -557,6 +557,35 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
         }
 
 
+def get_sab_queue_items(s: SabnzbdSettings) -> list[dict]:
+    """Return active SAB queue entries with normalized ids/names/progress."""
+    try:
+        queue_data = _sab_api(s, mode='queue')
+    except Exception as exc:
+        logger.warning('SABnzbd queue fetch failed: %s', exc)
+        return []
+
+    slots = queue_data.get('queue', {}).get('slots', [])
+    items: list[dict] = []
+    for index, slot in enumerate(slots):
+        nzo_id = str(slot.get('nzo_id') or '').strip()
+        name = str(slot.get('filename') or slot.get('name') or slot.get('nzb_name') or '').strip()
+        if not nzo_id or not name:
+            continue
+        try:
+            percentage = float(slot.get('percentage') or 0)
+        except (TypeError, ValueError):
+            percentage = 0.0
+        items.append({
+            'nzo_id': nzo_id,
+            'name': name,
+            'percentage': max(0.0, min(100.0, percentage)),
+            'status': str(slot.get('status') or '').strip(),
+            'index': index,
+        })
+    return items
+
+
 def _normalize_release_key(value: str) -> str:
     text = str(value or '').lower().strip()
     if not text:
