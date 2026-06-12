@@ -1076,10 +1076,46 @@ def start_worker() -> Thread:
     return _manager_thread
 
 
+def _prepare_active_jobs_for_shutdown() -> None:
+    with _pool_lock:
+        active_job_ids = list(_active_workers.keys())
+    if not active_job_ids:
+        return
+
+    db = SessionLocal()
+    try:
+        settings = _get_settings(db)
+        requeue_on_restart = bool(getattr(settings, 'requeue_interrupted_jobs', True))
+        for job_id in active_job_ids:
+            current_position = get_active_position(job_id)
+            stop_active_ffmpeg(job_id)
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job is None or job.status in TERMINAL_STATUSES:
+                continue
+            job.cancel_requested = False
+            job.eta_seconds = None
+            job.fps = None
+            job.output_path = None
+            job.completed_at = None
+            if current_position is not None and current_position > 0:
+                job.resume_position_seconds = current_position
+            if requeue_on_restart:
+                job.status = 'queued'
+                job.error_message = 'Interrupted by application shutdown; queued to resume'
+                stop_encode_timing(job, include_idle_since_last_activity=False)
+            db.commit()
+            _publish_job(job, throttle_progress=False)
+    except Exception:
+        logger.warning('Failed to prepare active jobs for shutdown', exc_info=True)
+    finally:
+        db.close()
+
+
 def stop_worker() -> None:
     global _manager_thread
     global _last_workers_allowed
     stop_event.set()
+    _prepare_active_jobs_for_shutdown()
 
     if _manager_thread and _manager_thread.is_alive():
         _manager_thread.join(timeout=5)

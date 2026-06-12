@@ -284,7 +284,7 @@ def test_startup_recovery_normalized_legacy_pending_keeps_resume_capability(monk
 # run_workspace_cleanup edge cases
 # ---------------------------------------------------------------------------
 
-def test_workspace_cleanup_preserves_queued_job_with_resume_position(tmp_path):
+def test_workspace_cleanup_preserves_queued_job_with_resume_position(monkeypatch, tmp_path):
     """A queued job with resume_position_seconds must keep its workspace (partial inside)."""
     workspace_root = tmp_path / 'workspaces'
     with SessionLocal() as db:
@@ -300,12 +300,85 @@ def test_workspace_cleanup_preserves_queued_job_with_resume_position(tmp_path):
         workspace = workspace_root / str(job.id)
         workspace.mkdir(parents=True, exist_ok=True)
         (workspace / 'output.partial.mkv').write_text('partial')
+        monkeypatch.setattr(recovery_service, '_probe_partial_duration', lambda *_: 77.5)
 
         summary = recovery_service.run_workspace_cleanup(db)
 
         assert summary['cleaned_workspaces'] == 0
         assert job.id not in summary['cleaned_workspace_job_ids']
         assert workspace.exists(), 'Workspace must survive for the resume to work'
+
+
+def test_workspace_cleanup_removes_stale_ffmpeg_artifacts_from_resumable_workspace(monkeypatch, tmp_path):
+    workspace_root = tmp_path / 'workspaces'
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root)
+
+        job = Job(input_path='/media/resume-clean.mkv', status='queued', resume_position_seconds=80.0)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = workspace_root / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        partial = workspace / 'output.partial.mkv'
+        partial.write_text('partial')
+        stale_resume = workspace / 'output.resume.mkv'
+        stale_resume.write_text('resume')
+        stale_combined = workspace / 'output.combined.mkv'
+        stale_combined.write_text('combined')
+        stale_recovered = workspace / 'output.partial.recovered.mkv'
+        stale_recovered.write_text('recovered')
+        concat_list = workspace / 'concat_list.txt'
+        concat_list.write_text('file output.partial.mkv')
+        keep_marker = workspace / 'keep.txt'
+        keep_marker.write_text('keep')
+
+        monkeypatch.setattr(recovery_service, '_probe_partial_duration', lambda *_: 80.0)
+
+        summary = recovery_service.run_workspace_cleanup(db)
+        db.refresh(job)
+
+        assert summary['cleaned_workspaces'] == 0
+        assert summary['cleaned_workspace_artifacts'] == 4
+        assert partial.exists()
+        assert keep_marker.exists()
+        assert not stale_resume.exists()
+        assert not stale_combined.exists()
+        assert not stale_recovered.exists()
+        assert not concat_list.exists()
+        assert job.resume_position_seconds == 80.0
+
+
+def test_workspace_cleanup_removes_broken_resumable_workspace(monkeypatch, tmp_path):
+    workspace_root = tmp_path / 'workspaces'
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        _configure_settings(db, workspace_root)
+
+        job = Job(input_path='/media/broken-resume.mkv', status='queued', resume_position_seconds=80.0, progress_percent=45)
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        workspace = workspace_root / str(job.id)
+        workspace.mkdir(parents=True, exist_ok=True)
+        (workspace / 'output.partial.mkv').write_text('broken')
+        (workspace / 'output.resume.mkv').write_text('stale')
+
+        monkeypatch.setattr(recovery_service, '_probe_partial_duration', lambda *_: None)
+
+        summary = recovery_service.run_workspace_cleanup(db)
+        db.refresh(job)
+
+        assert summary['cleaned_workspaces'] == 1
+        assert summary['cleaned_workspace_job_ids'] == [job.id]
+        assert not workspace.exists()
+        assert job.resume_position_seconds is None
+        assert job.progress_percent == 0
 
 
 def test_workspace_cleanup_removes_queued_job_workspace_without_resume_position(tmp_path):

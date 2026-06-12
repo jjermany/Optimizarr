@@ -15,6 +15,12 @@ from app.services import optimization_service
 RECOVERABLE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
 ACTIVE_WORKSPACE_STATUSES = {'running', 'preflight', 'starting', 'aborting', 'paused', 'paused_schedule'}
 LEGACY_QUEUED_STATUSES = {'pending', 'created'}
+STALE_WORKSPACE_ARTIFACT_PATTERNS = (
+    'output.resume.*',
+    'output.combined.*',
+    'output.partial.recovered*',
+    'concat_list.txt',
+)
 
 
 def _apply_partial_resume_if_available(job: Job, workspace: Path, partial_duration: float | None) -> bool:
@@ -77,6 +83,23 @@ def _workspace_path(settings: Settings, job_id: int) -> Path:
 
 def _probe_partial_duration(workspace: Path) -> float | None:
     return optimization_service.recover_resume_position(workspace)
+
+
+def _cleanup_stale_workspace_artifacts(workspace: Path) -> int:
+    removed = 0
+    if not workspace.exists():
+        return removed
+    for pattern in STALE_WORKSPACE_ARTIFACT_PATTERNS:
+        for candidate in workspace.glob(pattern):
+            if not candidate.exists():
+                continue
+            if candidate.is_dir():
+                shutil.rmtree(candidate, ignore_errors=True)
+            else:
+                candidate.unlink(missing_ok=True)
+            if not candidate.exists():
+                removed += 1
+    return removed
 
 
 def run_startup_recovery(db: Session) -> dict[str, int | list[int]]:
@@ -199,29 +222,45 @@ def run_workspace_cleanup(db: Session) -> dict[str, int | list[int]]:
     settings = _get_or_create_settings(db)
     workspace_root = Path(coerce_workspace_root(settings.workspace_root))
     if not workspace_root.exists():
-        return {'cleaned_workspaces': 0, 'cleaned_workspace_job_ids': []}
+        return {'cleaned_workspaces': 0, 'cleaned_workspace_job_ids': [], 'cleaned_workspace_artifacts': 0}
 
     active_job_ids = {
         job_id
         for (job_id,) in db.query(Job.id).filter(Job.status.in_(ACTIVE_WORKSPACE_STATUSES)).all()
     }
 
-    # Queued jobs that have a saved resume position must also keep their workspace:
-    # it contains the partial output file that optimize_video needs to seek past
-    # on resume.  Without this guard the partial written during recovery is deleted
-    # before the worker thread picks the job up, forcing a full re-encode.
-    resumable_queued_ids = {
-        job_id
-        for (job_id,) in db.query(Job.id).filter(
+    resumable_queued_ids: set[int] = set()
+    cleaned_workspaces = 0
+    cleaned_workspace_job_ids: list[int] = []
+    cleaned_workspace_artifacts = 0
+    changed_resume_state = False
+    resumable_queued_jobs = (
+        db.query(Job)
+        .filter(
             Job.status == 'queued',
             Job.resume_position_seconds.isnot(None),
-        ).all()
-    }
+        )
+        .all()
+    )
+    for job in resumable_queued_jobs:
+        workspace = _workspace_path(settings, job.id)
+        partial_duration = _probe_partial_duration(workspace) if workspace.exists() else None
+        if partial_duration and partial_duration > 0:
+            job.resume_position_seconds = partial_duration
+            resumable_queued_ids.add(job.id)
+            cleaned_workspace_artifacts += _cleanup_stale_workspace_artifacts(workspace)
+            continue
+
+        job.resume_position_seconds = None
+        job.progress_percent = 0
+        changed_resume_state = True
+        if workspace.exists():
+            shutil.rmtree(workspace, ignore_errors=True)
+            cleaned_workspaces += 1
+            cleaned_workspace_job_ids.append(job.id)
 
     protected_job_ids = active_job_ids | resumable_queued_ids
 
-    cleaned_workspaces = 0
-    cleaned_workspace_job_ids: list[int] = []
     for workspace in workspace_root.iterdir():
         if not workspace.is_dir():
             continue
@@ -236,7 +275,11 @@ def run_workspace_cleanup(db: Session) -> dict[str, int | list[int]]:
         cleaned_workspaces += 1
         cleaned_workspace_job_ids.append(job_id)
 
+    if cleaned_workspaces or cleaned_workspace_artifacts or changed_resume_state:
+        db.commit()
+
     return {
         'cleaned_workspaces': cleaned_workspaces,
         'cleaned_workspace_job_ids': cleaned_workspace_job_ids,
+        'cleaned_workspace_artifacts': cleaned_workspace_artifacts,
     }

@@ -197,10 +197,17 @@ def test_is_within_schedule_window_overnight_wraps_and_excludes_end_hour():
 
 
 
-def test_stop_worker_does_not_mark_active_jobs_cancel_requested():
+def test_stop_worker_queues_active_jobs_with_resume_position(monkeypatch):
+    stopped: list[int] = []
+    monkeypatch.setattr(queue, 'get_active_position', lambda _job_id: 321.5)
+    monkeypatch.setattr(queue, 'stop_active_ffmpeg', lambda job_id: stopped.append(job_id) or True)
+
     with SessionLocal() as db:
         db.query(Job).delete()
+        db.query(Settings).delete()
         db.commit()
+        settings = Settings(requeue_interrupted_jobs=True)
+        db.add(settings)
         job = Job(input_path='/media/active-shutdown.mkv', status='running', cancel_requested=False)
         db.add(job)
         db.commit()
@@ -228,6 +235,10 @@ def test_stop_worker_does_not_mark_active_jobs_cancel_requested():
         refreshed = db.query(Job).filter(Job.id == job_id).first()
         assert refreshed is not None
         assert refreshed.cancel_requested is False
+        assert refreshed.status == 'queued'
+        assert refreshed.resume_position_seconds == 321.5
+        assert refreshed.error_message == 'Interrupted by application shutdown; queued to resume'
+        assert stopped == [job_id]
 
 def test_should_cancel_when_shutdown_requested():
     queue.stop_event.set()
