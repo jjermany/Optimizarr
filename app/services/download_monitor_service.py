@@ -47,6 +47,7 @@ _tagged_job_ids: set[int] = set()
 # In-memory only; entries are retried on restart/progress checks as needed.
 _categorized_sab_job_ids: set[int] = set()
 _DEFAULT_DOWNLOAD_MAX_RETRIES = 5
+_CLIENT_TRACKING_GRACE_SECONDS = 10
 _UNWANTED_RELEASE_VARIANT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r'\bsing[\s._-]*along\b', re.IGNORECASE),
     re.compile(r"\bdirector'?s[\s._-]*cut\b", re.IGNORECASE),
@@ -315,8 +316,34 @@ def _release_identity_key(value: str | None) -> str | None:
     return media_identity_key(f'/downloads/{raw}.mkv')
 
 
+def _loose_download_identity_key(value: str | None) -> str | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    year = _extract_year_from_path(raw)
+    if year is None:
+        return None
+    tokens = _extract_title_tokens(raw)
+    if not tokens:
+        return None
+    return f'loose:{year}:{tokens[0]}'
+
+
+def _download_identity_keys(value: str | None) -> set[str]:
+    return {
+        key
+        for key in (
+            media_identity_key(value),
+            _release_identity_key(value),
+            _loose_download_identity_key(value),
+        )
+        if key
+    }
+
+
 def _torrent_identity_key(torrent: dict) -> str | None:
-    return _release_identity_key(str(torrent.get('name') or ''))
+    name = str(torrent.get('name') or '')
+    return _loose_download_identity_key(name) or _release_identity_key(name) or media_identity_key(name)
 
 
 def _qbt_torrent_progress(torrent: dict) -> float:
@@ -351,9 +378,7 @@ def _active_download_identity_keys(db: Session) -> set[str]:
     rows = db.query(DownloadJob).filter(DownloadJob.status.in_(active_statuses)).all()
     for dj in rows:
         for value in (dj.source_file_path, dj.release_name):
-            key = media_identity_key(value) or _release_identity_key(value)
-            if key:
-                keys.add(key)
+            keys.update(_download_identity_keys(value))
     return keys
 
 
@@ -375,11 +400,76 @@ def _tracked_qbt_hashes_by_identity(db: Session) -> dict[str, set[str]]:
         .all()
     )
     for dj in rows:
-        key = media_identity_key(dj.source_file_path) or _release_identity_key(dj.release_name)
         torrent_hash = str(dj.download_hash or '').strip().lower()
-        if key and torrent_hash:
+        if not torrent_hash:
+            continue
+        for key in _download_identity_keys(dj.source_file_path) | _download_identity_keys(dj.release_name):
             hashes_by_key.setdefault(key, set()).add(torrent_hash)
     return hashes_by_key
+
+
+def _active_download_jobs_for_identity(db: Session, identity_key: str) -> list[DownloadJob]:
+    active_statuses = {
+        DownloadJobStatus.searching.value,
+        DownloadJobStatus.queued.value,
+        DownloadJobStatus.downloading.value,
+        DownloadJobStatus.moving.value,
+        DownloadJobStatus.stalled.value,
+        DownloadJobStatus.importing.value,
+    }
+    rows = (
+        db.query(DownloadJob)
+        .filter(DownloadJob.status.in_(active_statuses))
+        .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
+        .all()
+    )
+    matches: list[DownloadJob] = []
+    for dj in rows:
+        keys = _download_identity_keys(dj.source_file_path) | _download_identity_keys(dj.release_name)
+        if identity_key in keys:
+            matches.append(dj)
+    return matches
+
+
+def _retarget_download_jobs_to_client_item(
+    db: Session,
+    identity_key: str,
+    *,
+    client_type: str,
+    download_hash: str,
+) -> None:
+    if not download_hash:
+        return
+    jobs = _active_download_jobs_for_identity(db, identity_key)
+    if not jobs:
+        return
+
+    primary = jobs[0]
+    changed = False
+    if primary.client_type != client_type:
+        primary.client_type = client_type
+        changed = True
+    if primary.download_hash != download_hash:
+        primary.download_hash = download_hash
+        changed = True
+    if primary.status != DownloadJobStatus.downloading.value:
+        primary.status = DownloadJobStatus.downloading.value
+        changed = True
+    primary.error_message = None
+
+    for duplicate in jobs[1:]:
+        if duplicate.download_hash == download_hash:
+            continue
+        duplicate.download_hash = None
+        duplicate.status = DownloadJobStatus.searching.value
+        duplicate.error_message = 'Superseded by active client download'
+        changed = True
+
+    if changed:
+        db.commit()
+        for job in jobs:
+            db.refresh(job)
+            _publish_download_job(job)
 
 
 def _tracked_sab_nzos_by_identity(db: Session) -> dict[str, set[str]]:
@@ -400,9 +490,10 @@ def _tracked_sab_nzos_by_identity(db: Session) -> dict[str, set[str]]:
         .all()
     )
     for dj in rows:
-        key = media_identity_key(dj.source_file_path) or _release_identity_key(dj.release_name)
         nzo_id = str(dj.download_hash or '').strip()
-        if key and nzo_id:
+        if not nzo_id:
+            continue
+        for key in _download_identity_keys(dj.source_file_path) | _download_identity_keys(dj.release_name):
             nzos_by_key.setdefault(key, set()).add(nzo_id)
     return nzos_by_key
 
@@ -435,13 +526,19 @@ def _reconcile_duplicate_qbt_downloads(db: Session, qbt) -> int:
         def keep_score(torrent: dict) -> tuple[int, float, int]:
             torrent_hash = str(torrent.get('hash') or '').strip().lower()
             return (
-                1 if torrent_hash in tracked else 0,
                 _qbt_torrent_progress(torrent),
+                1 if torrent_hash in tracked else 0,
                 -_qbt_torrent_added_on(torrent),
             )
 
         keep = max(torrents, key=keep_score)
         keep_hash = str(keep.get('hash') or '').strip().lower()
+        _retarget_download_jobs_to_client_item(
+            db,
+            key,
+            client_type='qbittorrent',
+            download_hash=keep_hash,
+        )
         for torrent in torrents:
             torrent_hash = str(torrent.get('hash') or '').strip().lower()
             if not torrent_hash or torrent_hash == keep_hash:
@@ -488,7 +585,8 @@ def _reconcile_duplicate_sab_downloads(db: Session, sab) -> int:
         nzo_id = str(item.get('nzo_id') or '').strip()
         if not nzo_id:
             continue
-        key = _release_identity_key(str(item.get('name') or ''))
+        name = str(item.get('name') or '')
+        key = _loose_download_identity_key(name) or _release_identity_key(name) or media_identity_key(name)
         if key not in active_keys:
             continue
         items_by_key.setdefault(key, []).append(item)
@@ -511,13 +609,19 @@ def _reconcile_duplicate_sab_downloads(db: Session, sab) -> int:
             except (TypeError, ValueError):
                 index = 0
             return (
-                1 if nzo_id in tracked else 0,
                 percentage,
+                1 if nzo_id in tracked else 0,
                 -index,
             )
 
         keep = max(items, key=keep_score)
         keep_nzo = str(keep.get('nzo_id') or '').strip()
+        _retarget_download_jobs_to_client_item(
+            db,
+            key,
+            client_type='sabnzbd',
+            download_hash=keep_nzo,
+        )
         for item in items:
             nzo_id = str(item.get('nzo_id') or '').strip()
             if not nzo_id or nzo_id == keep_nzo:
@@ -549,6 +653,38 @@ def _reconcile_duplicate_sab_downloads(db: Session, sab) -> int:
                         db.refresh(duplicate)
                         _publish_download_job(duplicate)
     return removed
+
+
+def _find_sab_queue_item_for_download_job(dj: DownloadJob, sab) -> dict | None:
+    if not getattr(sab, 'enabled', False):
+        return None
+    target_keys = _download_identity_keys(dj.source_file_path) | _download_identity_keys(dj.release_name)
+    if not target_keys:
+        return None
+
+    candidates: list[dict] = []
+    for item in download_client_service.get_sab_queue_items(sab):
+        name = str(item.get('name') or '')
+        item_keys = _download_identity_keys(name)
+        if target_keys.isdisjoint(item_keys):
+            continue
+        candidates.append(item)
+
+    if not candidates:
+        return None
+
+    def score(item: dict) -> tuple[float, int]:
+        try:
+            percentage = float(item.get('percentage') or 0)
+        except (TypeError, ValueError):
+            percentage = 0.0
+        try:
+            index = int(item.get('index') or 0)
+        except (TypeError, ValueError):
+            index = 0
+        return (percentage, -index)
+
+    return max(candidates, key=score)
 
 
 _ACTIVE_DOWNLOAD_STATUSES = (
@@ -2199,6 +2335,16 @@ def _load_failed_release_keys(dj: DownloadJob) -> set[str]:
     return {str(item).strip() for item in payload if str(item).strip()}
 
 
+def _client_tracking_grace_active(dj: DownloadJob) -> bool:
+    reference = dj.download_started_at or dj.created_at
+    if reference is None:
+        return False
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    elapsed = datetime.now(timezone.utc) - reference
+    return elapsed < timedelta(seconds=_CLIENT_TRACKING_GRACE_SECONDS)
+
+
 def _store_failed_release_keys(dj: DownloadJob, keys: set[str]) -> None:
     if not keys:
         dj.failed_release_keys = None
@@ -2894,25 +3040,28 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     # If SAB grab succeeded but Prowlarr didn't return NZO id, recover by
     # matching release name against queue/history and wait until it appears.
     if not dj.download_hash and client_type == 'sabnzbd' and sab.enabled:
-        if dj.release_name:
+        recovered_item = _find_sab_queue_item_for_download_job(dj, sab)
+        recovered_nzo = str(recovered_item.get('nzo_id') or '').strip() if recovered_item else ''
+        if not recovered_nzo and dj.release_name:
             recovered_nzo = download_client_service.find_sab_nzo_for_release(sab, dj.release_name)
-            if recovered_nzo:
-                dj.download_hash = recovered_nzo
-                db.commit()
-                db.refresh(dj)
-                logger.info('Download job %s: recovered SABnzbd NZO id %s', dj.id, recovered_nzo)
-                if download_client_service.set_sab_category(sab, recovered_nzo, category='optimizarr'):
-                    _categorized_sab_job_ids.add(dj.id)
-            else:
+        if recovered_nzo:
+            dj.download_hash = recovered_nzo
+            db.commit()
+            db.refresh(dj)
+            logger.info('Download job %s: recovered SABnzbd NZO id %s', dj.id, recovered_nzo)
+            if download_client_service.set_sab_category(sab, recovered_nzo, category='optimizarr'):
+                _categorized_sab_job_ids.add(dj.id)
+        else:
+            if dj.release_name:
                 logger.debug(
                     'Download job %s: SABnzbd NZO id not found yet for release %r; waiting',
                     dj.id,
                     dj.release_name,
                 )
                 return
-        else:
-            logger.debug('Download job %s: no release_name for SABnzbd hash recovery yet; waiting', dj.id)
-            return
+            else:
+                logger.debug('Download job %s: no release_name for SABnzbd hash recovery yet; waiting', dj.id)
+                return
 
     # If the initial tag attempt failed (e.g. torrent wasn't indexed in qBit
     # yet when we grabbed it), retry with a few quick attempts each monitoring
@@ -2999,8 +3148,11 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                     'save_path': replacement.get('content_path') or replacement.get('save_path'),
                     'not_found': False,
                 }
-        elif client_type == 'sabnzbd' and sab.enabled and dj.release_name:
-            replacement_nzo = download_client_service.find_sab_nzo_for_release(sab, dj.release_name)
+        elif client_type == 'sabnzbd' and sab.enabled:
+            replacement_item = _find_sab_queue_item_for_download_job(dj, sab)
+            replacement_nzo = str(replacement_item.get('nzo_id') or '').strip() if replacement_item else ''
+            if not replacement_nzo and dj.release_name:
+                replacement_nzo = download_client_service.find_sab_nzo_for_release(sab, dj.release_name)
             if replacement_nzo:
                 logger.warning(
                     'Download job %s: SAB lookup missed NZO %s; recovered existing NZO %s via release match',
@@ -3029,6 +3181,14 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                         'not_found': False,
                     }
         if status.get('not_found'):
+            if _client_tracking_grace_active(dj):
+                logger.info(
+                    'Download job %s: %s item not visible yet; waiting within %ss tracking grace before retrying',
+                    dj.id,
+                    client_type,
+                    _CLIENT_TRACKING_GRACE_SECONDS,
+                )
+                return
             _retry_failed_download(
                 db,
                 dj,

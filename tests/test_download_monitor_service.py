@@ -2293,6 +2293,65 @@ def test_reconcile_duplicate_sab_downloads_removes_incomplete_alternatives(monke
         assert removed == [('SAB_NZO_ALT1', True), ('SAB_NZO_ALT2', True)]
 
 
+def test_reconcile_duplicate_sab_downloads_retargets_to_most_progressed_nzo(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path='/media/movies', enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        active = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/GOAT (2026)/GOAT.2026.2160p.HDR.mkv',
+            release_name='Goat.Sampiyon.Keci.Tum.Zamanlarin.En.Iyisi.2026.Animasyon.1080p.NF.WEB-DL',
+            download_hash='SAB_NZO_QUEUED',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.queued.value,
+            progress_percent=20,
+        )
+        db.add(active)
+        db.commit()
+        active_id = active.id
+
+        queue_items = [
+            {
+                'nzo_id': 'SAB_NZO_DOWNLOADING',
+                'name': 'GOAT.2026.NORDIC.ENG.1080p.WEB-DL.H.264.DDP5.1.Atmos-ADDICTION',
+                'percentage': 52,
+                'status': 'Downloading',
+                'index': 0,
+            },
+            {
+                'nzo_id': 'SAB_NZO_QUEUED',
+                'name': 'Goat.Sampiyon.Keci.Tum.Zamanlarin.En.Iyisi.2026.Animasyon.1080p.NF.WEB-DL',
+                'percentage': 20,
+                'status': 'Queued',
+                'index': 1,
+            },
+        ]
+        removed: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.download_client_service.get_sab_queue_items',
+            lambda _sab: queue_items,
+        )
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.download_client_service.remove_sab_job',
+            lambda _sab, nzo_id, *, delete_files=False: removed.append((nzo_id, delete_files)) or True,
+        )
+
+        removed_count = _reconcile_duplicate_sab_downloads(db, SimpleNamespace(enabled=True))
+        db.refresh(active)
+
+        assert removed_count == 1
+        assert removed == [('SAB_NZO_QUEUED', True)]
+        assert active.download_hash == 'SAB_NZO_DOWNLOADING'
+        assert active.status == DownloadJobStatus.downloading.value
+
+
 def test_process_searching_jobs_uses_newest_sort_for_pending(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
@@ -3097,6 +3156,101 @@ def test_check_download_progress_sab_not_found_recovers_existing_nzo_by_release(
         assert dj.download_hash == 'RECOVERED_NZO'
         assert dj.status == DownloadJobStatus.downloading.value
         assert dj.progress_percent == 33
+
+
+def test_check_download_progress_sab_not_found_waits_during_tracking_grace(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/GOAT (2026)/GOAT.2026.2160p.HDR.mkv',
+            release_name='GOAT.2026.NORDIC.ENG.1080p.WEB-DL.H.264.DDP5.1.Atmos-ADDICTION',
+            download_hash='NEW_NZO_NOT_VISIBLE_YET',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            download_started_at=datetime.now(UTC),
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        retry_calls = []
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'download_speed_bps': None,
+            'is_complete': False,
+            'is_moving': False,
+            'is_waiting': False,
+            'is_stalled': False,
+            'sab_status': None,
+            'save_path': None,
+            'not_found': True,
+        })
+        monkeypatch.setattr(download_client_service, 'find_sab_nzo_for_release', lambda *_args: '')
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._retry_failed_download',
+            lambda *_args, **_kwargs: retry_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, SimpleNamespace(enabled=False), SimpleNamespace(enabled=True))
+        db.refresh(dj)
+
+        assert retry_calls == []
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.download_hash == 'NEW_NZO_NOT_VISIBLE_YET'
+
+
+def test_check_download_progress_sab_not_found_retries_after_tracking_grace(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/GOAT (2026)/GOAT.2026.2160p.HDR.mkv',
+            release_name='GOAT.2026.NORDIC.ENG.1080p.WEB-DL.H.264.DDP5.1.Atmos-ADDICTION',
+            download_hash='OLD_MISSING_NZO',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            download_started_at=datetime.now(UTC) - timedelta(seconds=11),
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        retry_calls = []
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'download_speed_bps': None,
+            'is_complete': False,
+            'is_moving': False,
+            'is_waiting': False,
+            'is_stalled': False,
+            'sab_status': None,
+            'save_path': None,
+            'not_found': True,
+        })
+        monkeypatch.setattr(download_client_service, 'find_sab_nzo_for_release', lambda *_args: '')
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._retry_failed_download',
+            lambda *_args, **_kwargs: retry_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, SimpleNamespace(enabled=False), SimpleNamespace(enabled=True))
+
+        assert retry_calls == [True]
 
 
 def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
