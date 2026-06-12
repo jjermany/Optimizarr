@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 import logging
+import os
 from pathlib import Path
 from threading import Event, Thread
 
@@ -24,6 +25,10 @@ CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
 
 # Built frontend lives at /app/static when running inside the container
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / 'static'
+
+
+def _is_test_runtime() -> bool:
+    return 'PYTEST_CURRENT_TEST' in os.environ
 
 
 def _cleanup_loop(stop_event: Event) -> None:
@@ -91,6 +96,15 @@ async def lifespan(_: FastAPI):
     # After a download job completes/fails, immediately trigger a discovery scan
     # so the next eligible file is picked up without waiting for the interval.
     register_job_complete_callback(trigger_immediate_scan)
+
+    if _is_test_runtime():
+        try:
+            yield
+        finally:
+            logger.info('Shutting down Optimizarr application')
+            broker.stop()
+            logger.info('Optimizarr shutdown complete')
+        return
 
     cleanup_stop_event = Event()
     cleanup_thread = Thread(target=_cleanup_loop, args=(cleanup_stop_event,), name='cleanup-worker', daemon=True)
