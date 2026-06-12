@@ -118,6 +118,12 @@ Key environment variables:
 | `OPTIMIZARR_WORKSPACE_ROOT_BASE` | `/cache` | Allowed parent directory for `workspace_root` |
 | `OPTIMIZARR_LOG_MAX_BYTES` | `5242880` | Max size per log file before rotation (5 MiB default) |
 | `OPTIMIZARR_LOG_BACKUP_COUNT` | `10` | Number of rotated log files to keep (`.1`, `.2`, etc.) |
+| `OPTIMIZARR_QBT_STRIKE_CHECK_INTERVAL_SECONDS` | `60` | How often Optimizarr checks owned qBittorrent torrents for metadata/stalled/slow strikes |
+| `OPTIMIZARR_QBT_METADATA_MAX_STRIKES` | `3` | Strikes before removing an owned qBittorrent torrent stuck downloading metadata; applies to public and private torrents |
+| `OPTIMIZARR_QBT_STALLED_MAX_STRIKES` | `3` | Strikes before removing an owned qBittorrent torrent in a stalled/error state |
+| `OPTIMIZARR_QBT_SLOW_MIN_SPEED_BPS` | `0` | Minimum speed for slow-download strike checks; `0` disables slow-download strikes |
+| `OPTIMIZARR_QBT_SLOW_MAX_STRIKES` | `3` | Strikes before removing an owned qBittorrent torrent below `OPTIMIZARR_QBT_SLOW_MIN_SPEED_BPS` |
+| `OPTIMIZARR_QBT_SLOW_IGNORE_PRIVATE` | `true` | Skip slow-download strikes for qBittorrent torrents reported as private |
 
 Authentication:
 - On first startup (or first startup after upgrading from legacy basic-auth builds), Optimizarr prompts you to create an admin account.

@@ -21,9 +21,11 @@ from app.services.download_monitor_service import (
     _find_sab_queue_item_for_download_job,
     _build_search_query,
     _check_download_progress,
+    _cleanup_stale_qbt_torrents,
     _import_file,
     _mark_failed,
     _process_searching_jobs,
+    _qbt_strike_state,
     _reconcile_duplicate_qbt_downloads,
     _reconcile_duplicate_sab_downloads,
     _release_matches_source_title,
@@ -2248,6 +2250,266 @@ def test_reconcile_duplicate_qbt_downloads_removes_incomplete_alternatives(monke
 
         assert removed_count == 1
         assert removed == [('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', True)]
+
+
+def test_cleanup_stale_qbt_torrents_removes_metadata_after_three_strikes(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+        _qbt_strike_state.clear()
+
+        torrents = [
+            {
+                'hash': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'name': 'Stuck.Metadata.2026.1080p.WEB-DL',
+                'state': 'metaDL',
+                'tags': 'optimizarr',
+                'category': '',
+                'progress': 0,
+                'dlspeed': 0,
+            },
+            {
+                'hash': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                'name': 'Old.Stalled.2026.1080p.WEB-DL',
+                'state': 'stalledDL',
+                'tags': 'optimizarr',
+                'category': '',
+                'progress': 0.2,
+                'dlspeed': 0,
+            },
+        ]
+        removed: list[tuple[str, bool]] = []
+        monkeypatch.setenv('OPTIMIZARR_QBT_METADATA_MAX_STRIKES', '3')
+        monkeypatch.setenv('OPTIMIZARR_QBT_STALLED_MAX_STRIKES', '3')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _qbt: torrents)
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_qbt_torrent',
+            lambda _qbt, torrent_hash, *, delete_files=False: removed.append((torrent_hash, delete_files)) or True,
+        )
+
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 0
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 0
+        assert removed == []
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 2
+        assert removed == [
+            ('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', False),
+            ('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', True),
+        ]
+
+
+def test_cleanup_stale_qbt_torrents_does_not_remove_before_max_strikes(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+        _qbt_strike_state.clear()
+
+        active_hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        db.add(DownloadJob(
+            source_file_path='/media/Active.Metadata.2026.mkv',
+            download_hash=active_hash,
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        ))
+        db.commit()
+
+        monkeypatch.setenv('OPTIMIZARR_QBT_METADATA_MAX_STRIKES', '3')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _qbt: [{
+            'hash': active_hash,
+            'name': 'Active.Metadata.2026.1080p.WEB-DL',
+            'state': 'metaDL',
+            'tags': 'optimizarr',
+            'progress': 0,
+            'dlspeed': 0,
+        }])
+        removed: list[str] = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_qbt_torrent',
+            lambda _qbt, torrent_hash, *, delete_files=False: removed.append(torrent_hash) or True,
+        )
+
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 0
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 0
+        assert removed == []
+
+
+def test_cleanup_stale_qbt_torrents_skips_unowned_torrents(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+        _qbt_strike_state.clear()
+
+        monkeypatch.setenv('OPTIMIZARR_QBT_METADATA_MAX_STRIKES', '1')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _qbt: [{
+            'hash': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'name': 'Manual.Metadata.2026.1080p.WEB-DL',
+            'state': 'metaDL',
+            'tags': '',
+            'category': 'manual',
+            'progress': 0,
+            'dlspeed': 0,
+        }])
+        removed: list[str] = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_qbt_torrent',
+            lambda _qbt, torrent_hash, *, delete_files=False: removed.append(torrent_hash) or True,
+        )
+
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 0
+        assert removed == []
+
+
+def test_cleanup_stale_qbt_torrents_ignores_private_slow_downloads(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+        _qbt_strike_state.clear()
+
+        monkeypatch.setenv('OPTIMIZARR_QBT_SLOW_MIN_SPEED_BPS', '1024')
+        monkeypatch.setenv('OPTIMIZARR_QBT_SLOW_MAX_STRIKES', '1')
+        monkeypatch.setenv('OPTIMIZARR_QBT_SLOW_IGNORE_PRIVATE', 'true')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _qbt: [{
+            'hash': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'name': 'Private.Slow.2026.1080p.WEB-DL',
+            'state': 'downloading',
+            'tags': 'optimizarr',
+            'private': True,
+            'progress': 0.25,
+            'dlspeed': 0,
+        }])
+        removed: list[str] = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_qbt_torrent',
+            lambda _qbt, torrent_hash, *, delete_files=False: removed.append(torrent_hash) or True,
+        )
+
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 0
+        assert removed == []
+
+
+def test_cleanup_stale_qbt_torrents_removes_public_slow_download_after_strikes(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+        _qbt_strike_state.clear()
+
+        monkeypatch.setenv('OPTIMIZARR_QBT_SLOW_MIN_SPEED_BPS', '1024')
+        monkeypatch.setenv('OPTIMIZARR_QBT_SLOW_MAX_STRIKES', '2')
+        monkeypatch.setenv('OPTIMIZARR_QBT_SLOW_IGNORE_PRIVATE', 'true')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _qbt: [{
+            'hash': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'name': 'Public.Slow.2026.1080p.WEB-DL',
+            'state': 'downloading',
+            'tags': 'optimizarr',
+            'private': False,
+            'progress': 0.25,
+            'dlspeed': 512,
+        }])
+        removed: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_qbt_torrent',
+            lambda _qbt, torrent_hash, *, delete_files=False: removed.append((torrent_hash, delete_files)) or True,
+        )
+
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 0
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 1
+        assert removed == [('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', True)]
+
+
+def test_cleanup_stale_qbt_torrents_uses_database_settings(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Settings).delete()
+        db.commit()
+        _qbt_strike_state.clear()
+
+        db.add(Settings(
+            id=1,
+            qbt_strike_check_interval_seconds=60,
+            qbt_metadata_max_strikes=1,
+            qbt_stalled_max_strikes=3,
+            qbt_slow_min_speed_bps=0,
+            qbt_slow_max_strikes=3,
+            qbt_slow_ignore_private=True,
+        ))
+        db.commit()
+
+        monkeypatch.delenv('OPTIMIZARR_QBT_METADATA_MAX_STRIKES', raising=False)
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _qbt: [{
+            'hash': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            'name': 'Database.Setting.Metadata.2026.1080p.WEB-DL',
+            'state': 'metaDL',
+            'tags': 'optimizarr',
+            'progress': 0,
+            'dlspeed': 0,
+        }])
+        removed: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_qbt_torrent',
+            lambda _qbt, torrent_hash, *, delete_files=False: removed.append((torrent_hash, delete_files)) or True,
+        )
+
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 1
+        assert removed == [('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', False)]
+
+
+def test_cleanup_stale_qbt_torrents_retries_tracked_job_after_strikes(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.commit()
+        _qbt_strike_state.clear()
+
+        library = _seed_library_with_profile(db)
+        torrent_hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Tracked.Metadata.2026.mkv',
+            release_name='Tracked.Metadata.2026.1080p.WEB-DL',
+            selected_release_key='title:tracked:idx:1:proto:qbittorrent',
+            download_hash=torrent_hash,
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            max_retries=5,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setenv('OPTIMIZARR_QBT_METADATA_MAX_STRIKES', '3')
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _qbt: [{
+            'hash': torrent_hash,
+            'name': 'Tracked.Metadata.2026.1080p.WEB-DL',
+            'state': 'metaDL',
+            'tags': 'optimizarr',
+            'progress': 0,
+            'dlspeed': 0,
+        }])
+        removed: list[tuple[str, bool]] = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_qbt_torrent',
+            lambda _qbt, torrent_hash, *, delete_files=False: removed.append((torrent_hash, delete_files)) or True,
+        )
+
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 0
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 0
+        assert _cleanup_stale_qbt_torrents(db, SimpleNamespace(enabled=True), force=True) == 1
+        db.refresh(dj)
+
+        assert removed == [(torrent_hash, False)]
+        assert dj.status == DownloadJobStatus.searching.value
+        assert dj.download_hash is None
+        assert dj.retry_count == 1
+        assert 'stuck downloading metadata' in (dj.error_message or '')
 
 
 def test_reconcile_duplicate_sab_downloads_removes_incomplete_alternatives(monkeypatch):

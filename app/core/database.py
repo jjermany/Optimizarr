@@ -130,6 +130,42 @@ def init_db() -> None:
             'queue_paused',
             'queue_paused BOOLEAN NOT NULL DEFAULT 0',
         )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'qbt_strike_check_interval_seconds',
+            'qbt_strike_check_interval_seconds INTEGER NOT NULL DEFAULT 60',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'qbt_metadata_max_strikes',
+            'qbt_metadata_max_strikes INTEGER NOT NULL DEFAULT 3',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'qbt_stalled_max_strikes',
+            'qbt_stalled_max_strikes INTEGER NOT NULL DEFAULT 3',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'qbt_slow_min_speed_bps',
+            'qbt_slow_min_speed_bps INTEGER NOT NULL DEFAULT 0',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'qbt_slow_max_strikes',
+            'qbt_slow_max_strikes INTEGER NOT NULL DEFAULT 3',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'qbt_slow_ignore_private',
+            'qbt_slow_ignore_private BOOLEAN NOT NULL DEFAULT 1',
+        )
 
         _add_column_if_missing(
             connection,

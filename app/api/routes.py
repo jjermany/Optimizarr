@@ -673,6 +673,12 @@ class SettingsResponse(BaseModel):
     requeue_interrupted_jobs: bool
     cleanup_workspaces_on_startup: bool
     min_free_gb: int
+    qbt_strike_check_interval_seconds: int
+    qbt_metadata_max_strikes: int
+    qbt_stalled_max_strikes: int
+    qbt_slow_min_speed_bps: int
+    qbt_slow_max_strikes: int
+    qbt_slow_ignore_private: bool
 
     @classmethod
     def from_orm_settings(cls, settings: Settings):
@@ -694,6 +700,12 @@ class SettingsResponse(BaseModel):
             requeue_interrupted_jobs=settings.requeue_interrupted_jobs,
             cleanup_workspaces_on_startup=settings.cleanup_workspaces_on_startup,
             min_free_gb=settings.min_free_gb,
+            qbt_strike_check_interval_seconds=settings.qbt_strike_check_interval_seconds,
+            qbt_metadata_max_strikes=settings.qbt_metadata_max_strikes,
+            qbt_stalled_max_strikes=settings.qbt_stalled_max_strikes,
+            qbt_slow_min_speed_bps=settings.qbt_slow_min_speed_bps,
+            qbt_slow_max_strikes=settings.qbt_slow_max_strikes,
+            qbt_slow_ignore_private=settings.qbt_slow_ignore_private,
         )
 
 
@@ -715,6 +727,12 @@ class SettingsUpdateRequest(BaseModel):
     requeue_interrupted_jobs: bool | None = None
     cleanup_workspaces_on_startup: bool | None = None
     min_free_gb: int | None = Field(default=None, ge=1)
+    qbt_strike_check_interval_seconds: int | None = Field(default=None, ge=1)
+    qbt_metadata_max_strikes: int | None = Field(default=None, ge=0)
+    qbt_stalled_max_strikes: int | None = Field(default=None, ge=0)
+    qbt_slow_min_speed_bps: int | None = Field(default=None, ge=0)
+    qbt_slow_max_strikes: int | None = Field(default=None, ge=0)
+    qbt_slow_ignore_private: bool | None = None
 
     @field_validator('workspace_root')
     @classmethod

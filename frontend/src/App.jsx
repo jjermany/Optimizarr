@@ -4678,6 +4678,70 @@ export default function App() {
                     />
                   </FormField>
                 </div>
+                {settings && (
+                  <div className="mt-5 border-t border-slate-800/70 pt-5">
+                    <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Owned Torrent Cleanup</p>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <FormField label="Check Interval (Seconds)" hint="How often Optimizarr checks owned qBittorrent torrents.">
+                        <TextInput
+                          type="number"
+                          min={1}
+                          value={settings.qbt_strike_check_interval_seconds}
+                          onChange={(e) => setSettings((prev) => ({ ...prev, qbt_strike_check_interval_seconds: Number(e.target.value) }))}
+                        />
+                      </FormField>
+                      <FormField label="Metadata Strikes" hint="Applies to public and private torrents stuck downloading metadata.">
+                        <TextInput
+                          type="number"
+                          min={0}
+                          value={settings.qbt_metadata_max_strikes}
+                          onChange={(e) => setSettings((prev) => ({ ...prev, qbt_metadata_max_strikes: Number(e.target.value) }))}
+                        />
+                      </FormField>
+                      <FormField label="Stalled Strikes" hint="Removes owned torrents in stalled or error states after this many strikes.">
+                        <TextInput
+                          type="number"
+                          min={0}
+                          value={settings.qbt_stalled_max_strikes}
+                          onChange={(e) => setSettings((prev) => ({ ...prev, qbt_stalled_max_strikes: Number(e.target.value) }))}
+                        />
+                      </FormField>
+                      <FormField label="Slow Speed (B/s)" hint="Owned torrents below this speed receive slow-download strikes. Set 0 to disable.">
+                        <TextInput
+                          type="number"
+                          min={0}
+                          value={settings.qbt_slow_min_speed_bps}
+                          onChange={(e) => setSettings((prev) => ({ ...prev, qbt_slow_min_speed_bps: Number(e.target.value) }))}
+                        />
+                      </FormField>
+                      <FormField label="Slow Strikes" hint="Removes owned slow torrents after this many strikes.">
+                        <TextInput
+                          type="number"
+                          min={0}
+                          value={settings.qbt_slow_max_strikes}
+                          onChange={(e) => setSettings((prev) => ({ ...prev, qbt_slow_max_strikes: Number(e.target.value) }))}
+                        />
+                      </FormField>
+                      <div className="flex items-end">
+                        <div className="flex w-full items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                          <div>
+                            <p className="text-sm font-medium text-slate-200">Ignore Private Slow Torrents</p>
+                            <p className="text-xs text-slate-500">Private torrents still receive metadata and stalled strikes.</p>
+                          </div>
+                          <Toggle
+                            checked={settings.qbt_slow_ignore_private}
+                            onChange={(e) => setSettings((prev) => ({ ...prev, qbt_slow_ignore_private: e.target.checked }))}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                    <div className="mt-4">
+                      <Btn variant="primary" disabled={savingSettings} onClick={saveSettings}>
+                        {savingSettings ? 'Saving...' : 'Save Cleanup Rules'}
+                      </Btn>
+                    </div>
+                  </div>
+                )}
                 <div className="mt-5 flex flex-wrap gap-3">
                   <Btn variant="violet" disabled={savingProwlarrSettings} onClick={saveProwlarrSettings}>
                     {savingProwlarrSettings ? 'Saving…' : 'Save Prowlarr Settings'}

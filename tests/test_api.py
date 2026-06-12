@@ -151,6 +151,12 @@ def test_get_and_update_settings():
         assert isinstance(payload['requeue_interrupted_jobs'], bool)
         assert isinstance(payload['cleanup_workspaces_on_startup'], bool)
         assert payload['min_free_gb'] >= 1
+        assert payload['qbt_strike_check_interval_seconds'] >= 1
+        assert payload['qbt_metadata_max_strikes'] >= 0
+        assert payload['qbt_stalled_max_strikes'] >= 0
+        assert payload['qbt_slow_min_speed_bps'] >= 0
+        assert payload['qbt_slow_max_strikes'] >= 0
+        assert isinstance(payload['qbt_slow_ignore_private'], bool)
 
         update_response = client.post(
             '/settings',
@@ -166,6 +172,12 @@ def test_get_and_update_settings():
                 'requeue_interrupted_jobs': False,
                 'cleanup_workspaces_on_startup': False,
                 'min_free_gb': 32,
+                'qbt_strike_check_interval_seconds': 60,
+                'qbt_metadata_max_strikes': 3,
+                'qbt_stalled_max_strikes': 4,
+                'qbt_slow_min_speed_bps': 1024,
+                'qbt_slow_max_strikes': 5,
+                'qbt_slow_ignore_private': True,
             },
         )
         assert update_response.status_code == 200
@@ -181,6 +193,12 @@ def test_get_and_update_settings():
         assert updated['requeue_interrupted_jobs'] is False
         assert updated['cleanup_workspaces_on_startup'] is False
         assert updated['min_free_gb'] == 32
+        assert updated['qbt_strike_check_interval_seconds'] == 60
+        assert updated['qbt_metadata_max_strikes'] == 3
+        assert updated['qbt_stalled_max_strikes'] == 4
+        assert updated['qbt_slow_min_speed_bps'] == 1024
+        assert updated['qbt_slow_max_strikes'] == 5
+        assert updated['qbt_slow_ignore_private'] is True
 
         final_response = client.get('/settings')
         assert final_response.status_code == 200

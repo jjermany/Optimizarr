@@ -48,6 +48,15 @@ _tagged_job_ids: set[int] = set()
 _categorized_sab_job_ids: set[int] = set()
 _DEFAULT_DOWNLOAD_MAX_RETRIES = 5
 _CLIENT_TRACKING_GRACE_SECONDS = 10
+_QBT_STRIKE_CHECK_INTERVAL_SECONDS = 60
+_QBT_METADATA_MAX_STRIKES = 3
+_QBT_STALLED_MAX_STRIKES = 3
+_QBT_SLOW_MAX_STRIKES = 3
+_QBT_SLOW_MIN_SPEED_BPS = 0
+_QBT_METADATA_STATES = {'metaDL', 'forcedMetaDL'}
+_QBT_STALE_STATES = {'stalledDL', 'missingFiles', 'error', 'stoppedDL'}
+_qbt_strike_state: dict[str, dict[str, object]] = {}
+_last_qbt_strike_cleanup_monotonic = 0.0
 _UNWANTED_RELEASE_VARIANT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r'\bsing[\s._-]*along\b', re.IGNORECASE),
     re.compile(r"\bdirector'?s[\s._-]*cut\b", re.IGNORECASE),
@@ -389,6 +398,243 @@ def _qbt_torrent_added_on(torrent: dict) -> int:
 def _is_incomplete_qbt_torrent(torrent: dict) -> bool:
     state = str(torrent.get('state') or '').strip()
     return state not in download_client_service._QBT_COMPLETE_STATES and _qbt_torrent_progress(torrent) < 1.0
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    try:
+        value = int(float(raw_value))
+    except ValueError:
+        logger.warning('Invalid %s=%r; using %d', name, raw_value, default)
+        return default
+    return max(minimum, value)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    return str(raw_value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _qbt_settings_int(settings: Settings | None, attr_name: str, env_name: str, default: int, *, minimum: int = 0) -> int:
+    if settings is not None:
+        value = getattr(settings, attr_name, None)
+        if value is not None:
+            try:
+                return max(minimum, int(value))
+            except (TypeError, ValueError):
+                pass
+    return _env_int(env_name, default, minimum=minimum)
+
+
+def _qbt_settings_bool(settings: Settings | None, attr_name: str, env_name: str, default: bool) -> bool:
+    if settings is not None:
+        value = getattr(settings, attr_name, None)
+        if value is not None:
+            return bool(value)
+    return _env_bool(env_name, default)
+
+
+def _qbt_torrent_has_optimizarr_ownership(torrent: dict) -> bool:
+    tag_values = str(torrent.get('tags') or '').split(',')
+    category = str(torrent.get('category') or '').strip().lower()
+    return (
+        download_client_service._QBT_TAG in {tag.strip().lower() for tag in tag_values}
+        or category == download_client_service._QBT_TAG
+    )
+
+
+def _qbt_torrent_is_private(torrent: dict) -> bool:
+    raw_value = torrent.get('private')
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, (int, float)):
+        return raw_value > 0
+    if isinstance(raw_value, str):
+        return raw_value.strip().lower() in {'1', 'true', 'yes', 'private'}
+    return False
+
+
+def _active_qbt_download_jobs_by_hash(db: Session) -> dict[str, DownloadJob]:
+    active_statuses = {
+        DownloadJobStatus.queued.value,
+        DownloadJobStatus.downloading.value,
+        DownloadJobStatus.moving.value,
+        DownloadJobStatus.stalled.value,
+        DownloadJobStatus.importing.value,
+    }
+    rows = (
+        db.query(DownloadJob)
+        .filter(
+            DownloadJob.client_type == 'qbittorrent',
+            DownloadJob.download_hash.is_not(None),
+            DownloadJob.status.in_(active_statuses),
+        )
+        .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
+        .all()
+    )
+    jobs_by_hash: dict[str, DownloadJob] = {}
+    for row in rows:
+        torrent_hash = str(row.download_hash or '').strip().lower()
+        if torrent_hash and torrent_hash not in jobs_by_hash:
+            jobs_by_hash[torrent_hash] = row
+    return jobs_by_hash
+
+
+def _qbt_torrent_download_speed(torrent: dict) -> int:
+    try:
+        return max(0, int(float(torrent.get('dlspeed') or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _qbt_torrent_strike_reason(torrent: dict, settings: Settings | None = None) -> tuple[str, int, bool] | None:
+    if not _qbt_torrent_has_optimizarr_ownership(torrent):
+        return None
+    state = str(torrent.get('state') or '').strip()
+    if state in _QBT_METADATA_STATES:
+        max_strikes = _qbt_settings_int(
+            settings,
+            'qbt_metadata_max_strikes',
+            'OPTIMIZARR_QBT_METADATA_MAX_STRIKES',
+            _QBT_METADATA_MAX_STRIKES,
+        )
+        if max_strikes <= 0:
+            return None
+        return ('stuck downloading metadata', max_strikes, False)
+
+    if state in _QBT_STALE_STATES:
+        max_strikes = _qbt_settings_int(
+            settings,
+            'qbt_stalled_max_strikes',
+            'OPTIMIZARR_QBT_STALLED_MAX_STRIKES',
+            _QBT_STALLED_MAX_STRIKES,
+        )
+        if max_strikes <= 0:
+            return None
+        return (f'stalled qBittorrent state {state}', max_strikes, True)
+
+    min_speed_bps = _qbt_settings_int(
+        settings,
+        'qbt_slow_min_speed_bps',
+        'OPTIMIZARR_QBT_SLOW_MIN_SPEED_BPS',
+        _QBT_SLOW_MIN_SPEED_BPS,
+    )
+    if min_speed_bps <= 0:
+        return None
+    if _qbt_settings_bool(settings, 'qbt_slow_ignore_private', 'OPTIMIZARR_QBT_SLOW_IGNORE_PRIVATE', True) and _qbt_torrent_is_private(torrent):
+        return None
+    if not _is_incomplete_qbt_torrent(torrent):
+        return None
+    download_speed_bps = _qbt_torrent_download_speed(torrent)
+    if download_speed_bps >= min_speed_bps:
+        return None
+    max_strikes = _qbt_settings_int(
+        settings,
+        'qbt_slow_max_strikes',
+        'OPTIMIZARR_QBT_SLOW_MAX_STRIKES',
+        _QBT_SLOW_MAX_STRIKES,
+    )
+    if max_strikes <= 0:
+        return None
+    return (f'slow download below {min_speed_bps} B/s', max_strikes, True)
+
+
+def _reset_qbt_strike(torrent_hash: str) -> None:
+    if torrent_hash:
+        _qbt_strike_state.pop(torrent_hash, None)
+
+
+def _record_qbt_strike(torrent_hash: str, reason: str) -> int:
+    state = _qbt_strike_state.get(torrent_hash)
+    if not state or state.get('reason') != reason:
+        state = {'reason': reason, 'strikes': 0}
+    strikes = int(state.get('strikes') or 0) + 1
+    state['strikes'] = strikes
+    _qbt_strike_state[torrent_hash] = state
+    return strikes
+
+
+def _retry_qbt_download_job_after_strikes(db: Session, dj: DownloadJob, reason: str) -> None:
+    library = db.query(Library).filter(Library.id == dj.library_id).first()
+    if library is None or library.profile is None:
+        _mark_failed(db, dj, f'{reason}; library or profile not found')
+        return
+    _retry_failed_download(
+        db,
+        dj,
+        library,
+        library.profile,
+        reason=reason,
+        failed_release_key=_release_selection_key_from_job(dj),
+    )
+
+
+def _cleanup_stale_qbt_torrents(db: Session, qbt, *, force: bool = False) -> int:
+    global _last_qbt_strike_cleanup_monotonic
+    if not getattr(qbt, 'enabled', False):
+        return 0
+
+    settings = db.query(Settings).filter(Settings.id == 1).first()
+    interval_seconds = _qbt_settings_int(
+        settings,
+        'qbt_strike_check_interval_seconds',
+        'OPTIMIZARR_QBT_STRIKE_CHECK_INTERVAL_SECONDS',
+        _QBT_STRIKE_CHECK_INTERVAL_SECONDS,
+        minimum=1,
+    )
+    now_monotonic = time.monotonic()
+    if not force and now_monotonic - _last_qbt_strike_cleanup_monotonic < interval_seconds:
+        return 0
+    _last_qbt_strike_cleanup_monotonic = now_monotonic
+
+    active_jobs_by_hash = _active_qbt_download_jobs_by_hash(db)
+    seen_hashes: set[str] = set()
+    removed = 0
+    for torrent in download_client_service.get_all_qbt_torrents(qbt):
+        torrent_hash = str(torrent.get('hash') or '').strip().lower()
+        if not torrent_hash:
+            continue
+        seen_hashes.add(torrent_hash)
+        strike_rule = _qbt_torrent_strike_reason(torrent, settings)
+        if not strike_rule:
+            _reset_qbt_strike(torrent_hash)
+            continue
+        reason, max_strikes, delete_files = strike_rule
+        strikes = _record_qbt_strike(torrent_hash, reason)
+        logger.warning(
+            'qBittorrent strike %s/%s for Optimizarr torrent: hash=%s name=%r reason=%s private=%s',
+            strikes,
+            max_strikes,
+            torrent_hash,
+            torrent.get('name'),
+            reason,
+            _qbt_torrent_is_private(torrent),
+        )
+        if strikes < max_strikes:
+            continue
+
+        if download_client_service.remove_qbt_torrent(qbt, torrent_hash, delete_files=delete_files):
+            removed += 1
+            _reset_qbt_strike(torrent_hash)
+            logger.warning(
+                'Removed Optimizarr qBittorrent torrent after %s strikes: hash=%s name=%r delete_files=%s reason=%s',
+                max_strikes,
+                torrent_hash,
+                torrent.get('name'),
+                delete_files,
+                reason,
+            )
+            tracked_job = active_jobs_by_hash.get(torrent_hash)
+            if tracked_job is not None:
+                _retry_qbt_download_job_after_strikes(db, tracked_job, reason)
+
+    for stale_hash in set(_qbt_strike_state) - seen_hashes:
+        _reset_qbt_strike(stale_hash)
+    return removed
 
 
 def _active_download_identity_keys(db: Session) -> set[str]:
@@ -2999,6 +3245,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
 def _process_downloading_jobs(db: Session) -> None:
     qbt = download_client_service.get_or_create_qbt_settings(db)
     sab = download_client_service.get_or_create_sab_settings(db)
+    _cleanup_stale_qbt_torrents(db, qbt)
     _reconcile_duplicate_qbt_downloads(db, qbt)
     _reconcile_duplicate_sab_downloads(db, sab)
 
