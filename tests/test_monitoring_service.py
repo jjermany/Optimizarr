@@ -3,6 +3,8 @@ import threading
 from io import StringIO
 from types import SimpleNamespace
 
+import pytest
+
 from app.core.database import SessionLocal
 from app.models.download_job import DownloadJob
 from app.models.job import Job
@@ -118,7 +120,7 @@ qmmd_gpu_engine_utilization_ratio{device="0000:03:00.0",engine="vcs"} 0.42
     metrics = monitoring_service.get_gpu_metrics()
 
     assert metrics['gpu_video_percent'] == 42.0
-    assert metrics['gpu_render_percent'] == 96.98813172214144
+    assert metrics['gpu_render_percent'] == pytest.approx(96.98813172214144)
 
 
 def test_get_gpu_metrics_parses_intel_gpu_top_output(monkeypatch):
