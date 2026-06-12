@@ -7,6 +7,8 @@ import select
 import subprocess
 import time
 from typing import Any
+from urllib.error import URLError
+from urllib.request import urlopen
 
 import psutil
 from sqlalchemy.orm import Session
@@ -23,6 +25,10 @@ ACTIVE_DOWNLOAD_STATUSES = {
     DownloadJobStatus.moving.value,
     DownloadJobStatus.importing.value,
 }
+QMMD_METRICS_URL_ENV = 'OPTIMIZARR_QMMD_METRICS_URL'
+QMMD_AUTO_DISCOVERY_ENV = 'OPTIMIZARR_QMMD_AUTO_DISCOVERY'
+QMMD_DEFAULT_PORT = 9000
+_QMMD_DISCOVERED_METRICS_URL: str | None = None
 
 
 def _safe_float(value: Any) -> float:
@@ -37,8 +43,23 @@ def _safe_float(value: Any) -> float:
     return 0.0
 
 
+def _clamp_percent(value: Any) -> float:
+    return min(100.0, max(0.0, _safe_float(value)))
+
+
 def _has_nonzero_gpu_activity(metrics: dict[str, float]) -> bool:
-    return any(value > 0.0 for value in metrics.values())
+    return any(
+        _safe_float(value) > 0.0
+        for key, value in metrics.items()
+        if key.endswith('_percent')
+    )
+
+
+def _normalize_gpu_metrics(metrics: dict[str, float]) -> dict[str, float]:
+    return {
+        'gpu_video_percent': _clamp_percent(metrics.get('gpu_video_percent')),
+        'gpu_render_percent': _clamp_percent(metrics.get('gpu_render_percent')),
+    }
 
 
 def _extract_percent(stats: Any, preferred_labels: tuple[str, ...]) -> float:
@@ -48,14 +69,14 @@ def _extract_percent(stats: Any, preferred_labels: tuple[str, ...]) -> float:
             key_lower = str(key).lower()
             if isinstance(value, dict):
                 if any(label in key_lower for label in preferred_labels):
-                    busy_value = _safe_float(value.get('busy'))
+                    busy_value = _clamp_percent(value.get('busy'))
                     if busy_value:
                         engine_values.append(busy_value)
                 nested_value = _extract_percent(value, preferred_labels)
                 if nested_value:
                     engine_values.append(nested_value)
             elif any(label in key_lower for label in preferred_labels):
-                parsed_value = _safe_float(value)
+                parsed_value = _clamp_percent(value)
                 if parsed_value:
                     engine_values.append(parsed_value)
         if engine_values:
@@ -85,6 +106,168 @@ def _extract_last_json_blob(raw_output: str) -> dict[str, Any]:
             cursor += 1
 
     return last_json
+
+
+def _parse_prometheus_labels(raw_labels: str) -> dict[str, str]:
+    labels: dict[str, str] = {}
+    current = ''
+    in_quotes = False
+    escape = False
+    parts: list[str] = []
+
+    for char in raw_labels:
+        if escape:
+            current += char
+            escape = False
+            continue
+        if char == '\\':
+            current += char
+            escape = True
+            continue
+        if char == '"':
+            in_quotes = not in_quotes
+            current += char
+            continue
+        if char == ',' and not in_quotes:
+            parts.append(current)
+            current = ''
+            continue
+        current += char
+    if current:
+        parts.append(current)
+
+    for part in parts:
+        if '=' not in part:
+            continue
+        key, value = part.split('=', 1)
+        key = key.strip()
+        value = value.strip()
+        if value.startswith('"') and value.endswith('"'):
+            value = value[1:-1].replace(r'\"', '"').replace(r'\\', '\\')
+        if key:
+            labels[key] = value
+    return labels
+
+
+def _iter_prometheus_samples(raw_text: str, metric_name: str) -> list[tuple[dict[str, str], float]]:
+    samples: list[tuple[dict[str, str], float]] = []
+    prefix = f'{metric_name}{{'
+
+    for raw_line in raw_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        labels: dict[str, str] = {}
+        value_text = ''
+        if line.startswith(prefix):
+            label_end = line.find('}')
+            if label_end == -1:
+                continue
+            labels = _parse_prometheus_labels(line[len(prefix):label_end])
+            value_text = line[label_end + 1:].strip().split(None, 1)[0]
+        elif line.startswith(f'{metric_name} '):
+            value_text = line[len(metric_name):].strip().split(None, 1)[0]
+        else:
+            continue
+        value = _safe_float(value_text)
+        samples.append((labels, value))
+    return samples
+
+
+def _docker_host_gateway_ip() -> str | None:
+    try:
+        with open('/proc/net/route') as route_file:
+            for line in route_file.readlines()[1:]:
+                fields = line.split()
+                if len(fields) < 3 or fields[1] != '00000000':
+                    continue
+                gateway_hex = fields[2]
+                octets = [
+                    str(int(gateway_hex[index:index + 2], 16))
+                    for index in range(6, -1, -2)
+                ]
+                return '.'.join(octets)
+    except OSError:
+        return None
+    return None
+
+
+def _qmmd_candidate_urls() -> list[str]:
+    configured = (os.getenv(QMMD_METRICS_URL_ENV) or '').strip()
+    if configured:
+        return [url.strip() for url in configured.split(',') if url.strip()]
+
+    auto_discovery = (os.getenv(QMMD_AUTO_DISCOVERY_ENV, 'true') or '').strip().lower()
+    if auto_discovery in {'0', 'false', 'no', 'off'}:
+        return []
+
+    hosts = ['host.docker.internal']
+    gateway_ip = _docker_host_gateway_ip()
+    if gateway_ip:
+        hosts.append(gateway_ip)
+    if '172.17.0.1' not in hosts:
+        hosts.append('172.17.0.1')
+
+    return [f'http://{host}:{QMMD_DEFAULT_PORT}/metrics' for host in hosts]
+
+
+def _fetch_qmmd_metrics_text(metrics_url: str, timeout: float) -> str | None:
+    try:
+        with urlopen(metrics_url, timeout=timeout) as response:
+            return response.read(512 * 1024).decode('utf-8', errors='replace')
+    except (OSError, URLError, TimeoutError, ValueError):
+        return None
+
+
+def _parse_qmmd_gpu_metrics(raw_text: str) -> dict[str, float] | None:
+    if 'qmmd_gpu_' not in raw_text:
+        return None
+
+    video = 0.0
+    render = 0.0
+    for labels, ratio in _iter_prometheus_samples(raw_text, 'qmmd_gpu_engine_utilization_ratio'):
+        engine = labels.get('engine', '').lower()
+        pct = _clamp_percent(ratio * 100.0)
+        if any(lbl in engine for lbl in ('vcs', 'vecs', 'vd', 'video')):
+            video = max(video, pct)
+        elif any(lbl in engine for lbl in ('rcs', 'ccs', 'render', '3d')):
+            render = max(render, pct)
+
+    if video == 0.0 and render == 0.0:
+        return None
+
+    return {
+        'gpu_video_percent': video,
+        'gpu_render_percent': render,
+    }
+
+
+def _get_qmmd_gpu_metrics() -> dict[str, float] | None:
+    """Try qmassa/qmmd Prometheus metrics from config or Docker host discovery."""
+    global _QMMD_DISCOVERED_METRICS_URL
+
+    configured = bool((os.getenv(QMMD_METRICS_URL_ENV) or '').strip())
+    candidate_urls = _qmmd_candidate_urls()
+    if _QMMD_DISCOVERED_METRICS_URL and not configured:
+        candidate_urls = [_QMMD_DISCOVERED_METRICS_URL]
+    if not candidate_urls:
+        return None
+
+    timeout = 1.5 if configured else 0.35
+    for metrics_url in candidate_urls:
+        raw_text = _fetch_qmmd_metrics_text(metrics_url, timeout=timeout)
+        if raw_text is None:
+            continue
+        metrics = _parse_qmmd_gpu_metrics(raw_text)
+        if metrics is None:
+            continue
+        if not configured:
+            _QMMD_DISCOVERED_METRICS_URL = metrics_url
+        return metrics
+
+    if not configured:
+        _QMMD_DISCOVERED_METRICS_URL = None
+    return None
 
 
 def _intel_gpu_top_raw() -> dict[str, str]:
@@ -225,8 +408,8 @@ def _get_nvidia_gpu_metrics() -> dict[str, float] | None:
         parts = lines[0].split(',')
         gpu_util = float(parts[0].strip())
         return {
-            'gpu_video_percent': gpu_util,
-            'gpu_render_percent': gpu_util,
+            'gpu_video_percent': _clamp_percent(gpu_util),
+            'gpu_render_percent': _clamp_percent(gpu_util),
         }
     except (FileNotFoundError, subprocess.TimeoutExpired, ValueError, IndexError):
         return None
@@ -429,40 +612,56 @@ def _get_intel_gpu_metrics_freq() -> dict[str, float] | None:
 
 
 def get_gpu_metrics() -> dict[str, float]:
-    default_metrics = {'gpu_video_percent': 0.0, 'gpu_render_percent': 0.0}
+    default_metrics = {
+        'gpu_video_percent': 0.0,
+        'gpu_render_percent': 0.0,
+    }
 
-    # 1. Sysfs engine busy_time_ms — accurate per-engine, no special caps needed.
-    sysfs = _get_intel_gpu_metrics_sysfs()
-    if sysfs is not None:
-        if _has_nonzero_gpu_activity(sysfs):
-            return sysfs
+    # 1. qmassa/qmmd Prometheus metrics — best source for newer Intel Arc/xe
+    #    systems when the optional exporter URL is configured.
+    qmmd = _get_qmmd_gpu_metrics()
+    if qmmd is not None:
+        qmmd = _normalize_gpu_metrics(qmmd)
+        if _has_nonzero_gpu_activity(qmmd):
+            return qmmd
 
-    # 2. intel_gpu_top engine % — accurate per-engine load (matches GPU Statistics
-    #    tool), requires CAP_PERFMON.  Preferred over the MHz proxy because it
-    #    reports actual utilisation rather than clock frequency ratio.
+    # 2. intel_gpu_top engine % — accurate per-engine load and power telemetry
+    #    when CAP_PERFMON is available.  Preferred over sysfs because it matches
+    #    the common GPU Statistics tooling and exposes Intel's own rail readings.
     intel = _get_intel_gpu_metrics()
     if intel is not None:
+        intel = _normalize_gpu_metrics(intel)
         if _has_nonzero_gpu_activity(intel):
             return intel
 
-    # Keep the best available zero-activity reading as the idle fallback.
-    # Prefer sysfs (per-engine), then intel_gpu_top, then the generic default.
+    # 3. Sysfs engine busy_time_ms — accurate per-engine, no special caps needed.
+    sysfs = _get_intel_gpu_metrics_sysfs()
     if sysfs is not None:
-        default_metrics = sysfs
+        sysfs = _normalize_gpu_metrics(sysfs)
+        if _has_nonzero_gpu_activity(sysfs):
+            return sysfs
+
+    # Keep the best available zero-activity reading as the idle fallback.
+    # Prefer qmmd, then intel_gpu_top, then sysfs, then the generic default.
+    if qmmd is not None:
+        default_metrics = qmmd
     elif intel is not None:
         default_metrics = intel
+    elif sysfs is not None:
+        default_metrics = sysfs
 
-    # 3. GT clock frequency — last-resort proxy when neither sysfs nor
+    # 4. GT clock frequency — last-resort proxy when neither sysfs nor
     #    intel_gpu_top are available.  Reports clock ratio, not true utilisation.
     freq = _get_intel_gpu_metrics_freq()
     if freq is not None:
+        freq = _normalize_gpu_metrics(freq)
         if _has_nonzero_gpu_activity(freq):
             return freq
 
-    # 4. NVIDIA via nvidia-smi.
+    # 5. NVIDIA via nvidia-smi.
     nvidia = _get_nvidia_gpu_metrics()
     if nvidia is not None:
-        return nvidia
+        return _normalize_gpu_metrics(nvidia)
 
     return default_metrics
 

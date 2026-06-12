@@ -65,12 +65,16 @@ from app.services.job_service import (
     retry_job,
 )
 from app.services.monitoring_service import (
+    QMMD_AUTO_DISCOVERY_ENV,
+    QMMD_METRICS_URL_ENV,
     _extract_last_json_blob,
     _find_drm_card_sysfs_paths,
     _get_intel_gpu_metrics,
     _get_intel_gpu_metrics_freq,
     _get_intel_gpu_metrics_sysfs,
     _get_nvidia_gpu_metrics,
+    _get_qmmd_gpu_metrics,
+    _qmmd_candidate_urls,
     _intel_gpu_top_raw,
     get_system_metrics,
 )
@@ -1503,6 +1507,13 @@ def debug_gpu(_: None = Depends(require_ui_auth)) -> dict:
 
     return {
         'drm_card_sysfs_paths': _card_paths,
+        'qmassa_qmmd': {
+            'metrics_url_env': QMMD_METRICS_URL_ENV,
+            'auto_discovery_env': QMMD_AUTO_DISCOVERY_ENV,
+            'metrics_url_configured': bool((_os.getenv(QMMD_METRICS_URL_ENV) or '').strip()),
+            'candidate_urls': _qmmd_candidate_urls(),
+            'result': _get_qmmd_gpu_metrics(),
+        },
         'sysfs': {
             'engine_dir_contents': engine_dir_contents,
             'busy_time_ms_files_found': sysfs_busy_files,

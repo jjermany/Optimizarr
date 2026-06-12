@@ -466,6 +466,19 @@ function formatDownloadSpeed(bytesPerSecond) {
   return `${Math.round(speed)} B/s`;
 }
 
+function clampMetricPercent(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(100, parsed));
+}
+
+function formatGpuPercent(metrics) {
+  return `${Math.round(Math.max(
+    clampMetricPercent(metrics?.gpu_video_percent),
+    clampMetricPercent(metrics?.gpu_render_percent),
+  ))}%`;
+}
+
 function formatDownloadRetry(job) {
   const retryCount = Number(job?.retry_count);
   const maxRetries = Number(job?.max_retries);
@@ -2992,7 +3005,7 @@ export default function App() {
         {activePage === 'dashboard' && (
           <section className="animate-fade-in space-y-5">
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
-              <StatCard label="GPU" value={`${Math.round(Math.max(metrics?.gpu_video_percent ?? 0, metrics?.gpu_render_percent ?? 0))}%`} />
+              <StatCard label="GPU" value={formatGpuPercent(metrics)} />
               <StatCard label="CPU" value={`${metrics?.cpu_percent ?? 0}%`} />
               <StatCard label="RAM" value={`${metrics?.ram_percent ?? 0}%`} />
               <StatCard label="Active Jobs" value={metrics?.active_jobs ?? 0} />

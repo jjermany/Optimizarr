@@ -10,10 +10,13 @@ services:
       - /mnt/cache/appdata/optimizarr/tmp:/cache
     devices:
       - /dev/dri:/dev/dri
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     cap_add:
       - PERFMON
     environment:
       - LIBVA_DRIVER_NAME=iHD
       - QSV_DEVICE=/dev/dri/renderD128
       - MEDIA_ROOT=/data
+      - OPTIMIZARR_QMMD_METRICS_URL=http://host.docker.internal:9000/metrics
     restart: unless-stopped

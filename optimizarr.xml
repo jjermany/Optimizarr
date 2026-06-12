@@ -13,7 +13,7 @@
   <WebUI>http://[IP]:[PORT:8080]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/jjermany/Optimizarr/main/optimizarr.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/jjermany/Optimizarr/main/icon.png</Icon>
-  <ExtraParams>--device=/dev/dri:/dev/dri --cap-add=PERFMON</ExtraParams>
+  <ExtraParams>--device=/dev/dri:/dev/dri --cap-add=PERFMON --add-host=host.docker.internal:host-gateway</ExtraParams>
   <Description>Automated media library optimizer with Intel QSV / VAAPI hardware-accelerated transcoding. Monitors your media libraries, queues encoding jobs, and replaces source files with smaller, re-encoded versions — all from a single container.</Description>
   <Config Name="Data" Target="/data" Default="/mnt/user/data" Mode="rw" Description="Root data path containing completed downloads and final media libraries." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/data</Config>
   <Config Name="Config" Target="/config" Default="/mnt/cache/appdata/optimizarr" Mode="rw" Description="Persistent configuration and database storage." Type="Path" Display="always" Required="true" Mask="false">/mnt/cache/appdata/optimizarr</Config>
@@ -22,6 +22,7 @@
   <Config Name="Media Root" Target="MEDIA_ROOT" Default="/data/media" Mode="" Description="Library browser root inside the container. Set this to your final media directory, not the completed-download directory." Type="Variable" Display="always" Required="true" Mask="false">/data/media</Config>
   <Config Name="VA-API Driver" Target="LIBVA_DRIVER_NAME" Default="iHD" Mode="" Description="VA-API driver name. Use iHD for Intel Gen 8+ / Arc (recommended) or i965 for older hardware." Type="Variable" Display="always" Required="false" Mask="false">iHD</Config>
   <Config Name="QSV Device" Target="QSV_DEVICE" Default="/dev/dri/renderD128" Mode="" Description="Path to the Intel render device used for QSV hardware encoding." Type="Variable" Display="always" Required="false" Mask="false">/dev/dri/renderD128</Config>
+  <Config Name="qmmd Metrics URL" Target="OPTIMIZARR_QMMD_METRICS_URL" Default="http://host.docker.internal:9000/metrics" Mode="" Description="Optional qmassa/qmmd Prometheus metrics URL exposed by the Unraid i915 plugin or another host exporter. Leave blank to auto-detect common Docker host addresses." Type="Variable" Display="advanced" Required="false" Mask="false">http://host.docker.internal:9000/metrics</Config>
   <Config Name="Session Cookie Secure" Target="OPTIMIZARR_SESSION_COOKIE_SECURE" Default="auto" Mode="" Description="Cookie Secure policy: auto, true, or false." Type="Variable" Display="advanced" Required="false" Mask="false">auto</Config>
   <Config Name="Secrets Key Path" Target="OPTIMIZARR_SECRETS_KEY_PATH" Default="/config/optimizarr.secrets.key" Mode="" Description="Path to persisted encryption key for secrets at rest." Type="Variable" Display="advanced" Required="false" Mask="false">/config/optimizarr.secrets.key</Config>
 </Container>

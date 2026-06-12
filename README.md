@@ -61,12 +61,14 @@ docker run -d \
   --name optimizarr \
   -p 8080:8080 \
   --device /dev/dri:/dev/dri \
+  --add-host host.docker.internal:host-gateway \
   -v /path/to/data:/data \
   -v /path/to/config:/config \
   -v /path/to/cache:/cache \
   -e MEDIA_ROOT=/data \
   -e LIBVA_DRIVER_NAME=iHD \
   -e QSV_DEVICE=/dev/dri/renderD128 \
+  -e OPTIMIZARR_QMMD_METRICS_URL=http://host.docker.internal:9000/metrics \
   ghcr.io/jjermany/optimizarr:latest
 ```
 
@@ -118,6 +120,8 @@ Key environment variables:
 | `OPTIMIZARR_WORKSPACE_ROOT_BASE` | `/cache` | Allowed parent directory for `workspace_root` |
 | `OPTIMIZARR_LOG_MAX_BYTES` | `5242880` | Max size per log file before rotation (5 MiB default) |
 | `OPTIMIZARR_LOG_BACKUP_COUNT` | `10` | Number of rotated log files to keep (`.1`, `.2`, etc.) |
+| `OPTIMIZARR_QMMD_METRICS_URL` | _(auto-detect)_ | Optional qmassa/qmmd Prometheus metrics URL, for example `http://host.docker.internal:9000/metrics`; when set, the dashboard prefers qmmd Intel GPU readings before `intel_gpu_top` |
+| `OPTIMIZARR_QMMD_AUTO_DISCOVERY` | `true` | Try common Docker host addresses on qmmd's default port `9000` when `OPTIMIZARR_QMMD_METRICS_URL` is unset |
 | `OPTIMIZARR_QBT_STRIKE_CHECK_INTERVAL_SECONDS` | `60` | How often Optimizarr checks owned qBittorrent torrents for metadata/stalled/slow strikes |
 | `OPTIMIZARR_QBT_METADATA_MAX_STRIKES` | `3` | Strikes before removing an owned qBittorrent torrent stuck downloading metadata; applies to public and private torrents |
 | `OPTIMIZARR_QBT_STALLED_MAX_STRIKES` | `3` | Strikes before removing an owned qBittorrent torrent in a stalled/error state |
@@ -238,10 +242,10 @@ If jobs fail with `qsv_encode_failed` but `ffmpeg -encoders` lists `*_qsv` encod
 
 ## GPU dashboard percentage
 
-The GPU% stat on the dashboard is collected using the following priority order:
+The GPU stat on the dashboard is collected using the following priority order:
 
-1. **sysfs engine stats** (`/sys/class/drm/card*/engine/*/busy_time_ms`) — works inside Docker without any extra capabilities on kernels that expose per-engine busy-time counters.
-2. **`intel_gpu_top`** — used when sysfs counters are unavailable (the common case on Intel iGPU). This tool requires `CAP_PERFMON` to call `perf_event_open()`. Docker's default seccomp profile allows that syscall when the capability is present, so the container must be started with `--cap-add=PERFMON`. The `docker-compose.yml`, `docker-compose.unraid.yml`, and `optimizarr.xml` templates already include this.
+1. **qmassa/qmmd** — preferred when `OPTIMIZARR_QMMD_METRICS_URL` points at the qmassa project's `qmmd` Prometheus exporter, or when auto-discovery finds qmmd on the Docker host at port `9000`. This is the best option for newer Intel Arc / xe-driver systems because qmmd exposes physical engine utilization ratios, which generally match video-load reporting better than the older probes.
+2. **`intel_gpu_top`** — built-in fallback for Intel GPUs because it reports per-engine busy percentages and Intel's own power rail readings when available. Utilization is clamped to 0-100% before it reaches the dashboard. This tool requires `CAP_PERFMON` to call `perf_event_open()`. Docker's default seccomp profile allows that syscall when the capability is present, so the container must be started with `--cap-add=PERFMON`. The `docker-compose.yml`, `docker-compose.unraid.yml`, and `optimizarr.xml` templates already include this.
 
    If you manage the container manually, add the flag:
    ```
@@ -249,7 +253,9 @@ The GPU% stat on the dashboard is collected using the following priority order:
    ```
    Unraid users: this appears in the **Extra Parameters** field in the Docker template GUI. After adding it, **stop and recreate** the container (not just restart).
 
-3. **`nvidia-smi`** — used automatically for NVIDIA GPUs when present.
+3. **sysfs engine stats** (`/sys/class/drm/card*/engine/*/busy_time_ms`) — fallback that works inside Docker without any extra capabilities on kernels that expose per-engine busy-time counters.
+4. **GT frequency ratio** — last-resort Intel fallback for QSV workloads where engine counters stay at 0%; this reports clock pressure, not true utilization.
+5. **`nvidia-smi`** — used automatically for NVIDIA GPUs when present.
 
 If GPU% still shows 0% after recreating the container with `--cap-add=PERFMON`, run:
 
@@ -257,4 +263,4 @@ If GPU% still shows 0% after recreating the container with `--cap-add=PERFMON`, 
 docker exec optimizarr intel_gpu_top -J -s 250 -c 1
 ```
 
-If that prints JSON with an `engines` key the metric collection is working. If it prints nothing or an error, check that `/dev/dri` is passed through correctly.
+If that prints JSON with an `engines` key the fallback metric collection is working. If `intel_gpu_top` prints nothing or an error, check that `/dev/dri` is passed through correctly.
