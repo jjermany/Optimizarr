@@ -1,6 +1,5 @@
 const ENCODE_ACTIVE_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting', 'paused', 'paused_schedule']);
-const DOWNLOAD_ACTIVE_STATUSES = new Set(['downloading', 'moving', 'importing']);
-const DOWNLOAD_CLIENT_QUEUED_STATUSES = new Set(['queued']);
+const DOWNLOAD_ACTIVE_STATUSES = new Set(['pending', 'searching', 'queued', 'downloading', 'moving', 'stalled', 'importing']);
 const DOWNLOAD_WAITING_ENCODE_STATUSES = new Set(['waiting_encode']);
 
 function queueItemPath(item) {
@@ -77,10 +76,12 @@ function encodeStatusRank(statusValue) {
 }
 
 function queuePinRank(item) {
-  if (item._itemType === 'encode' && ENCODE_ACTIVE_STATUSES.has(item.status?.toLowerCase())) return 0;
-  if (item._itemType === 'download' && DOWNLOAD_ACTIVE_STATUSES.has(item.status)) return 1;
-  if (item._itemType === 'download' && DOWNLOAD_CLIENT_QUEUED_STATUSES.has(item.status)) return 2;
-  if (item._itemType === 'download' && DOWNLOAD_WAITING_ENCODE_STATUSES.has(item.status)) return 3;
+  const status = String(item.status || '').toLowerCase();
+  if (item._itemType === 'encode' && ENCODE_ACTIVE_STATUSES.has(status)) return 0;
+  // Treat the whole download lifecycle as one stable lane. Status refreshes like
+  // queued -> downloading -> importing should update the row, not move it.
+  if (item._itemType === 'download' && DOWNLOAD_ACTIVE_STATUSES.has(status)) return 1;
+  if (item._itemType === 'download' && DOWNLOAD_WAITING_ENCODE_STATUSES.has(status)) return 2;
   return 4;
 }
 
@@ -193,10 +194,13 @@ export function buildUnifiedQueueItems({
 
   return merged.sort((left, right) => {
     if (pinActiveFirst) {
-      const pinRankDelta = queuePinRank(left) - queuePinRank(right);
+      const leftPinRank = queuePinRank(left);
+      const rightPinRank = queuePinRank(right);
+      const pinRankDelta = leftPinRank - rightPinRank;
       if (pinRankDelta !== 0) return pinRankDelta;
-      // Queued/waiting rows stay stable FIFO so the visible queue does not jump.
-      if (queuePinRank(left) >= 2 && queuePinRank(left) === queuePinRank(right)) {
+      // Download rows stay stable FIFO so status/progress refreshes do not
+      // reshuffle the visible queue while someone is managing it.
+      if ((leftPinRank === 1 || leftPinRank === 2) && leftPinRank === rightPinRank) {
         const leftTs = Date.parse(left.created_at || '') || 0;
         const rightTs = Date.parse(right.created_at || '') || 0;
         if (leftTs !== rightTs) return leftTs - rightTs;

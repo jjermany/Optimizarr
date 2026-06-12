@@ -75,7 +75,7 @@ describe('buildUnifiedQueueItems', () => {
       pinActiveFirst: true,
     });
 
-    expect(items.map((item) => item.id)).toEqual([14, 10, 9, 11, 13, 16]);
+    expect(items.map((item) => item.id)).toEqual([14, 10, 13, 16, 9, 11]);
   });
 
   it('pins active encode rows before non-active rows deterministically', () => {
@@ -94,8 +94,8 @@ describe('buildUnifiedQueueItems', () => {
 
     expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
       'encode-5',
-      'encode-2',
       'download-5',
+      'encode-2',
     ]);
   });
 
@@ -124,7 +124,7 @@ describe('buildUnifiedQueueItems', () => {
     ]);
   });
 
-  it('keeps active download rows above client-queued downloads and keeps queued rows FIFO', () => {
+  it('keeps download rows FIFO even when statuses differ', () => {
     const items = buildUnifiedQueueItems({
       encodeItems: [
         { id: 19, status: 'queued', source_path: '/media/Queued.Encode.2021.mkv', created_at: '2026-03-01T12:00:00Z' },
@@ -141,12 +141,38 @@ describe('buildUnifiedQueueItems', () => {
     });
 
     expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
-      'download-42',
       'download-43',
+      'download-42',
       'download-40',
       'download-41',
       'encode-19',
     ]);
+  });
+
+  it('does not move a download row when status progresses through the client lifecycle', () => {
+    const before = buildUnifiedQueueItems({
+      encodeItems: [],
+      downloadItems: [
+        { id: 40, status: 'queued', source_file_path: '/downloads/Queued.Older.2025.mkv', created_at: '2026-03-01T10:00:00Z' },
+        { id: 41, status: 'queued', source_file_path: '/downloads/Queued.Newer.2026.mkv', created_at: '2026-03-01T11:00:00Z' },
+      ],
+      sortOption: 'newest',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+    const after = buildUnifiedQueueItems({
+      encodeItems: [],
+      downloadItems: [
+        { id: 40, status: 'downloading', source_file_path: '/downloads/Queued.Older.2025.mkv', created_at: '2026-03-01T10:00:00Z' },
+        { id: 41, status: 'queued', source_file_path: '/downloads/Queued.Newer.2026.mkv', created_at: '2026-03-01T11:00:00Z' },
+      ],
+      sortOption: 'newest',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(before.map((item) => item.id)).toEqual([40, 41]);
+    expect(after.map((item) => item.id)).toEqual([40, 41]);
   });
 
   it('hides queued encode placeholder rows when an active download row exists for the same source', () => {
