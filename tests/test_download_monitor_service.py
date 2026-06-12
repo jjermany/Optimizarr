@@ -3029,6 +3029,76 @@ def test_check_download_progress_sab_hashless_waits_for_nzo_recovery(monkeypatch
         assert status_calls == []
 
 
+def test_check_download_progress_sab_not_found_recovers_existing_nzo_by_release(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/movies/Thrash (2026)/Thrash.2026.2160p.HDR.mkv',
+            release_name='Thrash.2026.1080p.NF.WEB-DL.DDP5.1.Atmos.H264-HHWEB',
+            download_hash='STALE_NZO',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            progress_percent=12,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        status_calls: list[str] = []
+
+        def fake_status(_client_type, _qbt, _sab, download_hash):
+            status_calls.append(download_hash)
+            if download_hash == 'RECOVERED_NZO':
+                return {
+                    'progress_percent': 33,
+                    'eta_seconds': 120,
+                    'download_speed_bps': 2048,
+                    'is_complete': False,
+                    'is_moving': False,
+                    'is_waiting': False,
+                    'is_stalled': False,
+                    'sab_status': 'Downloading',
+                    'save_path': None,
+                    'not_found': False,
+                }
+            return {
+                'progress_percent': 0,
+                'eta_seconds': None,
+                'download_speed_bps': None,
+                'is_complete': False,
+                'is_moving': False,
+                'is_waiting': False,
+                'is_stalled': False,
+                'sab_status': None,
+                'save_path': None,
+                'not_found': True,
+            }
+
+        retry_calls = []
+        monkeypatch.setattr(download_client_service, 'get_download_status', fake_status)
+        monkeypatch.setattr(download_client_service, 'find_sab_nzo_for_release', lambda _sab, _release: 'RECOVERED_NZO')
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._retry_failed_download',
+            lambda *_args, **_kwargs: retry_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, SimpleNamespace(enabled=False), SimpleNamespace(enabled=True))
+        db.refresh(dj)
+
+        assert status_calls == ['STALE_NZO', 'RECOVERED_NZO']
+        assert retry_calls == []
+        assert dj.download_hash == 'RECOVERED_NZO'
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.progress_percent == 33
+
+
 def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
     from app.services import prowlarr_service
     from app.services.download_monitor_service import _do_search

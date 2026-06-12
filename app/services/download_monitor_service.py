@@ -2999,6 +2999,35 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                     'save_path': replacement.get('content_path') or replacement.get('save_path'),
                     'not_found': False,
                 }
+        elif client_type == 'sabnzbd' and sab.enabled and dj.release_name:
+            replacement_nzo = download_client_service.find_sab_nzo_for_release(sab, dj.release_name)
+            if replacement_nzo:
+                logger.warning(
+                    'Download job %s: SAB lookup missed NZO %s; recovered existing NZO %s via release match',
+                    dj.id,
+                    dj.download_hash,
+                    replacement_nzo,
+                )
+                dj.download_hash = replacement_nzo
+                _categorized_sab_job_ids.discard(dj.id)
+                db.commit()
+                db.refresh(dj)
+                if download_client_service.set_sab_category(sab, replacement_nzo, category='optimizarr'):
+                    _categorized_sab_job_ids.add(dj.id)
+                status = download_client_service.get_download_status(client_type, qbt, sab, replacement_nzo)
+                if status.get('not_found'):
+                    status = {
+                        'progress_percent': int(dj.progress_percent or 0),
+                        'eta_seconds': dj.eta_seconds,
+                        'download_speed_bps': dj.download_speed_bps,
+                        'is_complete': False,
+                        'is_moving': False,
+                        'is_waiting': True,
+                        'is_stalled': False,
+                        'sab_status': 'Recovered',
+                        'save_path': None,
+                        'not_found': False,
+                    }
         if status.get('not_found'):
             _retry_failed_download(
                 db,
