@@ -3089,6 +3089,53 @@ def test_check_download_progress_sab_unlinks_mismatched_tv_episode_nzo(monkeypat
         assert status_calls == []
 
 
+def test_check_download_progress_qbt_unlinks_mismatched_tv_episode_hash(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        torrent_hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/tv/Game of Thrones (2011)/Season 08/Game.of.Thrones.S08E03.2160p.WEB-DL.mkv',
+            release_name='Game.of.Thrones.2011.S08E03.1080p.WEB-DL',
+            download_hash=torrent_hash,
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            progress_percent=1,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+        torrents = [
+            {
+                'hash': torrent_hash,
+                'name': 'Game.of.Thrones.2011.S08E01.1080p.WEB-DL',
+                'progress': 0.01,
+                'state': 'downloading',
+            },
+        ]
+        status_calls = []
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _qbt: torrents)
+        monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: status_calls.append(True) or {})
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.download_hash is None
+        assert dj.status == DownloadJobStatus.searching.value
+        assert dj.progress_percent == 0
+        assert 'different episode' in (dj.error_message or '').lower()
+        assert status_calls == []
+
+
 def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()

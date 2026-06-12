@@ -723,6 +723,16 @@ def _sab_queue_item_for_nzo(sab, nzo_id: str | None) -> dict | None:
     return None
 
 
+def _qbt_torrent_for_hash(qbt, torrent_hash: str | None) -> dict | None:
+    target_hash = str(torrent_hash or '').strip().lower()
+    if not target_hash or not getattr(qbt, 'enabled', False):
+        return None
+    for torrent in download_client_service.get_all_qbt_torrents(qbt):
+        if str(torrent.get('hash') or '').strip().lower() == target_hash:
+            return torrent
+    return None
+
+
 def _tv_identity_keys(keys: set[str]) -> set[str]:
     return {key for key in keys if key.startswith('tv:') or key.startswith('tvrel:')}
 
@@ -738,6 +748,19 @@ def _sab_nzo_mismatches_tv_download_job(dj: DownloadJob, sab) -> bool:
         return False
     item_tv_keys = _tv_identity_keys(_download_identity_keys(str(item.get('name') or '')))
     return bool(item_tv_keys and target_tv_keys.isdisjoint(item_tv_keys))
+
+
+def _qbt_hash_mismatches_tv_download_job(dj: DownloadJob, qbt) -> bool:
+    if str(dj.client_type or '').lower() != 'qbittorrent' or not dj.download_hash:
+        return False
+    torrent = _qbt_torrent_for_hash(qbt, dj.download_hash)
+    if not torrent:
+        return False
+    target_tv_keys = _tv_identity_keys(_download_identity_keys(dj.source_file_path) | _download_identity_keys(dj.release_name))
+    if not target_tv_keys:
+        return False
+    torrent_tv_keys = _tv_identity_keys(_download_identity_keys(str(torrent.get('name') or '')))
+    return bool(torrent_tv_keys and target_tv_keys.isdisjoint(torrent_tv_keys))
 
 
 _ACTIVE_DOWNLOAD_STATUSES = (
@@ -3150,6 +3173,23 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     if dj.id not in _categorized_sab_job_ids and client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
         if download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr'):
             _categorized_sab_job_ids.add(dj.id)
+
+    if client_type == 'qbittorrent' and qbt.enabled and _qbt_hash_mismatches_tv_download_job(dj, qbt):
+        logger.warning(
+            'Download job %s: qBittorrent hash %s belongs to a different TV episode; unlinking and retrying search',
+            dj.id,
+            dj.download_hash,
+        )
+        dj.download_hash = None
+        dj.status = DownloadJobStatus.searching.value
+        dj.progress_percent = 0
+        dj.eta_seconds = None
+        dj.download_speed_bps = None
+        dj.error_message = 'qBittorrent item belongs to a different episode; retrying search'
+        db.commit()
+        db.refresh(dj)
+        _publish_download_job(dj)
+        return
 
     if client_type == 'sabnzbd' and sab.enabled and _sab_nzo_mismatches_tv_download_job(dj, sab):
         logger.warning(
