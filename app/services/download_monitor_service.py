@@ -316,9 +316,34 @@ def _release_identity_key(value: str | None) -> str | None:
     return media_identity_key(f'/downloads/{raw}.mkv')
 
 
+def _tv_download_identity_key(value: str | None) -> str | None:
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    season, episode = _extract_season_episode(raw)
+    if season is None or episode is None:
+        return None
+
+    stem = Path(raw).stem
+    clean = re.sub(r'[._-]+', ' ', stem)
+    match = re.search(r'\bs\d{1,2}e\d{1,3}\b|\b\d{1,2}x\d{1,3}\b', clean, flags=re.IGNORECASE)
+    title_part = clean[:match.start()] if match else clean
+    title_part = re.sub(r'\b(?:19|20)\d{2}\b', ' ', title_part)
+    tokens = [
+        token
+        for token in re.findall(r'[a-z0-9]+', title_part.lower())
+        if len(token) > 1 and token not in {'the', 'and', 'season', 'series', 'downloads'}
+    ]
+    if not tokens:
+        return None
+    return f'tvrel:{" ".join(tokens[:6])}:s{season:02d}:e{episode:03d}'
+
+
 def _loose_download_identity_key(value: str | None) -> str | None:
     raw = str(value or '').strip()
     if not raw:
+        return None
+    if _extract_season_episode(raw) != (None, None) or _is_probable_tv_episode_title(raw):
         return None
     year = _extract_year_from_path(raw)
     if year is None:
@@ -333,6 +358,7 @@ def _download_identity_keys(value: str | None) -> set[str]:
     return {
         key
         for key in (
+            _tv_download_identity_key(value),
             media_identity_key(value),
             _release_identity_key(value),
             _loose_download_identity_key(value),
@@ -343,7 +369,7 @@ def _download_identity_keys(value: str | None) -> set[str]:
 
 def _torrent_identity_key(torrent: dict) -> str | None:
     name = str(torrent.get('name') or '')
-    return _loose_download_identity_key(name) or _release_identity_key(name) or media_identity_key(name)
+    return _tv_download_identity_key(name) or _loose_download_identity_key(name) or _release_identity_key(name) or media_identity_key(name)
 
 
 def _qbt_torrent_progress(torrent: dict) -> float:
@@ -586,7 +612,7 @@ def _reconcile_duplicate_sab_downloads(db: Session, sab) -> int:
         if not nzo_id:
             continue
         name = str(item.get('name') or '')
-        key = _loose_download_identity_key(name) or _release_identity_key(name) or media_identity_key(name)
+        key = _tv_download_identity_key(name) or _loose_download_identity_key(name) or _release_identity_key(name) or media_identity_key(name)
         if key not in active_keys:
             continue
         items_by_key.setdefault(key, []).append(item)
@@ -685,6 +711,33 @@ def _find_sab_queue_item_for_download_job(dj: DownloadJob, sab) -> dict | None:
         return (percentage, -index)
 
     return max(candidates, key=score)
+
+
+def _sab_queue_item_for_nzo(sab, nzo_id: str | None) -> dict | None:
+    target_nzo = str(nzo_id or '').strip()
+    if not target_nzo or not getattr(sab, 'enabled', False):
+        return None
+    for item in download_client_service.get_sab_queue_items(sab):
+        if str(item.get('nzo_id') or '').strip() == target_nzo:
+            return item
+    return None
+
+
+def _tv_identity_keys(keys: set[str]) -> set[str]:
+    return {key for key in keys if key.startswith('tv:') or key.startswith('tvrel:')}
+
+
+def _sab_nzo_mismatches_tv_download_job(dj: DownloadJob, sab) -> bool:
+    if str(dj.client_type or '').lower() != 'sabnzbd' or not dj.download_hash:
+        return False
+    item = _sab_queue_item_for_nzo(sab, dj.download_hash)
+    if not item:
+        return False
+    target_tv_keys = _tv_identity_keys(_download_identity_keys(dj.source_file_path) | _download_identity_keys(dj.release_name))
+    if not target_tv_keys:
+        return False
+    item_tv_keys = _tv_identity_keys(_download_identity_keys(str(item.get('name') or '')))
+    return bool(item_tv_keys and target_tv_keys.isdisjoint(item_tv_keys))
 
 
 _ACTIVE_DOWNLOAD_STATUSES = (
@@ -1885,6 +1938,29 @@ def _extract_season_episode(value: str) -> tuple[int | None, int | None]:
     return int(match.group('season')), int(match.group('episode'))
 
 
+def _release_has_multi_episode_marker(release_title: str) -> bool:
+    text = str(release_title or '').lower()
+    # Keep hyphens for range detection, but normalize common filename separators.
+    text = re.sub(r'[._]+', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    range_patterns = (
+        r'\bs\d{1,2}e(?P<start>\d{1,3})\s*(?:-|to|thru|through)\s*e?(?P<end>\d{1,3})\b',
+        r'\b\d{1,2}x(?P<start>\d{1,3})\s*(?:-|to|thru|through)\s*(?P<end>\d{1,3})\b',
+        r'\b(?:episodes?|eps?)\s*(?P<start>\d{1,3})\s*(?:-|to|thru|through)\s*(?P<end>\d{1,3})\b',
+    )
+    for pattern in range_patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match and int(match.group('start')) != int(match.group('end')):
+            return True
+
+    # Compact multi-episode naming such as S01E01E02 or repeated S01E01 S01E02.
+    if re.search(r'\bs\d{1,2}e\d{1,3}(?:\s*e\d{1,3})+\b', text, flags=re.IGNORECASE):
+        return True
+    episode_codes = re.findall(r'\bs\d{1,2}e\d{1,3}\b|\b\d{1,2}x\d{1,3}\b', text, flags=re.IGNORECASE)
+    return len(set(episode_codes)) > 1
+
+
 def _release_matches_source_title(release_title: str, source_path: str) -> bool:
     source_season, source_episode = _extract_season_episode(source_path)
     source_title, source_year = _extract_source_title_and_year(source_path)
@@ -1907,6 +1983,8 @@ def _release_matches_source_title(release_title: str, source_path: str) -> bool:
 
     release_season, release_episode = _extract_season_episode(release_title)
     if source_season is not None and source_episode is not None:
+        if _release_has_multi_episode_marker(release_title):
+            return False
         if release_season != source_season or release_episode != source_episode:
             return False
     elif _is_probable_tv_episode_title(release_title):
@@ -3072,6 +3150,23 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     if dj.id not in _categorized_sab_job_ids and client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
         if download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr'):
             _categorized_sab_job_ids.add(dj.id)
+
+    if client_type == 'sabnzbd' and sab.enabled and _sab_nzo_mismatches_tv_download_job(dj, sab):
+        logger.warning(
+            'Download job %s: SAB NZO %s belongs to a different TV episode; unlinking and retrying search',
+            dj.id,
+            dj.download_hash,
+        )
+        dj.download_hash = None
+        dj.status = DownloadJobStatus.searching.value
+        dj.progress_percent = 0
+        dj.eta_seconds = None
+        dj.download_speed_bps = None
+        dj.error_message = 'SABnzbd item belongs to a different episode; retrying search'
+        db.commit()
+        db.refresh(dj)
+        _publish_download_job(dj)
+        return
 
     status = download_client_service.get_download_status(client_type, qbt, sab, dj.download_hash or '')
 

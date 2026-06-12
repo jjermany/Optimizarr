@@ -18,6 +18,7 @@ from app.services.download_monitor_service import (
     _extract_hash_from_release,
     _extract_qbt_info_hash,
     _find_completed_download_match,
+    _find_sab_queue_item_for_download_job,
     _build_search_query,
     _check_download_progress,
     _import_file,
@@ -1300,6 +1301,23 @@ def test_release_matches_source_title_rejects_wrong_tv_episode_release():
 # Timeout ordering: completion must be checked before timeout fires
 # ─────────────────────────────────────────────────────────────────────────────
 
+def test_release_matches_source_title_rejects_tv_episode_range_release():
+    source = '/data/media/tv/Example Show (2026)/Season 01/Example.Show.S01E01.2160p.WEB-DL.mkv'
+
+    assert _release_matches_source_title(
+        'Example.Show.S01E01-E06.2026.1080p.WEB-DL',
+        source,
+    ) is False
+    assert _release_matches_source_title(
+        'Example.Show.S01E01.S01E02.2026.1080p.WEB-DL',
+        source,
+    ) is False
+    assert _release_matches_source_title(
+        'Example.Show.S01E01E02.2026.1080p.WEB-DL',
+        source,
+    ) is False
+
+
 def test_check_download_progress_imports_complete_download_despite_elapsed_timeout(monkeypatch):
     """A download that is complete in qBit must be imported even when the timeout has elapsed."""
     imported_paths = []
@@ -2352,6 +2370,30 @@ def test_reconcile_duplicate_sab_downloads_retargets_to_most_progressed_nzo(monk
         assert active.status == DownloadJobStatus.downloading.value
 
 
+def test_sab_queue_recovery_does_not_link_different_tv_episode(monkeypatch):
+    job = DownloadJob(
+        source_file_path='/media/tv/Fallout (2024)/Season 01/Fallout.S01E06.2160p.WEB-DL.mkv',
+        release_name='Fallout.2024.S01E06.1080p.AMZN.WEB-DL.HEVC',
+        client_type='sabnzbd',
+        status=DownloadJobStatus.downloading.value,
+    )
+    queue_items = [
+        {
+            'nzo_id': 'SAB_NZO_S01E04',
+            'name': 'Fallout.S01E04.2024.1080p.Amazon.WEB-DL.HEVC.DDP5.1-DBTV',
+            'percentage': 83,
+            'status': 'Downloading',
+            'index': 0,
+        },
+    ]
+    monkeypatch.setattr(
+        'app.services.download_monitor_service.download_client_service.get_sab_queue_items',
+        lambda _sab: queue_items,
+    )
+
+    assert _find_sab_queue_item_for_download_job(job, SimpleNamespace(enabled=True)) is None
+
+
 def test_process_searching_jobs_uses_newest_sort_for_pending(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
@@ -2998,6 +3040,53 @@ def test_check_download_progress_sab_progress_overrides_waiting_status(monkeypat
         assert dj.eta_seconds == 300
         assert dj.download_speed_bps == 123456
         assert dj.download_started_at.replace(tzinfo=UTC) == old_started_at
+
+
+def test_check_download_progress_sab_unlinks_mismatched_tv_episode_nzo(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/tv/Fallout (2024)/Season 01/Fallout.S01E06.2160p.WEB-DL.mkv',
+            release_name='Fallout.2024.S01E06.1080p.AMZN.WEB-DL.HEVC',
+            download_hash='SAB_NZO_S01E04',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            progress_percent=83,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+        queue_items = [
+            {
+                'nzo_id': 'SAB_NZO_S01E04',
+                'name': 'Fallout.S01E04.2024.1080p.Amazon.WEB-DL.HEVC.DDP5.1-DBTV',
+                'percentage': 83,
+                'status': 'Downloading',
+                'index': 0,
+            },
+        ]
+        status_calls = []
+        monkeypatch.setattr(download_client_service, 'get_sab_queue_items', lambda _sab: queue_items)
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: status_calls.append(True) or {})
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.download_hash is None
+        assert dj.status == DownloadJobStatus.searching.value
+        assert dj.progress_percent == 0
+        assert 'different episode' in (dj.error_message or '').lower()
+        assert status_calls == []
 
 
 def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatch):
