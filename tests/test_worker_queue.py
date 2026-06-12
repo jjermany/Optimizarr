@@ -238,6 +238,14 @@ def test_should_cancel_when_shutdown_requested():
         queue.stop_event.clear()
 
 
+def test_should_cancel_when_job_row_was_deleted():
+    queue.stop_event.clear()
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+        assert queue._should_cancel(db, 999999) is True
+
+
 def test_batch_tracking_enqueues_completion_email(monkeypatch):
     sent = []
     monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: sent.append((subject, body)))

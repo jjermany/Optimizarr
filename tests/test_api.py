@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.api import routes
 from app.core.database import SessionLocal
 from app.models.auth import AdminUser, AuthSession
-from app.services import discovery_service
+from app.services import discovery_service, optimization_service
 from app.main import app
 
 BOOTSTRAP_TOKEN = 'test-bootstrap-token'
@@ -1284,6 +1284,7 @@ def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):
         db.commit()
 
         encode = Job(input_path='/media/clear-me.mkv', status='queued', progress_percent=63, error_message='x')
+        running_encode = Job(input_path='/media/clear-running.mkv', status='running', progress_percent=12)
         interrupted = Job(input_path='/media/clear-me-interrupted.mkv', status='interrupted')
         download = DownloadJob(
             source_file_path='/media/clear-me-download.mkv',
@@ -1294,36 +1295,43 @@ def test_clear_queue_endpoint_removes_encode_and_download_items(monkeypatch):
             client_type='qbittorrent',
             progress_percent=30,
         )
-        db.add_all([encode, interrupted, download])
+        db.add_all([encode, running_encode, interrupted, download])
         db.commit()
         db.refresh(encode)
+        db.refresh(running_encode)
         db.refresh(interrupted)
         db.refresh(download)
         encode_id = encode.id
+        running_encode_id = running_encode.id
         interrupted_id = interrupted.id
         download_id = download.id
 
     paused_reasons = []
     resumed_reasons = []
+    stopped_job_ids = []
     from app.workers import queue as worker_queue
     monkeypatch.setattr(worker_queue, 'pause_queue', lambda reason='manual': paused_reasons.append(reason))
     monkeypatch.setattr(worker_queue, 'resume_queue', lambda reason='manual': resumed_reasons.append(reason))
+    monkeypatch.setattr(optimization_service, 'stop_active_ffmpeg', lambda job_id: stopped_job_ids.append(job_id) or True)
 
     with TestClient(app) as client:
         response = client.post('/queue/clear')
         assert response.status_code == 200
         payload = response.json()
-        assert set(payload['removed_job_ids']) == {encode_id, interrupted_id}
+        assert set(payload['removed_job_ids']) == {encode_id, running_encode_id, interrupted_id}
         assert payload['removed_download_job_ids'] == [download_id]
 
     with SessionLocal() as db:
         updated_encode = db.query(Job).filter(Job.id == encode_id).first()
+        updated_running_encode = db.query(Job).filter(Job.id == running_encode_id).first()
         updated_interrupted = db.query(Job).filter(Job.id == interrupted_id).first()
         updated_download = db.query(DownloadJob).filter(DownloadJob.id == download_id).first()
         assert updated_encode is None
+        assert updated_running_encode is None
         assert updated_interrupted is None
         assert updated_download is None
 
+    assert stopped_job_ids == [encode_id, running_encode_id, interrupted_id]
     assert paused_reasons == ['manual']
     assert resumed_reasons == ['manual']
 

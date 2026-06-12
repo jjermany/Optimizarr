@@ -2574,6 +2574,7 @@ def test_check_download_progress_missing_client_item_retries_without_fallback(mo
         db.commit()
 
         library = _seed_library_with_profile(db)
+        old_started_at = datetime.now(UTC) - timedelta(seconds=15)
         dj = DownloadJob(
             library_id=library.id,
             source_file_path='/media/Missing.Client.Item.mkv',
@@ -2581,6 +2582,7 @@ def test_check_download_progress_missing_client_item_retries_without_fallback(mo
             download_hash='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
             client_type='qbittorrent',
             status=DownloadJobStatus.downloading.value,
+            download_started_at=old_started_at,
         )
         db.add(dj)
         db.commit()
@@ -2944,6 +2946,58 @@ def test_check_download_progress_sab_queued_does_not_timeout_or_retry(monkeypatc
         assert dj.error_message is None
         assert dj.download_started_at.replace(tzinfo=UTC) > old_started_at
         assert fallback_calls == []
+
+
+def test_check_download_progress_sab_progress_overrides_waiting_status(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        old_started_at = datetime.now(UTC) - timedelta(minutes=5)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Sab.Client.Active.But.Queued.mkv',
+            release_name='Sab.Client.Active.But.Queued.2025.1080p.WEB-DL',
+            download_hash='SAB_ACTIVE_NZO',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.queued.value,
+            retry_count=0,
+            max_retries=5,
+            progress_percent=0,
+            download_started_at=old_started_at,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 37,
+            'eta_seconds': 300,
+            'download_speed_bps': 123456,
+            'is_complete': False,
+            'is_moving': False,
+            'is_waiting': True,
+            'is_stalled': False,
+            'sab_status': 'Queued',
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.progress_percent == 37
+        assert dj.eta_seconds == 300
+        assert dj.download_speed_bps == 123456
+        assert dj.download_started_at.replace(tzinfo=UTC) == old_started_at
 
 
 def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatch):

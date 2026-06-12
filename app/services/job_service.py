@@ -213,6 +213,13 @@ def delete_job(db: Session, job_id: int) -> bool:
     if not job:
         return False
 
+    settings = _get_settings(db)
+    if job.status not in TERMINAL_STATUSES:
+        job.cancel_requested = True
+        optimization_service.stop_active_ffmpeg(job.id)
+        optimization_service.delete_workspace(settings, job.id)
+        stop_encode_timing(job)
+
     db.delete(job)
     db.commit()
     return True

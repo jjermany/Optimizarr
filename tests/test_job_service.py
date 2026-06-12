@@ -5,7 +5,7 @@ from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
 from app.services import optimization_service
-from app.services.job_service import abort_job, cancel_job, create_job, job_exists_for_source, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
+from app.services.job_service import abort_job, cancel_job, create_job, delete_job, job_exists_for_source, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
 
 
 def test_create_job_stores_profile_snapshot():
@@ -30,6 +30,30 @@ def test_create_job_stores_profile_snapshot():
         assert '"codec": "av1"' in job.profile_snapshot_json
         assert '"output_suffix": "-opt"' in job.profile_snapshot_json
     assert '"minimum_source_resolution"' in job.profile_snapshot_json
+
+
+def test_delete_job_stops_active_encoder_and_removes_workspace(monkeypatch, tmp_path):
+    stopped: list[int] = []
+    deleted_workspaces: list[int] = []
+    monkeypatch.setattr(optimization_service, 'stop_active_ffmpeg', lambda job_id: stopped.append(job_id) or True)
+    monkeypatch.setattr(optimization_service, 'delete_workspace', lambda _settings, job_id: deleted_workspaces.append(job_id))
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Settings).delete()
+        db.commit()
+
+        settings = Settings(workspace_root=str(tmp_path / 'workspaces'))
+        job = Job(input_path='/media/active-delete.mkv', status='running', progress_percent=22)
+        db.add_all([settings, job])
+        db.commit()
+        job_id = job.id
+
+        assert delete_job(db, job_id) is True
+        assert db.query(Job).filter(Job.id == job_id).first() is None
+
+    assert stopped == [job_id]
+    assert deleted_workspaces == [job_id]
 
 
 def test_job_exists_for_source_ignores_stale_complete_without_output(tmp_path):

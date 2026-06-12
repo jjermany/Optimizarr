@@ -3217,7 +3217,10 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     speed_bps = status.get('download_speed_bps')
     speed_bps = int(speed_bps) if isinstance(speed_bps, (int, float)) and speed_bps >= 0 else None
 
-    is_waiting = bool(status.get('is_waiting')) and client_type in {'qbittorrent', 'sabnzbd'}
+    # Some clients, especially SABnzbd around slot changes/recovery, can report
+    # a waiting/queued status while bytes are already moving. Treat nonzero
+    # progress as active so the app does not show a downloading item as queued.
+    is_waiting = bool(status.get('is_waiting')) and client_type in {'qbittorrent', 'sabnzbd'} and progress <= 0
     if is_waiting:
         expected_status = DownloadJobStatus.queued.value
         eta_seconds = None

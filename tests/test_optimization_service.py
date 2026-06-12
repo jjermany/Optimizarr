@@ -1325,6 +1325,28 @@ def test_watchdog_terminates_stalled_process(monkeypatch):
     process.terminate.assert_called_once()
 
 
+def test_stop_active_ffmpeg_kills_process_after_terminate_timeout():
+    job_id = 88005
+    process = MagicMock()
+    process.poll.return_value = None
+    process.wait.side_effect = [
+        optimization_service.subprocess.TimeoutExpired(cmd='ffmpeg', timeout=0.1),
+        0,
+    ]
+
+    with optimization_service._ACTIVE_FFMPEG_LOCK:
+        optimization_service._ACTIVE_FFMPEG_PROCESSES[job_id] = process
+
+    try:
+        assert optimization_service.stop_active_ffmpeg(job_id, wait_seconds=0.1) is True
+    finally:
+        with optimization_service._ACTIVE_FFMPEG_LOCK:
+            optimization_service._ACTIVE_FFMPEG_PROCESSES.pop(job_id, None)
+
+    process.terminate.assert_called_once()
+    process.kill.assert_called_once()
+
+
 def test_watchdog_does_not_kill_process_that_finished_naturally(monkeypatch):
     """Watchdog exits cleanly when process already exited (poll returns non-None)."""
     job_id = 88002

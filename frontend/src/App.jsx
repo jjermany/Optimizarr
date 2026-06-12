@@ -589,6 +589,19 @@ function normalizeDownloadJob(job) {
     const asNumber = Number(job.library_id);
     normalized.library_id = Number.isFinite(asNumber) ? asNumber : job.library_id;
   }
+  const progress = Number(job.progress_percent);
+  const speed = Number(job.download_speed_bps);
+  const hasEta = job.eta_seconds != null && Number(job.eta_seconds) >= 0;
+  if (
+    normalized.status === 'queued'
+    && (
+      (Number.isFinite(speed) && speed > 0)
+      || hasEta
+      || (Number.isFinite(progress) && progress > 0 && progress < 100)
+    )
+  ) {
+    normalized.status = 'downloading';
+  }
   return normalized;
 }
 

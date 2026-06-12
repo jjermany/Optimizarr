@@ -1844,8 +1844,8 @@ def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
     encode_jobs = db.query(Job).filter(Job.status.in_(active_encode_statuses)).all()
     removed_job_ids: list[int] = []
     for job in encode_jobs:
-        if job.status in {'starting', 'preflight', 'running'}:
-            stop_active_ffmpeg(job.id)
+        job.cancel_requested = True
+        stop_active_ffmpeg(job.id)
         delete_workspace(settings, job.id)
         removed_job_ids.append(job.id)
         db.delete(job)

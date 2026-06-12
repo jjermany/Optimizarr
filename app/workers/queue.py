@@ -66,7 +66,7 @@ def _should_cancel(db: Session, job_id: int) -> bool:
     if stop_event.is_set():
         return True
     job = db.query(Job).filter(Job.id == job_id).first()
-    return bool(job and job.cancel_requested)
+    return job is None or bool(job.cancel_requested)
 
 
 def _mark_finished(job: Job) -> None:
@@ -337,7 +337,11 @@ def _process_job(job_id: int) -> None:
             resume_position_seconds=resume_position,
         )
 
-        db.refresh(job)
+        db.expire_all()
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if job is None:
+            logger.info('Encode worker for deleted job %s stopped without restoring the queue row', job_id)
+            return
         if job.status in {'paused', 'paused_schedule'}:
             db.commit()
             _publish_job(job, throttle_progress=False)

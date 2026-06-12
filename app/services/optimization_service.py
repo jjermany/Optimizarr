@@ -184,12 +184,25 @@ def delete_partial_output(settings: Any, job_id: int) -> None:
         partial.unlink(missing_ok=True)
 
 
-def stop_active_ffmpeg(job_id: int) -> bool:
+def stop_active_ffmpeg(job_id: int, wait_seconds: float = 5.0) -> bool:
     with _ACTIVE_FFMPEG_LOCK:
         process = _ACTIVE_FFMPEG_PROCESSES.get(job_id)
     if process is None:
         return False
-    process.terminate()
+    if process.poll() is not None:
+        return True
+    try:
+        process.terminate()
+        process.wait(timeout=max(0.1, float(wait_seconds)))
+    except subprocess.TimeoutExpired:
+        logger.warning('FFmpeg for job %s did not stop after terminate; killing it', job_id)
+        try:
+            process.kill()
+            process.wait(timeout=2)
+        except (OSError, subprocess.TimeoutExpired):
+            logger.exception('Failed to kill FFmpeg for job %s', job_id)
+    except OSError:
+        logger.exception('Failed to stop FFmpeg for job %s', job_id)
     return True
 
 

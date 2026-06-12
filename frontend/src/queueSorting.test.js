@@ -124,6 +124,31 @@ describe('buildUnifiedQueueItems', () => {
     ]);
   });
 
+  it('keeps active download rows above client-queued downloads and keeps queued rows FIFO', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 19, status: 'queued', source_path: '/media/Queued.Encode.2021.mkv', created_at: '2026-03-01T12:00:00Z' },
+      ],
+      downloadItems: [
+        { id: 41, status: 'queued', source_file_path: '/downloads/Queued.Newer.2026.mkv', created_at: '2026-03-01T11:00:00Z' },
+        { id: 40, status: 'queued', source_file_path: '/downloads/Queued.Older.2025.mkv', created_at: '2026-03-01T10:00:00Z' },
+        { id: 42, status: 'downloading', source_file_path: '/downloads/Active.Download.2024.mkv', created_at: '2026-03-01T09:00:00Z' },
+        { id: 43, status: 'importing', source_file_path: '/downloads/Importing.Download.2023.mkv', created_at: '2026-03-01T08:00:00Z' },
+      ],
+      sortOption: 'newest',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
+      'download-42',
+      'download-43',
+      'download-40',
+      'download-41',
+      'encode-19',
+    ]);
+  });
+
   it('hides queued encode placeholder rows when an active download row exists for the same source', () => {
     const source = '/media/Clown.in.a.Cornfield.2025.mkv';
     const items = buildUnifiedQueueItems({
