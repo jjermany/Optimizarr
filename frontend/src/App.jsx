@@ -1257,6 +1257,7 @@ export default function App() {
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef();
   const fallbackTimerRef = useRef();
+  const queueSnapshotTimerRef = useRef();
   const intentionallyClosedRef = useRef(false);
   const toastTimersRef = useRef({});
 
@@ -1702,6 +1703,16 @@ export default function App() {
     }
   }
 
+  function scheduleQueueSnapshotRefresh(delayMs = 250) {
+    if (queueSnapshotTimerRef.current) {
+      window.clearTimeout(queueSnapshotTimerRef.current);
+    }
+    queueSnapshotTimerRef.current = window.setTimeout(() => {
+      queueSnapshotTimerRef.current = undefined;
+      refreshQueueSnapshot();
+    }, delayMs);
+  }
+
   async function refreshSettingsPanel() {
     try {
       const [
@@ -2003,16 +2014,25 @@ export default function App() {
 
         websocket.onmessage = (event) => {
           const payload = JSON.parse(event.data);
-          if (payload.type === 'job_update') { mergeJobUpdate(payload.data); return; }
+          if (payload.type === 'job_update') {
+            mergeJobUpdate(payload.data);
+            scheduleQueueSnapshotRefresh();
+            return;
+          }
           if (payload.type === 'download_job_update') {
             setDownloadJobs((prev) => {
               const next = normalizeDownloadJob(payload.data);
               return mergeDownloadJobsWithUpdate(prev, next);
             });
+            scheduleQueueSnapshotRefresh();
             return;
           }
           if (payload.type === 'metrics_update') { setMetrics(payload.data); return; }
-          if (payload.type === 'library_update') { refreshLibrariesAndProfiles(); return; }
+          if (payload.type === 'library_update') {
+            refreshLibrariesAndProfiles();
+            scheduleQueueSnapshotRefresh();
+            return;
+          }
           if (payload.type === 'notification') {
             if (payload.data?.message === 'queue_paused_low_disk') pushToast('Queue paused due to low disk.', 'warn');
             return;
@@ -2021,10 +2041,12 @@ export default function App() {
             if (payload.data?.event === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
             if (payload.data?.event === 'job_removed') {
               setJobs((prev) => removeJobById(prev, payload.data?.job_id));
+              scheduleQueueSnapshotRefresh();
               return;
             }
             if (payload.data?.event === 'download_job_removed') {
               setDownloadJobs((prev) => prev.filter((dj) => dj.id !== payload.data?.download_job_id));
+              scheduleQueueSnapshotRefresh();
               return;
             }
             if (payload.data?.event === 'queue_paused') {
@@ -2047,11 +2069,13 @@ export default function App() {
               setLibraries((prev) => prev.map((library) => (
                 library.id === payload.data?.library_id ? { ...library, scanning: false } : library
               )));
+              scheduleQueueSnapshotRefresh();
               return;
             }
             if (payload.data?.event === 'optimized_cleanup_summary' || payload.data?.event === 'duplicate_optimized_cleanup_summary') {
               refreshAll();
               refreshLibrariesAndProfiles();
+              scheduleQueueSnapshotRefresh();
               return;
             }
             if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') pushToast('Recovery ran on startup.', 'info');
@@ -2076,6 +2100,10 @@ export default function App() {
     return () => {
       intentionallyClosedRef.current = true;
       clearTimers();
+      if (queueSnapshotTimerRef.current) {
+        window.clearTimeout(queueSnapshotTimerRef.current);
+        queueSnapshotTimerRef.current = undefined;
+      }
       Object.values(toastTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
       toastTimersRef.current = {};
       if (wsRef.current) { wsRef.current.close(); wsRef.current = undefined; }
