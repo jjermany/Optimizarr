@@ -165,8 +165,7 @@ def media_identity_key(source_path: str) -> str | None:
 
     for candidate in candidates:
         paren_match = re.search(r'\(((?:19|20)\d{2})\)', candidate)
-        year_match = paren_match or re.search(
-            r'\b((?:19|20)\d{2})\b', candidate)
+        year_match = paren_match or re.search(r'\b((?:19|20)\d{2})\b', candidate)
         if not year_match:
             continue
         title = candidate[:year_match.start()].strip(' ._-')
@@ -606,10 +605,12 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
                 continue
 
             def sort_key(artifact: dict) -> tuple:
+                # Keep the highest resolution artifact, falling back to most recent.
+                resolution = int(artifact.get('record').source_resolution or 0)
                 return (
+                    resolution,
                     artifact['completed_at'] is not None,
                     artifact['completed_at'],
-                    artifact['kind'] == 'download',
                     str(artifact['path']),
                 )
 

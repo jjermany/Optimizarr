@@ -1891,7 +1891,7 @@ def optimize_video(
         # QSV VPP was already the original encoder and already failed; retrying it
         # achieves nothing.  Go straight to the sw-decode path instead.
         if metrics.fallback_reason == 'qsv_failed_vaapi_fallback':
-            qsv_tonemap_encoder = None
+            qsv_tonemap_encoder = None  # type: ignore[assignment]
         if qsv_tonemap_encoder and _encoder_available(qsv_tonemap_encoder) and not selection.is_explicit_preference:
             logger.warning(
                 '[%s] VAAPI tonemap_vaapi failed (rc=%s); retrying with %r + vpp_qsv=tonemap=1 '
