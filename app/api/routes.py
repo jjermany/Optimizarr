@@ -796,6 +796,23 @@ class EventLogResponse(BaseModel):
         )
 
 
+def _record_log_event(
+    db: Session,
+    event_type: str,
+    message: str,
+    *,
+    severity: str = 'info',
+    details: dict | None = None,
+) -> None:
+    event_log_service.record_event(
+        db,
+        event_type,
+        message,
+        severity=severity,
+        details=details,
+    )
+
+
 class AbortAllJobsResponse(BaseModel):
     aborted_job_ids: list[int]
 
@@ -1605,6 +1622,12 @@ def delete_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     deleted = delete_job(db, job_id)
     if not deleted:
         raise HTTPException(status_code=404, detail='Job not found')
+    _record_log_event(
+        db,
+        'job_removed',
+        f'Job {job_id} was removed',
+        details={'job_id': job_id},
+    )
     broker.publish_system_event('job_removed', job_id=job_id)
 
 
@@ -1616,6 +1639,17 @@ def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: S
         jobs = scan_library(db, library, include_disabled=True)
         payload = [JobResponse.from_orm_job(job) for job in jobs]
         notification_service.register_scan_batch([job.id for job in jobs], library_name=library.name)
+        _record_log_event(
+            db,
+            'library_scan_summary',
+            f'Library scan completed for {library.name}',
+            details={
+                'library_id': library.id,
+                'library_name': library.name,
+                'created_jobs': len(jobs),
+                'job_ids': [job.id for job in jobs],
+            },
+        )
         return ScanResponse(created_jobs=payload)
     finally:
         worker_queue.resume_queue(reason='manual_scan')
@@ -1628,6 +1662,15 @@ def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db))
         created_jobs = scan_enabled_libraries(db)
         payload = [JobResponse.from_orm_job(job) for job in created_jobs]
         notification_service.register_scan_batch([job.id for job in created_jobs])
+        _record_log_event(
+            db,
+            'library_scan_summary',
+            'All enabled libraries scan completed',
+            details={
+                'created_jobs': len(created_jobs),
+                'job_ids': [job.id for job in created_jobs],
+            },
+        )
         return ScanResponse(created_jobs=payload)
     finally:
         worker_queue.resume_queue(reason='manual_scan')
@@ -1762,6 +1805,12 @@ def cancel_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     _promote_encode_to_download(db, job)
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    _record_log_event(
+        db,
+        'job_cancelled',
+        f'Job {response.id} was cancelled or returned to queue',
+        details={'job_id': response.id, 'status': response.status},
+    )
     return response
 
 
@@ -1772,6 +1821,12 @@ def requeue_interrupted_job_endpoint(job_id: int, _: None = Depends(require_ui_a
         raise HTTPException(status_code=404, detail='Job not found')
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    _record_log_event(
+        db,
+        'job_retried',
+        f'Interrupted job {response.id} was requeued',
+        details={'job_id': response.id, 'status': response.status},
+    )
     return response
 
 
@@ -1787,12 +1842,24 @@ def retry_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
         db.refresh(original)
         response = JobResponse.from_orm_job(original)
         broker.publish_job_update(response.model_dump(), throttle_progress=False)
+        _record_log_event(
+            db,
+            'job_retried',
+            f'Job {response.id} retry was routed to download search',
+            details={'job_id': response.id, 'status': response.status, 'route': 'download'},
+        )
         return response
     job = retry_job(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    _record_log_event(
+        db,
+        'job_retried',
+        f'Job {response.id} was retried',
+        details={'job_id': response.id, 'status': response.status},
+    )
     return response
 
 
@@ -1803,6 +1870,12 @@ def pause_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
         raise HTTPException(status_code=404, detail='Job not found')
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    _record_log_event(
+        db,
+        'job_paused',
+        f'Job {response.id} was paused',
+        details={'job_id': response.id, 'status': response.status},
+    )
     broker.publish_system_event('job_paused', job_id=response.id)
     return response
 
@@ -1828,6 +1901,12 @@ def start_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
 
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    _record_log_event(
+        db,
+        'job_started',
+        f'Job {response.id} was started',
+        details={'job_id': response.id, 'status': response.status},
+    )
     return response
 
 
@@ -1838,6 +1917,12 @@ def resume_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
         raise HTTPException(status_code=404, detail='Job not found')
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    _record_log_event(
+        db,
+        'job_resumed',
+        f'Job {response.id} was resumed',
+        details={'job_id': response.id, 'status': response.status},
+    )
     broker.publish_system_event('job_resumed', job_id=response.id)
     return response
 
@@ -1850,6 +1935,13 @@ def abort_all_jobs_endpoint(_: None = Depends(require_ui_auth), db: Session = De
         response = JobResponse.from_orm_job(job)
         broker.publish_job_update(response.model_dump(), throttle_progress=False)
         broker.publish_system_event('job_aborted', job_id=response.id)
+    _record_log_event(
+        db,
+        'all_jobs_aborted',
+        f'Aborted {len(jobs)} active job{"s" if len(jobs) != 1 else ""}',
+        severity='warning' if jobs else 'info',
+        details={'aborted_job_ids': [job.id for job in jobs], 'aborted_jobs': len(jobs)},
+    )
     return AbortAllJobsResponse(aborted_job_ids=[job.id for job in jobs])
 
 
@@ -1872,6 +1964,17 @@ def remove_all_jobs_endpoint(_: None = Depends(require_ui_auth), db: Session = D
     if removed_download_job_ids:
         db.query(DownloadJob).filter(DownloadJob.id.in_(removed_download_job_ids)).delete(synchronize_session=False)
     db.commit()
+    _record_log_event(
+        db,
+        'history_purged',
+        f'Removed {len(removed_job_ids) + len(removed_download_job_ids)} history item{"s" if (len(removed_job_ids) + len(removed_download_job_ids)) != 1 else ""}',
+        details={
+            'removed_job_ids': removed_job_ids,
+            'removed_download_job_ids': removed_download_job_ids,
+            'removed_jobs': len(removed_job_ids),
+            'removed_download_jobs': len(removed_download_job_ids),
+        },
+    )
     return RemoveAllJobsResponse(
         removed_job_ids=removed_job_ids,
         removed_download_job_ids=removed_download_job_ids,
@@ -1885,6 +1988,13 @@ def cancel_all_queued_jobs_endpoint(_: None = Depends(require_ui_auth), db: Sess
         response = JobResponse.from_orm_job(job)
         broker.publish_job_update(response.model_dump(), throttle_progress=False)
         broker.publish_system_event('job_cancelled', job_id=response.id)
+    _record_log_event(
+        db,
+        'queued_jobs_cancelled',
+        f'Cancelled {len(jobs)} queued job{"s" if len(jobs) != 1 else ""}',
+        severity='warning' if jobs else 'info',
+        details={'cancelled_job_ids': [job.id for job in jobs], 'cancelled_jobs': len(jobs)},
+    )
     return CancelAllQueuedResponse(cancelled_job_ids=[job.id for job in jobs])
 
 
@@ -1936,6 +2046,18 @@ def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
     if not queue_was_paused:
         worker_queue.resume_queue(reason='manual')
 
+    _record_log_event(
+        db,
+        'queue_clear_summary',
+        f'Cleared {len(removed_job_ids) + len(removed_download_job_ids)} active queue item{"s" if (len(removed_job_ids) + len(removed_download_job_ids)) != 1 else ""}',
+        severity='warning' if removed_job_ids or removed_download_job_ids else 'info',
+        details={
+            'removed_job_ids': removed_job_ids,
+            'removed_download_job_ids': removed_download_job_ids,
+            'removed_jobs': len(removed_job_ids),
+            'removed_download_jobs': len(removed_download_job_ids),
+        },
+    )
     return ClearQueueResponse(
         removed_job_ids=removed_job_ids,
         removed_download_job_ids=removed_download_job_ids,
@@ -1949,6 +2071,13 @@ def abort_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Sess
         raise HTTPException(status_code=404, detail='Job not found')
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    _record_log_event(
+        db,
+        'job_aborted',
+        f'Job {response.id} was aborted',
+        severity='warning',
+        details={'job_id': response.id, 'status': response.status},
+    )
     broker.publish_system_event('job_aborted', job_id=response.id)
     return response
 
@@ -1969,12 +2098,26 @@ def discard_progress_endpoint(job_id: int, _: None = Depends(require_ui_auth), d
         db.refresh(job)
         response = JobResponse.from_orm_job(job)
         broker.publish_job_update(response.model_dump(), throttle_progress=False)
+        _record_log_event(
+            db,
+            'job_discarded',
+            f'Job {response.id} progress was discarded and routed to download search',
+            severity='warning',
+            details={'job_id': response.id, 'status': response.status, 'route': 'download'},
+        )
         return response
     job = discard_progress_and_requeue(db, job_id)
     if not job:
         raise HTTPException(status_code=404, detail='Job not found')
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
+    _record_log_event(
+        db,
+        'job_discarded',
+        f'Job {response.id} progress was discarded',
+        severity='warning',
+        details={'job_id': response.id, 'status': response.status},
+    )
     return response
 
 
@@ -2102,6 +2245,15 @@ def queue_status_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
 def pause_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
     worker_queue.pause_queue(reason='manual')
     broker.publish_notification('queue_paused')
+    broker.publish_system_event('queue_paused', reason='manual')
+    with SessionLocal() as db:
+        _record_log_event(
+            db,
+            'queue_paused',
+            'Queue was paused manually',
+            severity='warning',
+            details={'reason': 'manual'},
+        )
     return {'status': 'paused'}
 
 
@@ -2109,6 +2261,14 @@ def pause_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
 def resume_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
     worker_queue.resume_queue(reason='manual')
     broker.publish_notification('queue_resumed')
+    broker.publish_system_event('queue_resumed', reason='manual')
+    with SessionLocal() as db:
+        _record_log_event(
+            db,
+            'queue_resumed',
+            'Queue was resumed manually',
+            details={'reason': 'manual'},
+        )
     return {'status': 'running'}
 
 
@@ -2239,6 +2399,14 @@ def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
+    _record_log_event(
+        db,
+        'download_job_reset',
+        f'Download job {dj.id} was reset',
+        severity='warning',
+        details={'download_job_id': dj.id, 'status': dj.status, 'source_file_path': dj.source_file_path},
+    )
+    broker.publish_system_event('download_job_reset', download_job_id=dj.id)
     return DownloadJobResponse.from_orm(dj)
 
 
@@ -2251,6 +2419,13 @@ def delete_all_download_jobs(_: None = Depends(require_ui_auth), db: Session = D
     db.commit()
     for download_job_id in removed_ids:
         broker.publish_system_event('download_job_removed', download_job_id=download_job_id)
+    _record_log_event(
+        db,
+        'download_job_removed',
+        f'Removed {len(removed_ids)} download job{"s" if len(removed_ids) != 1 else ""}',
+        severity='warning' if removed_ids else 'info',
+        details={'removed_download_job_ids': removed_ids, 'removed_download_jobs': len(removed_ids)},
+    )
 
 
 @router.delete('/download-jobs/{job_id}', status_code=204)
@@ -2260,6 +2435,12 @@ def delete_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
         raise HTTPException(status_code=404, detail='Download job not found')
     db.delete(dj)
     db.commit()
+    _record_log_event(
+        db,
+        'download_job_removed',
+        f'Download job {job_id} was removed',
+        details={'download_job_id': job_id},
+    )
     broker.publish_system_event('download_job_removed', download_job_id=job_id)
 
 
@@ -2294,6 +2475,13 @@ def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     db.refresh(dj)
     from app.services.download_monitor_service import _publish_download_job
     _publish_download_job(dj)
+    _record_log_event(
+        db,
+        'download_job_retried',
+        f'Download job {dj.id} was retried',
+        details={'download_job_id': dj.id, 'status': dj.status, 'source_file_path': dj.source_file_path},
+    )
+    broker.publish_system_event('download_job_retried', download_job_id=dj.id)
     return DownloadJobResponse.from_orm(dj)
 
 
@@ -2313,6 +2501,14 @@ def get_download_queue_status(_: None = Depends(require_ui_auth)) -> dict:
 def resume_download_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict:
     from app.services.download_monitor_service import resume_download_queue
     resume_download_queue()
+    with SessionLocal() as db:
+        _record_log_event(
+            db,
+            'queue_resumed',
+            'Download queue was resumed',
+            details={'queue': 'download'},
+        )
+    broker.publish_system_event('queue_resumed', queue='download')
     return {'status': 'resumed'}
 
 

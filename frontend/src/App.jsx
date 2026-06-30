@@ -177,6 +177,31 @@ const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'queued', 'downloadi
 const TERMINAL_DL_STATUSES = new Set(['complete', 'failed', 'timed_out', 'fallback_queued']);
 const QUEUE_DEDUPE_DL_STATUSES = new Set([...ACTIVE_DL_STATUSES, 'complete', 'fallback_queued']);
 const ACTIVE_ENCODE_DEDUPE_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting', 'paused', 'paused_schedule']);
+const LOG_REFRESH_SYSTEM_EVENTS = new Set([
+  'all_jobs_aborted',
+  'cleanup_summary',
+  'download_job_removed',
+  'download_job_reset',
+  'download_job_retried',
+  'duplicate_optimized_cleanup_summary',
+  'history_purged',
+  'job_aborted',
+  'job_cancelled',
+  'job_discarded',
+  'job_paused',
+  'job_removed',
+  'job_resumed',
+  'job_retried',
+  'job_started',
+  'library_scan_completed',
+  'library_scan_summary',
+  'optimized_cleanup_summary',
+  'queue_clear_summary',
+  'queue_paused',
+  'queue_resumed',
+  'queued_jobs_cancelled',
+  'recovery_summary',
+]);
 
 function isActiveEncodeStatus(status) {
   return ACTIVE_STATUSES.has(status?.toLowerCase());
@@ -527,6 +552,54 @@ function formatLogDetailValue(value) {
   if (value === false) return 'false';
   if (value == null || value === '') return 'none';
   return String(value);
+}
+
+const LOG_EVENT_LABELS = {
+  cleanup_summary: 'Workspace Cleanup',
+  duplicate_optimized_cleanup_summary: 'Duplicate Cleanup',
+  library_scan_summary: 'Library Scan',
+  optimized_cleanup_summary: 'Optimized Cleanup',
+  queue_clear_summary: 'Queue Cleared',
+  queue_paused: 'Queue Paused',
+  queue_resumed: 'Queue Resumed',
+  recovery_summary: 'Recovery',
+  all_jobs_aborted: 'Abort All Jobs',
+  history_purged: 'History Purged',
+  queued_jobs_cancelled: 'Queued Jobs Cancelled',
+  job_aborted: 'Job Aborted',
+  job_cancelled: 'Job Cancelled',
+  job_discarded: 'Job Progress Discarded',
+  job_paused: 'Job Paused',
+  job_removed: 'Job Removed',
+  job_resumed: 'Job Resumed',
+  job_retried: 'Job Retried',
+  job_started: 'Job Started',
+  download_job_removed: 'Download Removed',
+  download_job_reset: 'Download Reset',
+  download_job_retried: 'Download Retried',
+};
+
+function formatLogEventType(eventType) {
+  const normalized = String(eventType ?? '');
+  if (LOG_EVENT_LABELS[normalized]) return LOG_EVENT_LABELS[normalized];
+  return normalized
+    .split('_')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Event';
+}
+
+function logMatchesSearch(log, search) {
+  const needle = String(search ?? '').trim().toLowerCase();
+  if (!needle) return true;
+  const haystack = [
+    log.event_type,
+    formatLogEventType(log.event_type),
+    log.severity,
+    log.message,
+    ...Object.entries(log.details ?? {}).flatMap(([key, value]) => [key, formatLogDetailValue(value)]),
+  ].join(' ').toLowerCase();
+  return haystack.includes(needle);
 }
 
 function logSeverityClass(severity) {
@@ -1194,6 +1267,9 @@ export default function App() {
   const [accountSettings, setAccountSettings] = useState();
   const [logs, setLogs] = useState([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [logSearch, setLogSearch] = useState('');
+  const [logEventFilter, setLogEventFilter] = useState('all');
+  const [logSeverityFilter, setLogSeverityFilter] = useState('all');
   const [accountForm, setAccountForm] = useState({
     username: '',
     currentPassword: '',
@@ -1392,6 +1468,23 @@ export default function App() {
 
   const totalHistoryCount = allHistoryItems.length;
   const visibleHistoryCount = sortedHistoryItems.length;
+
+  const logEventOptions = useMemo(() => (
+    [...new Set(logs.map((log) => String(log.event_type ?? '')).filter(Boolean))]
+      .sort((a, b) => formatLogEventType(a).localeCompare(formatLogEventType(b)))
+  ), [logs]);
+
+  const logSeverityOptions = useMemo(() => (
+    [...new Set(logs.map((log) => String(log.severity ?? 'info').toLowerCase()).filter(Boolean))]
+      .sort()
+  ), [logs]);
+
+  const filteredLogs = useMemo(() => logs.filter((log) => {
+    const severity = String(log.severity ?? 'info').toLowerCase();
+    if (logEventFilter !== 'all' && log.event_type !== logEventFilter) return false;
+    if (logSeverityFilter !== 'all' && severity !== logSeverityFilter) return false;
+    return logMatchesSearch(log, logSearch);
+  }), [logs, logEventFilter, logSeverityFilter, logSearch]);
 
   const activeDlQueueItems = useMemo(
     () => downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())),
@@ -2107,50 +2200,50 @@ export default function App() {
             return;
           }
           if (payload.type === 'system_event') {
-            if (payload.data?.event === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
-            if (payload.data?.event === 'job_removed') {
+            const systemEvent = payload.data?.event;
+            if (LOG_REFRESH_SYSTEM_EVENTS.has(systemEvent)) refreshLogs();
+            if (systemEvent === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
+            if (systemEvent === 'job_removed') {
               setJobs((prev) => removeJobById(prev, payload.data?.job_id));
               scheduleQueueSnapshotRefresh();
               return;
             }
-            if (payload.data?.event === 'download_job_removed') {
+            if (systemEvent === 'download_job_removed') {
               setDownloadJobs((prev) => prev.filter((dj) => dj.id !== payload.data?.download_job_id));
               scheduleQueueSnapshotRefresh();
               return;
             }
-            if (payload.data?.event === 'queue_paused') {
+            if (systemEvent === 'queue_paused') {
               setQueuePaused(true);
               if (payload.data?.reason === 'low_disk') { pushToast('Queue paused due to low disk.', 'warn'); return; }
               if (payload.data?.reason !== 'manual_scan') { pushToast('Queue paused.', 'warn'); }
               return;
             }
-            if (payload.data?.event === 'queue_resumed') {
+            if (systemEvent === 'queue_resumed') {
               setQueuePaused(false);
               return;
             }
-            if (payload.data?.event === 'library_scan_started') {
+            if (systemEvent === 'library_scan_started') {
               setLibraries((prev) => prev.map((library) => (
                 library.id === payload.data?.library_id ? { ...library, scanning: true } : library
               )));
               return;
             }
-            if (payload.data?.event === 'library_scan_completed') {
+            if (systemEvent === 'library_scan_completed') {
               setLibraries((prev) => prev.map((library) => (
                 library.id === payload.data?.library_id ? { ...library, scanning: false } : library
               )));
               scheduleQueueSnapshotRefresh();
               return;
             }
-            if (payload.data?.event === 'optimized_cleanup_summary' || payload.data?.event === 'duplicate_optimized_cleanup_summary') {
+            if (systemEvent === 'optimized_cleanup_summary' || systemEvent === 'duplicate_optimized_cleanup_summary') {
               refreshAll();
               refreshLibrariesAndProfiles();
-              refreshLogs();
               scheduleQueueSnapshotRefresh();
               return;
             }
-            if (payload.data?.event === 'cleanup_summary' || payload.data?.event === 'recovery_summary') {
-              refreshLogs();
-              if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') pushToast('Recovery ran on startup.', 'info');
+            if (systemEvent === 'cleanup_summary' || systemEvent === 'recovery_summary') {
+              if (systemEvent === 'recovery_summary' && payload.data?.trigger === 'startup') pushToast('Recovery ran on startup.', 'info');
               return;
             }
           }
@@ -2197,6 +2290,7 @@ export default function App() {
       else if (action === 'abort') mergeJobUpdate(await abortJob(jobId));
       else if (action === 'discard') mergeJobUpdate(await discardJobProgress(jobId));
       else if (action === 'remove') { await deleteJob(jobId); setJobs((prev) => removeJobById(prev, jobId)); }
+      await refreshLogs();
     } catch (actionError) {
       pushToast(actionError.message || 'Job action failed.', 'error');
     } finally {
@@ -2213,6 +2307,7 @@ export default function App() {
       const result = await abortAllJobs();
       pushToast(`Aborted ${result.aborted_job_ids.length} encode job(s).`, 'success');
       await refreshAll();
+      await refreshLogs();
     } catch (actionError) {
       pushToast(actionError.message || 'Abort all failed.', 'error');
     }
@@ -2223,6 +2318,7 @@ export default function App() {
       const result = await cancelAllQueued();
       pushToast(`Cancelled ${result.cancelled_job_ids.length} queued encode job(s).`, 'success');
       await refreshAll();
+      await refreshLogs();
     } catch (actionError) {
       pushToast(actionError.message || 'Cancel all queued failed.', 'error');
     }
@@ -2238,6 +2334,7 @@ export default function App() {
       const removedDownloadCount = result?.removed_download_job_ids?.length ?? 0;
       pushToast(`Purged ${removedEncodeCount + removedDownloadCount} history item(s).`, 'success');
       await refreshAll();
+      await refreshLogs();
     } catch (actionError) {
       pushToast(actionError.message || 'Purge history failed.', 'error');
     }
@@ -2248,6 +2345,7 @@ export default function App() {
       if (action === 'pause') { await pauseQueue(); setQueuePaused(true); }
       else { await resumeQueue(); setQueuePaused(false); }
       await refreshAll();
+      await refreshLogs();
     } catch (actionError) {
       pushToast(actionError.message || 'Queue action failed.', 'error');
     }
@@ -2260,6 +2358,7 @@ export default function App() {
       const totalReset = (result?.removed_job_ids?.length ?? 0) + (result?.removed_download_job_ids?.length ?? 0);
       pushToast(`Queue cleared: ${totalReset} item(s) removed.`, 'success');
       await refreshAll();
+      await refreshLogs();
     } catch (actionError) {
       pushToast(actionError.message || 'Clear queue failed.', 'error');
     }
@@ -2720,6 +2819,7 @@ export default function App() {
       const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
       setJobs(nextJobs ?? []);
       setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      await refreshLogs();
       pushToast('Download removed from client and reset for a fresh search attempt.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not remove/reset download job.', 'error');
@@ -2740,6 +2840,7 @@ export default function App() {
       const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
       setJobs(nextJobs ?? []);
       setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      await refreshLogs();
       pushToast('Download job re-queued for another search attempt.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not retry download job.', 'error');
@@ -2760,6 +2861,7 @@ export default function App() {
       const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
       setJobs(nextJobs ?? []);
       setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      await refreshLogs();
       pushToast('Download job removed.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not remove download job.', 'error');
@@ -2777,6 +2879,7 @@ export default function App() {
     try {
       await deleteAllDownloadJobs();
       setDownloadJobs([]);
+      await refreshLogs();
       pushToast('All download jobs removed.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not remove download jobs.', 'error');
@@ -2788,6 +2891,7 @@ export default function App() {
       const result = await runRecovery();
       pushToast(`Recovered ${result.recovered_jobs} jobs.`, 'success');
       await refreshAll();
+      await refreshLogs();
     } catch (recoveryError) {
       pushToast(recoveryError.message || 'Recovery failed.', 'error');
     }
@@ -2798,6 +2902,7 @@ export default function App() {
       const result = await runCleanup();
       pushToast(`Cleanup removed ${result.cleaned_workspaces} workspace(s).`, 'success');
       await refreshAll();
+      await refreshLogs();
     } catch (cleanupError) {
       pushToast(cleanupError.message || 'Cleanup failed.', 'error');
     }
@@ -2808,6 +2913,7 @@ export default function App() {
       const result = await runOptimizedCleanup();
       pushToast(`Deleted ${result.deleted_files} optimized file(s) from ${result.affected_job_ids.length} job(s).`, 'success');
       await refreshAll();
+      await refreshLogs();
     } catch (cleanupError) {
       pushToast(cleanupError.message || 'Optimized cleanup failed.', 'error');
     }
@@ -2818,6 +2924,7 @@ export default function App() {
       const result = await runDuplicateOptimizedCleanup();
       pushToast(`Deleted ${result.deleted_files} duplicate optimized file(s) from ${result.affected_library_ids.length} librar${result.affected_library_ids.length === 1 ? 'y' : 'ies'}.`, 'success');
       await refreshAll();
+      await refreshLogs();
     } catch (cleanupError) {
       pushToast(cleanupError.message || 'Duplicate cleanup failed.', 'error');
     }
@@ -4435,12 +4542,40 @@ export default function App() {
                 </Btn>
               </div>
 
+              <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)]">
+                <TextInput
+                  type="search"
+                  value={logSearch}
+                  onChange={(event) => setLogSearch(event.target.value)}
+                  placeholder="Search logs"
+                />
+                <SelectInput value={logEventFilter} onChange={(event) => setLogEventFilter(event.target.value)}>
+                  <option value="all">All events</option>
+                  {logEventOptions.map((eventType) => (
+                    <option key={eventType} value={eventType}>{formatLogEventType(eventType)}</option>
+                  ))}
+                </SelectInput>
+                <SelectInput value={logSeverityFilter} onChange={(event) => setLogSeverityFilter(event.target.value)}>
+                  <option value="all">All severities</option>
+                  {logSeverityOptions.map((severity) => (
+                    <option key={severity} value={severity}>{severity}</option>
+                  ))}
+                </SelectInput>
+              </div>
+
+              <p className="mb-3 text-xs text-slate-500">
+                Showing {filteredLogs.length} of {logs.length} events
+              </p>
+
               <div className="space-y-2">
                 {logs.length === 0 && (
                   <p className="text-sm text-slate-500">No logged events yet.</p>
                 )}
+                {logs.length > 0 && filteredLogs.length === 0 && (
+                  <p className="text-sm text-slate-500">No events match the current filters.</p>
+                )}
 
-                {logs.map((log) => {
+                {filteredLogs.map((log) => {
                   const detailEntries = Object.entries(log.details ?? {})
                     .filter(([, value]) => value !== undefined && value !== null && value !== '');
                   return (
@@ -4452,7 +4587,7 @@ export default function App() {
                               {log.severity || 'info'}
                             </span>
                             <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[11px] font-mono text-slate-300">
-                              {log.event_type}
+                              {formatLogEventType(log.event_type)}
                             </span>
                           </div>
                           <p className="mt-2 text-sm font-medium text-slate-100">{log.message}</p>
