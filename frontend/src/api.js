@@ -229,6 +229,10 @@ export function fetchSettings() {
   return request('/settings');
 }
 
+export function fetchLogs(limit = 200) {
+  return request(`/logs?limit=${encodeURIComponent(limit)}`);
+}
+
 export function updateSettings(payload) {
   return request('/settings', {
     method: 'POST',

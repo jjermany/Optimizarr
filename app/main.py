@@ -12,7 +12,7 @@ from app.core.database import SessionLocal, init_db
 from app.core.logging_config import configure_logging
 from app.services.discovery_service import start_discovery_worker, stop_discovery_worker, trigger_immediate_scan
 from app.services.download_monitor_service import register_job_complete_callback, run_download_startup_recovery, start_download_monitor, stop_download_monitor
-from app.services import auth_service, notification_service
+from app.services import auth_service, event_log_service, notification_service
 from app.services.notification_service import start_notification_worker, stop_notification_worker
 from app.services.optimization_service import refresh_encoder_cache
 from app.services.recovery_service import run_startup_recovery, run_workspace_cleanup
@@ -36,14 +36,24 @@ def _cleanup_loop(stop_event: Event) -> None:
     while not stop_event.wait(CLEANUP_INTERVAL_SECONDS):
         with SessionLocal() as db:
             summary = run_workspace_cleanup(db)
+            cleaned_workspaces = summary.get('cleaned_workspaces', 0)
+            event_log_service.record_event(
+                db,
+                'cleanup_summary',
+                'Scheduled workspace cleanup completed',
+                details={
+                    'trigger': 'scheduled',
+                    'cleaned_workspaces': cleaned_workspaces,
+                },
+            )
         logger.info(
             'Workspace cleanup completed; cleaned_workspaces=%s',
-            summary.get('cleaned_workspaces', 0),
+            cleaned_workspaces,
         )
         broker.publish_system_event(
             'cleanup_summary',
             trigger='scheduled',
-            cleaned_workspaces=summary.get('cleaned_workspaces', 0),
+            cleaned_workspaces=cleaned_workspaces,
         )
 
     logger.info('Workspace cleanup worker stopped')
@@ -82,6 +92,22 @@ async def lifespan(_: FastAPI):
         download_linked=download_recovery_summary.get('linked_jobs', 0),
         download_adopted=download_recovery_summary.get('adopted_queue_jobs', 0),
     )
+    with SessionLocal() as db:
+        event_log_service.record_event(
+            db,
+            'recovery_summary',
+            'Startup recovery completed',
+            details={
+                'trigger': 'startup',
+                'recovered_jobs': recovered_jobs,
+                'requeued_jobs': requeued_jobs,
+                'cleaned_workspaces': cleaned_workspaces,
+                'download_imported': download_recovery_summary.get('imported', 0),
+                'download_reset': download_recovery_summary.get('reset_to_searching', 0),
+                'download_linked': download_recovery_summary.get('linked_jobs', 0),
+                'download_adopted': download_recovery_summary.get('adopted_queue_jobs', 0),
+            },
+        )
     notification_service.enqueue_recovery_ran(
         trigger='startup',
         recovered_jobs=recovered_jobs,
@@ -93,6 +119,16 @@ async def lifespan(_: FastAPI):
         trigger='startup',
         cleaned_workspaces=cleanup_summary.get('cleaned_workspaces', 0),
     )
+    with SessionLocal() as db:
+        event_log_service.record_event(
+            db,
+            'cleanup_summary',
+            'Startup workspace cleanup completed',
+            details={
+                'trigger': 'startup',
+                'cleaned_workspaces': cleanup_summary.get('cleaned_workspaces', 0),
+            },
+        )
     # After a download job completes/fails, immediately trigger a discovery scan
     # so the next eligible file is picked up without waiting for the interval.
     register_job_complete_callback(trigger_immediate_scan)

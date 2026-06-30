@@ -2,6 +2,7 @@ from app.models.auth import AdminUser, AuthSession
 from app.models.download_client_settings import DownloadClientSettings
 from app.models.discovery_index import DiscoveryFileIndex
 from app.models.download_job import DownloadJob
+from app.models.event_log import EventLog
 from app.models.job import Job, OptimizationJob
 from app.models.library import Library, LibraryProfile
 from app.models.notification_settings import NotificationSettings
@@ -17,6 +18,7 @@ __all__ = [
     'DownloadClientSettings',
     'DiscoveryFileIndex',
     'DownloadJob',
+    'EventLog',
     'Job',
     'OptimizationJob',
     'Library',

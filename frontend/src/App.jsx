@@ -24,6 +24,7 @@ import {
   fetchAuthStatus,
   fetchLibraryProfile,
   fetchJobs,
+  fetchLogs,
   fetchMetrics,
   fetchNotificationSettings,
   fetchPlexLibraries,
@@ -90,6 +91,7 @@ const PAGE_KEYS = {
   dashboard: 'Dashboard',
   libraries: 'Libraries',
   jobs: 'Jobs',
+  logs: 'Logs',
   settings: 'Settings',
 };
 
@@ -505,6 +507,34 @@ function formatHistoryCompletedAt(value) {
     hour12: true,
     timeZoneName: 'short',
   });
+}
+
+function formatLogCreatedAt(value) {
+  if (!value) return 'Unknown time';
+  return new Date(value).toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  });
+}
+
+function formatLogDetailValue(value) {
+  if (Array.isArray(value)) return value.length ? value.join(', ') : 'none';
+  if (value === true) return 'true';
+  if (value === false) return 'false';
+  if (value == null || value === '') return 'none';
+  return String(value);
+}
+
+function logSeverityClass(severity) {
+  const normalized = String(severity ?? '').toLowerCase();
+  if (normalized === 'error') return 'border-red-800/70 bg-red-950/20 text-red-200';
+  if (normalized === 'warning' || normalized === 'warn') return 'border-amber-700/70 bg-amber-950/20 text-amber-200';
+  if (normalized === 'success') return 'border-emerald-700/70 bg-emerald-950/20 text-emerald-200';
+  return 'border-cyan-800/60 bg-cyan-950/15 text-cyan-200';
 }
 
 export function getElapsedSeconds(createdAt, nowMs = Date.now()) {
@@ -1162,6 +1192,8 @@ export default function App() {
   const [libraryProfiles, setLibraryProfiles] = useState({});
   const [settings, setSettings] = useState();
   const [accountSettings, setAccountSettings] = useState();
+  const [logs, setLogs] = useState([]);
+  const [loadingLogs, setLoadingLogs] = useState(false);
   const [accountForm, setAccountForm] = useState({
     username: '',
     currentPassword: '',
@@ -1655,7 +1687,7 @@ export default function App() {
 
   async function refreshAll() {
     try {
-      const [nextMetrics, nextJobs, nextSettings, nextAccountSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus, nextProwlarrSettings, nextQbtSettings, nextSabSettings, nextDownloadJobs] = await Promise.all([
+      const [nextMetrics, nextJobs, nextSettings, nextAccountSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus, nextProwlarrSettings, nextQbtSettings, nextSabSettings, nextDownloadJobs, nextLogs] = await Promise.all([
         fetchMetrics(),
         fetchJobs(),
         fetchSettings(),
@@ -1668,6 +1700,7 @@ export default function App() {
         fetchQBittorrentSettings().catch(() => null),
         fetchSabnzbdSettings().catch(() => null),
         fetchDownloadJobs().catch(() => []),
+        fetchLogs().catch(() => []),
       ]);
       setMetrics(nextMetrics);
       setJobs(nextJobs);
@@ -1679,6 +1712,7 @@ export default function App() {
       if (nextQbtSettings) setQbtSettings(nextQbtSettings);
       if (nextSabSettings) setSabSettings(nextSabSettings);
       setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      setLogs(nextLogs ?? []);
       const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
       setAvailableEncodersByCodec(encoderMap);
       setQueuePaused(nextQueueStatus?.status === 'paused');
@@ -1761,6 +1795,22 @@ export default function App() {
     }
   }
 
+
+  async function refreshLogs() {
+    setLoadingLogs(true);
+    try {
+      const nextLogs = await fetchLogs();
+      setLogs(nextLogs ?? []);
+    } catch (refreshError) {
+      if (refreshError.status === 401) {
+        await refreshAuthStatus();
+        return;
+      }
+      pushToast(refreshError.message || 'Could not refresh logs.', 'error');
+    } finally {
+      setLoadingLogs(false);
+    }
+  }
 
 
   async function handleQueueSortChange(nextSort) {
@@ -1936,6 +1986,12 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return;
+    if (activePage !== 'logs') return;
+    refreshLogs();
+  }, [activePage, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
+
+  useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
     const activeDownloadCount = downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length;
     if (activeDownloadCount <= 1) return undefined;
@@ -2088,10 +2144,15 @@ export default function App() {
             if (payload.data?.event === 'optimized_cleanup_summary' || payload.data?.event === 'duplicate_optimized_cleanup_summary') {
               refreshAll();
               refreshLibrariesAndProfiles();
+              refreshLogs();
               scheduleQueueSnapshotRefresh();
               return;
             }
-            if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') pushToast('Recovery ran on startup.', 'info');
+            if (payload.data?.event === 'cleanup_summary' || payload.data?.event === 'recovery_summary') {
+              refreshLogs();
+              if (payload.data?.event === 'recovery_summary' && payload.data?.trigger === 'startup') pushToast('Recovery ran on startup.', 'info');
+              return;
+            }
           }
         };
 
@@ -4364,6 +4425,60 @@ export default function App() {
         )}
 
         {/* ── Settings ───────────────────────────────────────────────────────── */}
+        {activePage === 'logs' && (
+          <section className="animate-fade-in space-y-5">
+            <SectionCard>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <SectionTitle>Logs</SectionTitle>
+                <Btn variant="secondary" size="sm" disabled={loadingLogs} onClick={refreshLogs}>
+                  {loadingLogs ? 'Refreshing...' : 'Refresh'}
+                </Btn>
+              </div>
+
+              <div className="space-y-2">
+                {logs.length === 0 && (
+                  <p className="text-sm text-slate-500">No logged events yet.</p>
+                )}
+
+                {logs.map((log) => {
+                  const detailEntries = Object.entries(log.details ?? {})
+                    .filter(([, value]) => value !== undefined && value !== null && value !== '');
+                  return (
+                    <div key={log.id} className="rounded-lg border border-slate-800/70 bg-slate-950/35 px-4 py-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${logSeverityClass(log.severity)}`}>
+                              {log.severity || 'info'}
+                            </span>
+                            <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[11px] font-mono text-slate-300">
+                              {log.event_type}
+                            </span>
+                          </div>
+                          <p className="mt-2 text-sm font-medium text-slate-100">{log.message}</p>
+                        </div>
+                        <time className="shrink-0 text-xs text-slate-500">{formatLogCreatedAt(log.created_at)}</time>
+                      </div>
+                      {detailEntries.length > 0 && (
+                        <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
+                          {detailEntries.map(([key, value]) => (
+                            <div key={key} className="min-w-0 rounded-md border border-slate-800/60 bg-slate-900/45 px-2.5 py-2">
+                              <dt className="font-mono text-[11px] uppercase tracking-wide text-slate-500">{key}</dt>
+                              <dd className="mt-1 truncate text-slate-300" title={formatLogDetailValue(value)}>
+                                {formatLogDetailValue(value)}
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </SectionCard>
+          </section>
+        )}
+
         {activePage === 'settings' && !(settings && accountSettings && notificationSettings && plexSettings) && (
           <section className="animate-fade-in">
             <SectionCard>

@@ -45,7 +45,7 @@ from app.models.qbittorrent_settings import QBittorrentSettings
 from app.models.sabnzbd_settings import SabnzbdSettings
 from app.models.settings import DiscoveryMethodEnum, QueueSortEnum, Settings, clamp_scan_probe_workers
 
-from app.services import auth_service, discovery_service, download_client_service, notification_service, plex_service, prowlarr_service
+from app.services import auth_service, discovery_service, download_client_service, event_log_service, notification_service, plex_service, prowlarr_service
 from app.services.job_service import (
     abort_all_jobs,
     abort_job,
@@ -765,6 +765,35 @@ class OptimizedCleanupResponse(BaseModel):
 class DuplicateOptimizedCleanupResponse(BaseModel):
     deleted_files: int
     affected_library_ids: list[int]
+
+
+class EventLogResponse(BaseModel):
+    id: int
+    event_type: str
+    severity: str
+    message: str
+    details: dict[str, object] = Field(default_factory=dict)
+    created_at: str
+
+    @classmethod
+    def from_orm_log(cls, log):
+        details = {}
+        if log.details_json:
+            try:
+                import json
+                parsed = json.loads(log.details_json)
+                if isinstance(parsed, dict):
+                    details = parsed
+            except (TypeError, ValueError):
+                details = {}
+        return cls(
+            id=log.id,
+            event_type=log.event_type,
+            severity=log.severity,
+            message=log.message,
+            details=details,
+            created_at=log.created_at.replace(tzinfo=timezone.utc).isoformat() if log.created_at else '',
+        )
 
 
 class AbortAllJobsResponse(BaseModel):
@@ -1971,8 +2000,27 @@ def run_recovery_endpoint(_: None = Depends(require_ui_auth), db: Session = Depe
         requeued_jobs=requeued_jobs,
         cleaned_workspaces=cleaned_workspaces,
     )
+    event_log_service.record_event(
+        db,
+        'recovery_summary',
+        'Manual recovery completed',
+        details={
+            'trigger': 'manual',
+            'recovered_jobs': recovered_jobs,
+            'requeued_jobs': requeued_jobs,
+            'cleaned_workspaces': cleaned_workspaces,
+        },
+    )
     return RecoveryResponse(recovered_jobs=recovered_jobs, requeued_jobs=requeued_jobs, cleaned_workspaces=cleaned_workspaces)
 
+
+@router.get('/logs', response_model=list[EventLogResponse])
+def get_event_logs(
+    limit: int = Query(default=200, ge=1, le=1000),
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> list[EventLogResponse]:
+    return [EventLogResponse.from_orm_log(log) for log in event_log_service.list_events(db, limit=limit)]
 
 
 @router.post('/cleanup/run', response_model=CleanupResponse)
@@ -1984,6 +2032,15 @@ def run_cleanup_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
         trigger='manual',
         cleaned_workspaces=cleaned_workspaces,
     )
+    event_log_service.record_event(
+        db,
+        'cleanup_summary',
+        'Manual workspace cleanup completed',
+        details={
+            'trigger': 'manual',
+            'cleaned_workspaces': cleaned_workspaces,
+        },
+    )
     return CleanupResponse(cleaned_workspaces=cleaned_workspaces)
 
 
@@ -1994,6 +2051,16 @@ def run_optimized_cleanup_endpoint(_: None = Depends(require_ui_auth), db: Sessi
         'optimized_cleanup_summary',
         deleted_files=deleted_files,
         affected_jobs=len(affected_job_ids),
+    )
+    event_log_service.record_event(
+        db,
+        'optimized_cleanup_summary',
+        f'Optimized output cleanup removed {deleted_files} file{"s" if deleted_files != 1 else ""}',
+        details={
+            'deleted_files': deleted_files,
+            'affected_job_ids': affected_job_ids,
+            'affected_jobs': len(affected_job_ids),
+        },
     )
     return OptimizedCleanupResponse(deleted_files=deleted_files, affected_job_ids=affected_job_ids)
 
@@ -2013,6 +2080,16 @@ def run_duplicate_optimized_cleanup_endpoint(
     )
     for library_id in affected_library_ids:
         broker.publish_library_update('updated', {'id': library_id})
+    event_log_service.record_event(
+        db,
+        'duplicate_optimized_cleanup_summary',
+        f'Duplicate optimized cleanup removed {deleted_files} file{"s" if deleted_files != 1 else ""}',
+        details={
+            'deleted_files': deleted_files,
+            'affected_library_ids': affected_library_ids,
+            'affected_libraries': len(affected_library_ids),
+        },
+    )
     return DuplicateOptimizedCleanupResponse(deleted_files=deleted_files, affected_library_ids=affected_library_ids)
 
 

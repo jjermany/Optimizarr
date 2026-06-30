@@ -1693,6 +1693,7 @@ def test_get_encoders_endpoint(monkeypatch):
 
 def test_cleanup_optimized_endpoint_deletes_recorded_outputs(tmp_path):
     from app.core.database import SessionLocal
+    from app.models.event_log import EventLog
     from app.models.job import Job
 
     output_file = tmp_path / 'movie-opt.mkv'
@@ -1704,6 +1705,8 @@ def test_cleanup_optimized_endpoint_deletes_recorded_outputs(tmp_path):
         job_id = created.json()['id']
 
         with SessionLocal() as db:
+            db.query(EventLog).delete()
+            db.commit()
             job = db.query(Job).filter(Job.id == job_id).first()
             assert job is not None
             job.status = 'complete'
@@ -1720,6 +1723,13 @@ def test_cleanup_optimized_endpoint_deletes_recorded_outputs(tmp_path):
             job = db.query(Job).filter(Job.id == job_id).first()
             assert job is not None
             assert job.output_path is None
+
+        logs_response = client.get('/logs')
+        assert logs_response.status_code == 200
+        logs = logs_response.json()
+        assert logs[0]['event_type'] == 'optimized_cleanup_summary'
+        assert logs[0]['details']['deleted_files'] >= 1
+        assert job_id in logs[0]['details']['affected_job_ids']
 
     assert not output_file.exists()
 
