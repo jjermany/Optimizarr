@@ -114,7 +114,7 @@ async def lifespan(_: FastAPI):
     )
     if run_startup_maintenance:
         with SessionLocal() as db:
-            event_log_service.record_event(
+            event_log_service.record_event_once(
                 db,
                 'recovery_summary',
                 'Startup recovery completed',
@@ -142,7 +142,7 @@ async def lifespan(_: FastAPI):
     )
     if run_startup_maintenance:
         with SessionLocal() as db:
-            event_log_service.record_event(
+            event_log_service.record_event_once(
                 db,
                 'cleanup_summary',
                 'Startup workspace cleanup completed',

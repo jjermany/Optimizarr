@@ -38,6 +38,37 @@ def record_event(
     return log
 
 
+def record_event_once(
+    db: Session,
+    event_type: str,
+    message: str,
+    *,
+    severity: str = 'info',
+    details: dict[str, Any] | None = None,
+    dedupe_seconds: int = 60,
+) -> EventLog:
+    details_json = json.dumps(details or {}, sort_keys=True, default=_json_default)
+    latest = (
+        db.query(EventLog)
+        .filter(
+            EventLog.event_type == event_type,
+            EventLog.message == message,
+            EventLog.severity == severity,
+            EventLog.details_json == details_json,
+        )
+        .order_by(EventLog.created_at.desc(), EventLog.id.desc())
+        .first()
+    )
+    if latest is not None:
+        created_at = latest.created_at
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=UTC)
+        if (datetime.now(UTC) - created_at).total_seconds() <= max(0, int(dedupe_seconds)):
+            return latest
+
+    return record_event(db, event_type, message, severity=severity, details=details)
+
+
 def list_events(db: Session, *, limit: int = 200) -> list[EventLog]:
     bounded_limit = max(1, min(int(limit), MAX_LOG_ROWS))
     return (
