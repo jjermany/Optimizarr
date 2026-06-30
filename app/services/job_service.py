@@ -588,7 +588,10 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
                 continue
             if imported_path == Path(str(download_job.source_file_path or '').strip()):
                 continue
-            identity_key = media_identity_key(download_job.source_file_path)
+            # Use the original source path for identity, not the imported path,
+            # so downloaded artifacts can be grouped with encoded ones from the
+            # same source for duplicate cleanup.
+            identity_key = media_identity_key(str(download_job.source_file_path or ''))
             if not identity_key:
                 continue
             artifact_groups.setdefault(identity_key, []).append({
