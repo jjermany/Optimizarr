@@ -18,7 +18,7 @@ from app.models.discovery_index import DiscoveryFileIndex
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import DiscoveryMethodEnum, Settings, clamp_scan_probe_workers
-from app.services.job_service import create_job, job_exists_for_source
+from app.services.job_service import create_job, job_exists_for_source, has_completed_job_for_identity
 from app.services.optimization_service import is_hdr_video, probe_video_height
 from app.services.realtime_service import broker
 from app.workers.queue import is_queue_paused
@@ -778,6 +778,9 @@ def _prepare_probe_candidate(
     else:
         if job_exists_for_source(db, source_path, library_id=library.id):
             return None
+    
+    if has_completed_job_for_identity(db, str(media_file), library.id):
+        return None
 
     return DiscoveryProbeCandidate(media_file=media_file, source_path=source_path)
 

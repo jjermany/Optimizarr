@@ -125,6 +125,7 @@ def _normalize_identity_text(value: str) -> str:
 def _strip_release_suffix(value: str) -> str:
     stripped = re.sub(r'\[[^\]]+\]', ' ', value)
     stripped = re.sub(r'\([^\)]*(?:2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|av1|web|bluray|remux)[^\)]*\)', ' ', stripped, flags=re.IGNORECASE)
+    stripped = re.sub(r'\b(?:2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|av1|web|bluray|remux|web-dl|webrip|hdrip|brrip|bdrip|atmos|truehd)\b', ' ', stripped, flags=re.IGNORECASE)
     return stripped.replace('.', ' ').replace('_', ' ').strip()
 
 
@@ -451,6 +452,40 @@ def prune_job_history(db: Session, retention_days: int) -> int:
     return deleted_count
 
 
+def has_completed_job_for_identity(db: Session, source_path: str, library_id: int) -> bool:
+    identity_key = media_identity_key(source_path)
+    if not identity_key:
+        return False
+
+    # Check for completed encode jobs
+    encode_jobs = (
+        db.query(Job)
+        .filter(
+            Job.library_id == library_id,
+            Job.status == 'complete'
+        )
+        .all()
+    )
+    for job in encode_jobs:
+        if media_identity_key(job.input_path) == identity_key:
+            if job.output_path and Path(job.output_path).exists():
+                return True
+
+    # Check for completed download jobs
+    download_jobs = (
+        db.query(DownloadJob)
+        .filter(
+            DownloadJob.library_id == library_id,
+            DownloadJob.status == 'complete'
+        )
+        .all()
+    )
+    for job in download_jobs:
+        if media_identity_key(job.source_file_path) == identity_key:
+            if job.imported_file_path and Path(job.imported_file_path).exists():
+                return True
+
+    return False
 
 
 def cleanup_optimized_outputs(db: Session) -> tuple[int, list[int]]:
