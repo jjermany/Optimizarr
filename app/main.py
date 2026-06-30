@@ -98,11 +98,14 @@ async def lifespan(_: FastAPI):
     register_job_complete_callback(trigger_immediate_scan)
 
     if _is_test_runtime():
+        worker_thread = start_worker()
         try:
             yield
         finally:
             logger.info('Shutting down Optimizarr application')
+            stop_worker()
             broker.stop()
+            worker_thread.join(timeout=5)
             logger.info('Optimizarr shutdown complete')
         return
 

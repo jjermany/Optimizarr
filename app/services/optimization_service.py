@@ -1313,6 +1313,8 @@ def _handle_vaapi_buffer_retry(
     return_code: int,
     was_cancelled: bool,
     output_lines: list[str],
+    processed_seconds: float,
+    current_fps: float | None,
     job_tag: str,
     job_id: int | None,
     should_cancel: Callable[[], bool] | None,
@@ -1327,8 +1329,6 @@ def _handle_vaapi_buffer_retry(
     """Handle VAAPI buffer exhaustion by waiting and retrying the encode."""
     can_resume = False
     resume_segment_path = None
-    processed_seconds = 0.0
-    current_fps = None
 
     for _wait_secs in _VAAPI_BUFFER_RETRY_WAITS:
         if return_code == 0 or was_cancelled:
@@ -1398,7 +1398,10 @@ def _handle_vaapi_buffer_retry(
 
 def _handle_qsv_to_vaapi_fallback(
     return_code: int,
+    processed_seconds: float | None,
+    current_fps: float | None,
     was_cancelled: bool,
+    output_lines: list[str],
     selection: EncoderSelection,
     job_tag: str,
     can_resume: bool,
@@ -1464,11 +1467,13 @@ def _handle_qsv_to_vaapi_fallback(
         metrics.used_fallback = True
         metrics.fallback_reason = 'qsv_failed_vaapi_fallback'
         return return_code, processed_seconds, current_fps, was_cancelled, output_lines, selection
-    return return_code, None, None, was_cancelled, [], selection
+    return return_code, processed_seconds, current_fps, was_cancelled, output_lines, selection
 
 
 def _handle_vaapi_sw_decode_fallback(
     return_code: int,
+    processed_seconds: float | None,
+    current_fps: float | None,
     was_cancelled: bool,
     selection: EncoderSelection,
     output_lines: list[str],
@@ -1545,7 +1550,7 @@ def _handle_vaapi_sw_decode_fallback(
                 else 'vaapi_hwdecode_failed_swdecode_fallback'
             )
             return return_code, processed_seconds, current_fps, was_cancelled, output_lines, selection
-    return return_code, None, None, was_cancelled, output_lines, selection
+    return return_code, processed_seconds, current_fps, was_cancelled, output_lines, selection
 
 
 def optimize_video(
@@ -1781,6 +1786,8 @@ def optimize_video(
         return_code,
         was_cancelled,
         output_lines,
+        processed_seconds,
+        current_fps,
         job_tag,
         job_id,
         should_cancel,
@@ -1853,7 +1860,10 @@ def optimize_video(
             selection,
         ) = _handle_qsv_to_vaapi_fallback(
             return_code,
+            processed_seconds,
+            current_fps,
             was_cancelled,
+            output_lines,
             selection,
             job_tag,
             can_resume,
@@ -1936,6 +1946,8 @@ def optimize_video(
         selection,
     ) = _handle_vaapi_sw_decode_fallback(
         return_code,
+        processed_seconds,
+        current_fps,
         was_cancelled,
         selection,
         output_lines,

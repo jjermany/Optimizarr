@@ -420,6 +420,8 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def _qbt_settings_int(settings: Settings | None, attr_name: str, env_name: str, default: int, *, minimum: int = 0) -> int:
+    if os.getenv(env_name) is not None:
+        return _env_int(env_name, default, minimum=minimum)
     if settings is not None:
         value = getattr(settings, attr_name, None)
         if value is not None:
@@ -431,6 +433,8 @@ def _qbt_settings_int(settings: Settings | None, attr_name: str, env_name: str, 
 
 
 def _qbt_settings_bool(settings: Settings | None, attr_name: str, env_name: str, default: bool) -> bool:
+    if os.getenv(env_name) is not None:
+        return _env_bool(env_name, default)
     if settings is not None:
         value = getattr(settings, attr_name, None)
         if value is not None:
@@ -2610,13 +2614,14 @@ def _select_next_pending_download_job(db: Session) -> DownloadJob | None:
 
         pending_jobs.sort(key=sort_key)
 
+    eligible_jobs: list[DownloadJob] = []
     for job in pending_jobs:
         blocker = _download_job_identity_blocker(db, job)
         if blocker is not None:
             _remove_duplicate_unstarted_download_job(db, job, blocker)
             continue
-        return job
-    return None
+        eligible_jobs.append(job)
+    return eligible_jobs[0] if eligible_jobs else None
 
 
 def _extract_title_tokens(source_path: str) -> list[str]:

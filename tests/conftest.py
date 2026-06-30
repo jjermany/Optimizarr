@@ -3,6 +3,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 # VS Code pytest discovery imports conftest before running any tests.
@@ -23,3 +25,49 @@ from app.core.database import init_db
 
 
 init_db()
+
+
+@pytest.fixture(autouse=True)
+def reset_service_runtime_state():
+    from app.services import download_monitor_service
+    from app.workers import queue
+
+    queue.stop_worker()
+    queue.stop_event.clear()
+    with queue._pool_lock:
+        queue._active_workers.clear()
+    queue._manager_thread = None
+    queue._last_workers_allowed = None
+    queue._queue_paused = False
+
+    download_monitor_service.stop_download_monitor()
+    download_monitor_service._stop_event.clear()
+    download_monitor_service._wake_event.clear()
+    download_monitor_service._scan_recovery_event.clear()
+    download_monitor_service._download_queue_stopped = False
+    download_monitor_service._download_queue_stop_reason = ''
+    download_monitor_service._tagged_job_ids.clear()
+    download_monitor_service._categorized_sab_job_ids.clear()
+    download_monitor_service._qbt_strike_state.clear()
+    download_monitor_service._startup_grace_until = None
+
+    yield
+
+    queue.stop_worker()
+    queue.stop_event.clear()
+    with queue._pool_lock:
+        queue._active_workers.clear()
+    queue._manager_thread = None
+    queue._last_workers_allowed = None
+    queue._queue_paused = False
+
+    download_monitor_service.stop_download_monitor()
+    download_monitor_service._stop_event.clear()
+    download_monitor_service._wake_event.clear()
+    download_monitor_service._scan_recovery_event.clear()
+    download_monitor_service._download_queue_stopped = False
+    download_monitor_service._download_queue_stop_reason = ''
+    download_monitor_service._tagged_job_ids.clear()
+    download_monitor_service._categorized_sab_job_ids.clear()
+    download_monitor_service._qbt_strike_state.clear()
+    download_monitor_service._startup_grace_until = None
