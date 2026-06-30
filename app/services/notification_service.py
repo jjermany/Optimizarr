@@ -70,8 +70,12 @@ class EmailEvent:
 class BatchTracker:
     pending_ids: set[int]
     library_name: str | None = None
+    total: int = 0
     processed: int = 0
+    completed: int = 0
     failed: int = 0
+    skipped: int = 0
+    cancelled: int = 0
     failed_files: list[str] | None = None
 
 
@@ -304,7 +308,26 @@ def enqueue_test_email() -> None:
     enqueue_email('Optimizarr notification test', 'This is a test email from Optimizarr notifications.')
 
 
+def _batch_digest_enabled() -> bool:
+    db = SessionLocal()
+    try:
+        settings = get_or_create_notification_settings(db)
+        return bool(settings.notify_on_batch_complete)
+    finally:
+        db.close()
+
+
+def _job_is_in_batch(job_id: int | None) -> bool:
+    if job_id is None:
+        return False
+    with _batch_lock:
+        return any(job_id in batch.pending_ids for batch in _batches)
+
+
 def enqueue_job_complete(job: Job) -> None:
+    if _job_is_in_batch(getattr(job, 'id', None)) and _batch_digest_enabled():
+        return
+
     db = SessionLocal()
     try:
         settings = get_or_create_notification_settings(db)
@@ -353,14 +376,15 @@ def enqueue_download_job_complete(download_job: DownloadJob) -> None:
 
 
 def enqueue_job_failed(job: Job) -> None:
-    with _batch_lock:
-        for batch in _batches:
-            if job.id not in batch.pending_ids:
-                continue
-            if batch.failed_files is None:
-                batch.failed_files = []
-            batch.failed_files.append(Path(job.source_path).name)
-            return
+    if _job_is_in_batch(getattr(job, 'id', None)) and _batch_digest_enabled():
+        with _batch_lock:
+            for batch in _batches:
+                if getattr(job, 'id', None) not in batch.pending_ids:
+                    continue
+                if batch.failed_files is None:
+                    batch.failed_files = []
+                batch.failed_files.append(format_display_name(job.source_path))
+                return
 
     file_name = format_display_name(job.source_path)
 
@@ -478,10 +502,11 @@ def enqueue_recovery_ran(*, trigger: str, recovered_jobs: int, requeued_jobs: in
 
 
 def register_scan_batch(job_ids: list[int], library_name: str | None = None) -> None:
-    if not job_ids:
+    pending_ids = set(job_ids)
+    if not pending_ids:
         return
     with _batch_lock:
-        _batches.append(BatchTracker(pending_ids=set(job_ids), library_name=library_name))
+        _batches.append(BatchTracker(pending_ids=pending_ids, library_name=library_name, total=len(pending_ids)))
 
 
 def _download_job_payload(dj: DownloadJob) -> dict:
@@ -575,8 +600,14 @@ def handle_job_terminal_state(job_id: int, status: str) -> None:
 
             batch.pending_ids.remove(job_id)
             batch.processed += 1
-            if status == 'failed':
+            if status == 'complete':
+                batch.completed += 1
+            elif status == 'failed':
                 batch.failed += 1
+            elif status == 'skipped':
+                batch.skipped += 1
+            elif status == 'cancelled':
+                batch.cancelled += 1
 
             if not batch.pending_ids:
                 completed_batch = batch
@@ -594,14 +625,19 @@ def handle_job_terminal_state(job_id: int, status: str) -> None:
     finally:
         db.close()
 
-    body = _format_notification_body(
-        library_name=completed_batch.library_name or 'multiple',
-        file_name=', '.join(completed_batch.failed_files or []) or 'n/a',
-        reason=(
-            f'Batch complete. Processed: {completed_batch.processed}, Failed: {completed_batch.failed}.'
-            if completed_batch.failed == 0
-            else f'Batch complete. Processed: {completed_batch.processed}, Failed: {completed_batch.failed} (grouped alert).'
-        ),
-        suggested_action='Review failed items and retry any jobs that need another pass.',
+    failed_files = ', '.join(completed_batch.failed_files or []) or 'n/a'
+    status_line = 'Completed successfully.' if completed_batch.failed == 0 else 'Completed with failures.'
+    body = (
+        'Job Type: Batch\n'
+        f'Library: {completed_batch.library_name or "multiple"}\n'
+        f'Total Jobs: {completed_batch.total or completed_batch.processed}\n'
+        f'Processed: {completed_batch.processed}\n'
+        f'Completed: {completed_batch.completed}\n'
+        f'Failed: {completed_batch.failed}\n'
+        f'Skipped: {completed_batch.skipped}\n'
+        f'Cancelled: {completed_batch.cancelled}\n'
+        f'Failed Files: {failed_files}\n'
+        f'Status: {status_line}\n'
+        'Suggested action: Review failed or skipped items and retry any jobs that need another pass.\n'
     )
     enqueue_email(subject='Optimizarr batch complete', body=body)

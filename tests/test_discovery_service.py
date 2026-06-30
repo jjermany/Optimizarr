@@ -631,6 +631,7 @@ def test_queue_file_if_eligible_download_mode_does_not_queue_when_probe_fails(mo
         db.refresh(profile)
 
         created = []
+        monkeypatch.setattr(download_monitor_service, 'recover_completed_artifact_for_source', lambda *_args, **_kwargs: False)
         monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
         monkeypatch.setattr(download_monitor_service, 'download_job_exists_for_source', lambda _db, _path: False)
         monkeypatch.setattr(download_monitor_service, 'create_download_job', lambda _db, source_path, *_args: created.append(source_path))
@@ -656,6 +657,7 @@ def test_download_mode_still_respects_resolution_and_hdr_filters(monkeypatch, tm
     monkeypatch.setattr(routes, 'MEDIA_ROOT', media_root)
     monkeypatch.setattr(discovery_service, 'probe_video_height', lambda _path: 1080)
     monkeypatch.setattr(discovery_service, 'is_hdr_video', lambda _path: False)
+    monkeypatch.setattr(download_monitor_service, 'recover_completed_artifact_for_source', lambda *_args, **_kwargs: False)
     monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
 
     created_downloads = []
@@ -703,6 +705,7 @@ def test_queue_file_if_eligible_download_mode_creates_download_job_when_route_re
         db.refresh(profile)
 
         created_downloads = []
+        monkeypatch.setattr(download_monitor_service, 'recover_completed_artifact_for_source', lambda *_args, **_kwargs: False)
         monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
         monkeypatch.setattr(download_monitor_service, 'download_job_exists_for_source', lambda _db, _path: False)
         monkeypatch.setattr(
@@ -805,6 +808,7 @@ def test_queue_file_if_eligible_download_mode_skips_when_source_already_moving(m
         db.commit()
 
         create_calls = []
+        monkeypatch.setattr(download_monitor_service, 'recover_completed_artifact_for_source', lambda *_args, **_kwargs: False)
         monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
         monkeypatch.setattr(
             download_monitor_service,
@@ -851,6 +855,7 @@ def test_queue_file_if_eligible_download_mode_removes_stale_placeholder_encode(m
         db.refresh(placeholder)
 
         created_downloads = []
+        monkeypatch.setattr(download_monitor_service, 'recover_completed_artifact_for_source', lambda *_args, **_kwargs: False)
         monkeypatch.setattr(download_monitor_service, 'can_attempt_download', lambda _db: True)
         monkeypatch.setattr(download_monitor_service, 'download_job_exists_for_source', lambda _db, _path: False)
         monkeypatch.setattr(

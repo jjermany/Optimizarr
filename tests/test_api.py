@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.api import routes
 from app.core.database import SessionLocal
 from app.models.auth import AdminUser, AuthSession
+from app.models.library import Library, LibraryProfile
 from app.services import discovery_service, optimization_service
 from app.main import app
 
@@ -207,6 +208,11 @@ def test_get_and_update_settings():
 
 
 def test_get_libraries_includes_scan_state(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
     media_root = tmp_path / 'media'
     media_root.mkdir()
     library_path = media_root / 'shows'
@@ -787,7 +793,7 @@ def test_cancel_download_job_resets_job_to_pending():
                 indexer_id=12,
                 indexer_name='SomeIndexer',
                 download_hash='abc123',
-                client_type='qbittorrent',
+                client_type='manual',
                 progress_percent=73,
                 download_speed_bps=5_000_000,
                 downloaded_file_path='/downloads/movie.mkv',

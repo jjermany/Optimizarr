@@ -126,8 +126,63 @@ def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
     notification_service.handle_job_terminal_state(42, 'failed')
     assert len(queued) == 1
     assert queued[0][0] == 'Optimizarr batch complete'
-    assert 'title.mkv' in queued[0][1]
-    assert 'grouped alert' in queued[0][1]
+    assert 'Failed Files: title' in queued[0][1]
+    assert 'Status: Completed with failures.' in queued[0][1]
+
+
+def test_enqueue_job_failed_sends_individual_when_batch_digest_disabled(monkeypatch):
+    queued = []
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+
+    with SessionLocal() as db:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_batch_complete = False
+        settings.notify_on_job_failed = True
+        db.commit()
+
+    notification_service._batches.clear()
+    notification_service.register_scan_batch([42], library_name='Movies')
+
+    job = type('JobStub', (), {'id': 42, 'source_path': '/media/Movies/title.mkv', 'error_message': 'optimization_failed', 'library_id': None})
+
+    notification_service.enqueue_job_failed(job)
+    notification_service.handle_job_terminal_state(42, 'failed')
+
+    assert len(queued) == 1
+    assert queued[0][0] == 'Optimizarr job failed'
+    assert 'File: title' in queued[0][1]
+
+
+def test_enqueue_job_complete_is_suppressed_when_batch_digest_enabled(monkeypatch):
+    queued = []
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+
+    with SessionLocal() as db:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_batch_complete = True
+        settings.notify_on_job_complete = True
+        db.commit()
+
+    notification_service._batches.clear()
+    notification_service.register_scan_batch([42], library_name='Movies')
+
+    job = type(
+        'JobStub',
+        (),
+        {
+            'id': 42,
+            'source_path': '/media/Movies/title.mkv',
+            'library_id': None,
+            'encode_duration_seconds': 60,
+        },
+    )
+
+    notification_service.enqueue_job_complete(job)
+    notification_service.handle_job_terminal_state(42, 'complete')
+
+    assert len(queued) == 1
+    assert queued[0][0] == 'Optimizarr batch complete'
+    assert 'Completed: 1' in queued[0][1]
 
 
 def test_enqueue_job_complete_marks_encode_and_includes_runtime(monkeypatch):

@@ -2533,7 +2533,8 @@ async def websocket_events(websocket: WebSocket) -> None:
     try:
         broker.publish_notification('websocket_client_connected')
         while True:
-            event = await next_message(subscription)
+            keepalive_seconds = float(os.getenv('OPTIMIZARR_WEBSOCKET_KEEPALIVE_SECONDS', '15'))
+            event = await next_message(subscription, timeout_seconds=keepalive_seconds)
             if event is None:
                 await websocket.send_json({'type': 'notification', 'data': {'message': 'keepalive', 'level': 'debug'}})
                 continue

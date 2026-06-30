@@ -35,6 +35,7 @@ def _wait_for_terminal_status(client: TestClient, job_id: int, timeout: float = 
 
 
 def test_worker_retries_a_failed_job_once(monkeypatch, tmp_path):
+    monkeypatch.setenv('OPTIMIZARR_TEST_START_WORKER', '1')
     queue.resume_queue()
     target_input = str(tmp_path / 'test.mkv')
     (tmp_path / 'test.mkv').write_text('x')
@@ -79,6 +80,7 @@ def test_worker_retries_a_failed_job_once(monkeypatch, tmp_path):
 
 
 def test_worker_auto_retries_from_partial_then_fails_for_manual_retry(monkeypatch, tmp_path):
+    monkeypatch.setenv('OPTIMIZARR_TEST_START_WORKER', '1')
     queue.resume_queue()
     call_count = {'count': 0}
     target_input = str(tmp_path / 'partial-test.mkv')
@@ -124,6 +126,7 @@ def test_worker_auto_retries_from_partial_then_fails_for_manual_retry(monkeypatc
 
 
 def test_worker_marks_job_failed_when_unhandled_exception_occurs(monkeypatch, tmp_path):
+    monkeypatch.setenv('OPTIMIZARR_TEST_START_WORKER', '1')
     queue.resume_queue()
     target_input = str(tmp_path / 'test-crash.mkv')
     (tmp_path / 'test-crash.mkv').write_text('x')
@@ -768,6 +771,10 @@ def test_claim_next_queued_job_removes_placeholder_when_download_already_importe
             'publish_system_event',
             lambda event, **payload: events.append((event, payload)),
         )
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.recover_completed_artifact_for_queue_job',
+            lambda *_args, **_kwargs: False,
+        )
 
         settings = queue._get_settings(db)
         selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
@@ -865,6 +872,10 @@ def test_claim_next_queued_job_routes_to_download_and_removes_placeholder(monkey
         placeholder_id = placeholder.id
 
         created_downloads = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.recover_completed_artifact_for_queue_job',
+            lambda *_args, **_kwargs: False,
+        )
         monkeypatch.setattr('app.services.download_monitor_service.can_attempt_download', lambda _db: True)
         monkeypatch.setattr('app.services.download_monitor_service.download_job_exists_for_source', lambda _db, _path: False)
         monkeypatch.setattr(
@@ -920,6 +931,10 @@ def test_claim_next_queued_job_starts_fallback_encode_without_rerouting(monkeypa
         db.commit()
 
         created_downloads = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service.recover_completed_artifact_for_queue_job',
+            lambda *_args, **_kwargs: False,
+        )
         monkeypatch.setattr('app.services.download_monitor_service.can_attempt_download', lambda _db: True)
         monkeypatch.setattr('app.services.download_monitor_service.download_job_exists_for_source', lambda _db, _path: False)
         monkeypatch.setattr(

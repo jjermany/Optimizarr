@@ -15,6 +15,8 @@ os.environ.setdefault('PLEX_OPTIMIZER_DB_PATH', str(_temp_root / f'optimizarr-te
 os.environ.setdefault('OPTIMIZARR_LOG_DIR', str(_temp_root / f'optimizarr-logs-{_test_id}'))
 os.environ.setdefault('OPTIMIZARR_SECRETS_KEY_PATH', str(_temp_root / f'optimizarr-secrets-{_test_id}.key'))
 os.environ.setdefault('OPTIMIZARR_BOOTSTRAP_TOKEN', 'test-bootstrap-token')
+os.environ.setdefault('OPTIMIZARR_TEST_START_WORKER', '0')
+os.environ.setdefault('OPTIMIZARR_WEBSOCKET_KEEPALIVE_SECONDS', '0.05')
 os.environ.setdefault('MEDIA_ROOT', str(_temp_root))
 os.environ.setdefault('OPTIMIZARR_WORKSPACE_ROOT_BASE', str(_temp_root))
 

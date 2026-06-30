@@ -31,6 +31,14 @@ def _is_test_runtime() -> bool:
     return 'PYTEST_CURRENT_TEST' in os.environ
 
 
+def _should_start_test_worker() -> bool:
+    return os.getenv('OPTIMIZARR_TEST_START_WORKER') == '1'
+
+
+def _should_run_test_startup_maintenance() -> bool:
+    return os.getenv('OPTIMIZARR_TEST_RUN_STARTUP_MAINTENANCE') == '1'
+
+
 def _cleanup_loop(stop_event: Event) -> None:
     logger.info('Workspace cleanup worker started')
     while not stop_event.wait(CLEANUP_INTERVAL_SECONDS):
@@ -68,13 +76,25 @@ async def lifespan(_: FastAPI):
         auth_service.purge_expired_sessions(db)
         persisted_settings = db.query(Settings).first()
         initial_queue_paused = bool(persisted_settings and persisted_settings.queue_paused)
-        summary = run_startup_recovery(db)
-        cleanup_summary = run_workspace_cleanup(db)
-        download_recovery_summary = run_download_startup_recovery(db)
+        run_startup_maintenance = not _is_test_runtime() or _should_run_test_startup_maintenance()
+        if run_startup_maintenance:
+            summary = run_startup_recovery(db)
+            cleanup_summary = run_workspace_cleanup(db)
+            download_recovery_summary = run_download_startup_recovery(db)
+        else:
+            summary = {'interrupted_job_ids': [], 'recovered_jobs': 0, 'requeued_jobs': 0, 'cleaned_workspaces': 0}
+            cleanup_summary = {'cleaned_workspaces': 0}
+            download_recovery_summary = {
+                'imported': 0,
+                'reset_to_searching': 0,
+                'linked_jobs': 0,
+                'adopted_queue_jobs': 0,
+            }
     if initial_queue_paused:
         pause_queue(reason='manual')
     refresh_encoder_cache()
-    broker.start()
+    if not _is_test_runtime():
+        broker.start()
     for job_id in summary.get('interrupted_job_ids', []):
         broker.publish_system_event('job_interrupted', job_id=job_id)
         notification_service.enqueue_job_interrupted(job_id=job_id)
@@ -92,22 +112,23 @@ async def lifespan(_: FastAPI):
         download_linked=download_recovery_summary.get('linked_jobs', 0),
         download_adopted=download_recovery_summary.get('adopted_queue_jobs', 0),
     )
-    with SessionLocal() as db:
-        event_log_service.record_event(
-            db,
-            'recovery_summary',
-            'Startup recovery completed',
-            details={
-                'trigger': 'startup',
-                'recovered_jobs': recovered_jobs,
-                'requeued_jobs': requeued_jobs,
-                'cleaned_workspaces': cleaned_workspaces,
-                'download_imported': download_recovery_summary.get('imported', 0),
-                'download_reset': download_recovery_summary.get('reset_to_searching', 0),
-                'download_linked': download_recovery_summary.get('linked_jobs', 0),
-                'download_adopted': download_recovery_summary.get('adopted_queue_jobs', 0),
-            },
-        )
+    if run_startup_maintenance:
+        with SessionLocal() as db:
+            event_log_service.record_event(
+                db,
+                'recovery_summary',
+                'Startup recovery completed',
+                details={
+                    'trigger': 'startup',
+                    'recovered_jobs': recovered_jobs,
+                    'requeued_jobs': requeued_jobs,
+                    'cleaned_workspaces': cleaned_workspaces,
+                    'download_imported': download_recovery_summary.get('imported', 0),
+                    'download_reset': download_recovery_summary.get('reset_to_searching', 0),
+                    'download_linked': download_recovery_summary.get('linked_jobs', 0),
+                    'download_adopted': download_recovery_summary.get('adopted_queue_jobs', 0),
+                },
+            )
     notification_service.enqueue_recovery_ran(
         trigger='startup',
         recovered_jobs=recovered_jobs,
@@ -119,29 +140,31 @@ async def lifespan(_: FastAPI):
         trigger='startup',
         cleaned_workspaces=cleanup_summary.get('cleaned_workspaces', 0),
     )
-    with SessionLocal() as db:
-        event_log_service.record_event(
-            db,
-            'cleanup_summary',
-            'Startup workspace cleanup completed',
-            details={
-                'trigger': 'startup',
-                'cleaned_workspaces': cleanup_summary.get('cleaned_workspaces', 0),
-            },
-        )
+    if run_startup_maintenance:
+        with SessionLocal() as db:
+            event_log_service.record_event(
+                db,
+                'cleanup_summary',
+                'Startup workspace cleanup completed',
+                details={
+                    'trigger': 'startup',
+                    'cleaned_workspaces': cleanup_summary.get('cleaned_workspaces', 0),
+                },
+            )
     # After a download job completes/fails, immediately trigger a discovery scan
     # so the next eligible file is picked up without waiting for the interval.
     register_job_complete_callback(trigger_immediate_scan)
 
     if _is_test_runtime():
-        worker_thread = start_worker()
+        worker_thread = start_worker() if _should_start_test_worker() else None
         try:
             yield
         finally:
             logger.info('Shutting down Optimizarr application')
             stop_worker()
             broker.stop()
-            worker_thread.join(timeout=5)
+            if worker_thread is not None:
+                worker_thread.join(timeout=5)
             logger.info('Optimizarr shutdown complete')
         return
 
