@@ -610,7 +610,13 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
             def sort_key(artifact: dict) -> tuple:
                 # Keep the highest resolution artifact, falling back to largest
                 # file size, then most recent.
-                resolution = int(artifact.get('record').source_resolution or 0)
+                resolution = 0
+                if artifact['record'] and getattr(artifact['record'], 'source_resolution', None):
+                    resolution = int(artifact['record'].source_resolution)
+                else:
+                    probed = optimization_service.probe_video_height(str(artifact['path']))
+                    if probed:
+                        resolution = probed
                 try:
                     size = artifact['path'].stat().st_size
                 except OSError:
