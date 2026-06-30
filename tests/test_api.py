@@ -1716,6 +1716,11 @@ def test_cleanup_optimized_endpoint_deletes_recorded_outputs(tmp_path):
         assert payload['deleted_files'] >= 1
         assert job_id in payload['affected_job_ids']
 
+        with SessionLocal() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            assert job is not None
+            assert job.output_path is None
+
     assert not output_file.exists()
 
 

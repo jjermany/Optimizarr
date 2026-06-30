@@ -120,7 +120,7 @@ def _path_parts(path_value: str) -> list[str]:
 
 
 def _normalize_identity_text(value: str) -> str:
-    return re.sub(r'\s+', ' ', re.sub(r'[^a-zA-Z0-9]+', ' ', value)).strip().lower()
+    return re.sub(r'[^a-z0-9]+', '', value.lower())
 
 
 def _strip_release_suffix(value: str) -> str:
@@ -146,12 +146,12 @@ def media_identity_key(source_path: str) -> str | None:
         return None
 
     stem = re.sub(r'\.[^.\\/]+$', '', parts[-1])
-    searchable = _strip_release_suffix(' '.join(parts[-3:]))
+    cleaned_stem = _strip_release_suffix(stem)
     episode_match = re.search(
-        r'\bS(\d{1,2})\s*E(\d{1,3})\b', searchable, flags=re.IGNORECASE)
+        r'\bS(\d{1,2})\s*E(\d{1,3})\b', cleaned_stem, flags=re.IGNORECASE)
     if episode_match:
-        title = searchable[:episode_match.start()].strip(' ._-')
-        if not title and len(parts) >= 3:
+        title = cleaned_stem[:episode_match.start()].strip(' ._-')
+        if (not title or re.fullmatch(r'(?:season\s*)?\d{1,2}', title, flags=re.IGNORECASE)) and len(parts) >= 3:
             title = parts[-3]
         normalized_title = _normalize_identity_text(title)
         if normalized_title:
@@ -181,13 +181,6 @@ def _job_blocks_identity_dedupe(job: Job) -> bool:
 
 
 def get_existing_job_for_source(db: Session, source_path: str, library_id: int | None = None) -> Job | None:
-    if has_completed_job_for_identity(db, source_path, library_id):
-        return Job(
-            input_path=source_path,
-            status='skipped',
-            error_message='Completed job already exists for this media',
-        )
-
     # Completed jobs normally block re-queuing, but stale "complete" rows whose
     # output no longer exists are treated as retryable.
     _RETRYABLE_STATUSES = {'failed', 'skipped', 'cancelled'}
@@ -526,8 +519,155 @@ def cleanup_optimized_outputs(db: Session) -> tuple[int, list[int]]:
         if not candidate.exists():
             removed_files += 1
             removed_job_ids.append(job.id)
+            job.output_path = None
+
+    if removed_job_ids:
+        db.commit()
 
     return removed_files, removed_job_ids
+
+
+def cleanup_replaced_optimized_outputs(
+    db: Session,
+    *,
+    library_id: int | None,
+    source_path: str,
+    keep_output_path: str | None,
+    current_job_id: int | None = None,
+    current_download_job_id: int | None = None,
+) -> tuple[int, list[int], list[int]]:
+    """Remove older optimized outputs for the same media after an upgrade wins.
+
+    Radarr/Sonarr upgrades can replace the source path, leaving prior optimized
+    outputs behind with a different stem. This runs only after the new output or
+    import has completed, and only deletes files recorded as older Optimizarr
+    outputs/imports.
+    """
+    identity_key = media_identity_key(source_path)
+    if library_id is None or not identity_key:
+        return 0, [], []
+
+    keep_path = Path(keep_output_path).resolve() if keep_output_path else None
+    removed_files = 0
+    affected_job_ids: list[int] = []
+    affected_download_job_ids: list[int] = []
+
+    completed_jobs = (
+        db.query(Job)
+        .filter(
+            Job.library_id == library_id,
+            Job.status == 'complete',
+            Job.output_path.is_not(None),
+        )
+        .order_by(Job.completed_at.desc(), Job.id.desc())
+        .all()
+    )
+    for job in completed_jobs:
+        if current_job_id is not None and job.id == current_job_id:
+            continue
+        if media_identity_key(job.input_path) != identity_key:
+            continue
+
+        output_path_value = str(job.output_path or '').strip()
+        if not output_path_value:
+            continue
+        output_path = Path(output_path_value)
+
+        try:
+            if keep_path is not None and output_path.resolve() == keep_path:
+                continue
+        except OSError:
+            pass
+
+        # Never delete a library source file masquerading as an output record.
+        input_path = Path(str(job.input_path or '').strip())
+        try:
+            is_recorded_source = output_path.resolve() == input_path.resolve()
+        except OSError:
+            is_recorded_source = output_path == input_path
+        if is_recorded_source:
+            continue
+        if not output_path.exists() or not output_path.is_file():
+            job.output_path = None
+            continue
+
+        output_path.unlink(missing_ok=True)
+        if output_path.exists():
+            continue
+
+        removed_files += 1
+        affected_job_ids.append(job.id)
+        job.output_path = None
+
+    completed_download_jobs = (
+        db.query(DownloadJob)
+        .filter(
+            DownloadJob.library_id == library_id,
+            DownloadJob.status == 'complete',
+            DownloadJob.imported_file_path.is_not(None),
+        )
+        .order_by(DownloadJob.completed_at.desc(), DownloadJob.id.desc())
+        .all()
+    )
+    for download_job in completed_download_jobs:
+        if current_download_job_id is not None and download_job.id == current_download_job_id:
+            continue
+        if media_identity_key(download_job.source_file_path) != identity_key:
+            continue
+
+        imported_path_value = str(download_job.imported_file_path or '').strip()
+        if not imported_path_value:
+            continue
+        imported_path = Path(imported_path_value)
+
+        try:
+            if keep_path is not None and imported_path.resolve() == keep_path:
+                continue
+        except OSError:
+            pass
+
+        source_file_path = Path(str(download_job.source_file_path or '').strip())
+        try:
+            is_recorded_source = imported_path.resolve() == source_file_path.resolve()
+        except OSError:
+            is_recorded_source = imported_path == source_file_path
+        if is_recorded_source:
+            continue
+        if not imported_path.exists() or not imported_path.is_file():
+            download_job.imported_file_path = None
+            continue
+
+        imported_path.unlink(missing_ok=True)
+        if imported_path.exists():
+            continue
+
+        removed_files += 1
+        affected_download_job_ids.append(download_job.id)
+        download_job.imported_file_path = None
+
+    return removed_files, affected_job_ids, affected_download_job_ids
+
+
+def _cleanup_versioned_optimized_siblings(library_path: Path) -> int:
+    removed_files = 0
+    versioned_pattern = re.compile(r'^(?P<base>.+)-v\d+$', flags=re.IGNORECASE)
+
+    for candidate in library_path.rglob('*'):
+        if not candidate.is_file():
+            continue
+        match = versioned_pattern.match(candidate.stem)
+        if not match:
+            continue
+
+        canonical = candidate.with_name(f'{match.group("base")}{candidate.suffix}')
+        if not canonical.exists() or not canonical.is_file():
+            continue
+
+        candidate.unlink(missing_ok=True)
+        if not candidate.exists():
+            removed_files += 1
+
+    return removed_files
 
 
 def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
@@ -545,6 +685,13 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
         library_path = Path(str(library.path or '').strip())
         if not library_path.exists() or not library_path.is_dir():
             continue
+
+        versioned_removed = _cleanup_versioned_optimized_siblings(library_path)
+        if versioned_removed:
+            removed_files += versioned_removed
+            if library.id not in affected_library_ids_seen:
+                affected_library_ids.append(library.id)
+                affected_library_ids_seen.add(library.id)
 
         artifact_groups: dict[str, list[dict]] = {}
         completed_encode_jobs = (

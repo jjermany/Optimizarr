@@ -22,7 +22,7 @@ from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum, Library, LibraryProfile
 from app.models.settings import QueueSortEnum, Settings
 from app.services import download_client_service, notification_service, prowlarr_service
-from app.services.job_service import create_job, media_identity_key
+from app.services.job_service import cleanup_replaced_optimized_outputs, create_job, media_identity_key
 from app.services.optimization_service import is_hdr_video, probe_video_height, stop_active_ffmpeg
 from app.services.realtime_service import broker
 
@@ -3704,6 +3704,24 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
 # Import: move downloaded file from complete dir to library
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _cleanup_replaced_after_download_import(db: Session, dj: DownloadJob) -> tuple[int, list[int]]:
+    removed_files, affected_job_ids, affected_download_job_ids = cleanup_replaced_optimized_outputs(
+        db,
+        library_id=dj.library_id,
+        source_path=dj.source_file_path,
+        keep_output_path=dj.imported_file_path,
+        current_download_job_id=dj.id,
+    )
+    if removed_files:
+        logger.info(
+            'Removed %s replaced artifact(s) for completed download job %s; affected_jobs=%s',
+            removed_files,
+            dj.id,
+            affected_job_ids + affected_download_job_ids,
+        )
+    return removed_files, affected_download_job_ids
+
+
 def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library, profile: LibraryProfile, qbt, sab) -> None:
     """
     Import a completed download into the library.
@@ -3758,9 +3776,12 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
             dj.eta_seconds = None
             dj.download_speed_bps = None
             dj.completed_at = datetime.now(timezone.utc)
+            _, affected_download_job_ids = _cleanup_replaced_after_download_import(db, dj)
             db.commit()
             db.refresh(dj)
             _publish_download_job(dj)
+            for affected_download_job in db.query(DownloadJob).filter(DownloadJob.id.in_(affected_download_job_ids)).all():
+                _publish_download_job(affected_download_job)
             notification_service.enqueue_download_job_complete(dj)
             _cleanup_download_client(dj, qbt, sab, save_path=save_path, delete_files=True)
             return
@@ -3844,9 +3865,12 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     dj.eta_seconds = None
     dj.download_speed_bps = None
     dj.completed_at = datetime.now(timezone.utc)
+    _, affected_download_job_ids = _cleanup_replaced_after_download_import(db, dj)
     db.commit()
     db.refresh(dj)
     _publish_download_job(dj)
+    for affected_download_job in db.query(DownloadJob).filter(DownloadJob.id.in_(affected_download_job_ids)).all():
+        _publish_download_job(affected_download_job)
     notification_service.enqueue_download_job_complete(dj)
     _link_completed_downloads_to_waiting_jobs(db)
 

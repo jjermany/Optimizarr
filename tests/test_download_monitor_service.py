@@ -4547,6 +4547,77 @@ def test_import_file_sab_falls_back_to_copy_when_rename_hits_cross_device(monkey
         assert replace_calls[0][0] == str(completed_video)
 
 
+def test_import_file_removes_prior_download_import_after_movie_upgrade(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        source_dir = tmp_path / 'library'
+        source_dir.mkdir(parents=True)
+        old_source = source_dir / 'Example Movie (2026) WEBDL 2160p.mkv'
+        new_source = source_dir / 'Example Movie (2026) REMUX 2160p.mkv'
+        old_source.write_bytes(b'old source')
+        new_source.write_bytes(b'new source')
+
+        old_import = source_dir / 'Example Movie (2026) WEBDL 2160p-1080p.mkv'
+        old_import.write_bytes(b'old import')
+        old_download = DownloadJob(
+            library_id=library.id,
+            source_file_path=str(old_source),
+            imported_file_path=str(old_import),
+            client_type='qbittorrent',
+            status=DownloadJobStatus.complete.value,
+            completed_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        new_download = DownloadJob(
+            library_id=library.id,
+            source_file_path=str(new_source),
+            release_name='Example.Movie.2026.REMUX.2160p',
+            download_hash='qbt-upgrade-hash',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add_all([old_download, new_download])
+        db.commit()
+        db.refresh(new_download)
+
+        completed_dir = tmp_path / 'complete' / 'Example.Movie.2026.REMUX.2160p'
+        completed_dir.mkdir(parents=True)
+        completed_video = completed_dir / 'Example.Movie.2026.REMUX.2160p.mkv'
+        completed_video.write_bytes(b'new import')
+
+        published_downloads: list[tuple[int, str | None]] = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._publish_download_job',
+            lambda dj: published_downloads.append((dj.id, dj.imported_file_path)),
+        )
+        monkeypatch.setattr(notification_service, 'enqueue_download_job_complete', lambda *_: None)
+
+        _import_file(
+            db,
+            new_download,
+            str(completed_dir),
+            library,
+            library.profile,
+            SimpleNamespace(enabled=True),
+            SimpleNamespace(enabled=False),
+        )
+
+        db.refresh(old_download)
+        db.refresh(new_download)
+
+        assert old_download.imported_file_path is None
+        assert new_download.status == DownloadJobStatus.complete.value
+        assert new_download.imported_file_path is not None
+        assert Path(new_download.imported_file_path).exists()
+        assert not old_import.exists()
+        assert (old_download.id, None) in published_downloads
+
+
 def test_import_file_sends_completion_notification(monkeypatch, tmp_path):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()

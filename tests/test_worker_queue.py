@@ -1080,6 +1080,81 @@ def test_process_job_preserves_manual_requeue_state_when_worker_stops(monkeypatc
         assert updated.completed_at is None
 
 
+def test_process_job_removes_prior_optimized_output_after_movie_upgrade(monkeypatch, tmp_path):
+    queue.resume_queue()
+    queue.stop_event.clear()
+
+    monkeypatch.setattr(queue, 'preflight_job', lambda *_: True)
+    monkeypatch.setattr(queue, 'trigger_scan_after_job', lambda *_: None)
+    monkeypatch.setattr(queue, 'enqueue_job_complete', lambda *_: None)
+    monkeypatch.setattr(queue, 'handle_job_terminal_state', lambda *_: None)
+
+    old_output = tmp_path / 'Example Movie (2026) WEBDL-1080p.mkv'
+    new_output = tmp_path / 'Example Movie (2026) REMUX-1080p.mkv'
+    old_output.write_text('old optimized')
+    new_output.write_text('new optimized')
+
+    published_jobs: list[tuple[int, str | None]] = []
+    monkeypatch.setattr(
+        queue,
+        '_publish_job',
+        lambda job, **_kwargs: published_jobs.append((job.id, job.output_path)),
+    )
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, global_quiet_enabled=False))
+        library = Library(name='Movies', path=str(tmp_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        old_job = Job(
+            input_path=str(tmp_path / 'Example Movie (2026) WEBDL 2160p.mkv'),
+            output_path=str(old_output),
+            status='complete',
+            library_id=library.id,
+            completed_at=datetime.now(),
+        )
+        new_job = Job(
+            input_path=str(tmp_path / 'Example Movie (2026) REMUX 2160p.mkv'),
+            status='queued',
+            library_id=library.id,
+        )
+        db.add_all([old_job, new_job])
+        db.commit()
+        old_job_id = old_job.id
+        new_job_id = new_job.id
+
+    def fake_optimize_video(_input_path, _settings, **_kwargs):
+        return OptimizationMetrics(
+            input_path=str(tmp_path / 'Example Movie (2026) REMUX 2160p.mkv'),
+            output_path=str(new_output),
+            status='complete',
+            processed_seconds=15.0,
+            fps=30.0,
+        )
+
+    monkeypatch.setattr(queue, 'optimize_video', fake_optimize_video)
+
+    queue._process_job(new_job_id)
+
+    with SessionLocal() as db:
+        old_job = db.query(Job).filter(Job.id == old_job_id).first()
+        new_job = db.query(Job).filter(Job.id == new_job_id).first()
+        assert old_job is not None
+        assert new_job is not None
+        assert old_job.output_path is None
+        assert new_job.output_path == str(new_output)
+
+    assert not old_output.exists()
+    assert new_output.exists()
+    assert (old_job_id, None) in published_jobs
+
+
 def test_start_queued_job_manual_pauses_running_job(monkeypatch):
     queue.resume_queue()
     published = []

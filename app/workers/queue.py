@@ -17,7 +17,7 @@ from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile, SchedulePolicyEnum
 from app.models.settings import QueueSortEnum, Settings
-from app.services.job_service import _probe_partial_duration, prune_job_history
+from app.services.job_service import _probe_partial_duration, cleanup_replaced_optimized_outputs, prune_job_history
 from app.services.notification_service import enqueue_job_complete, enqueue_job_failed, enqueue_low_disk_space_alert, format_display_name, handle_job_terminal_state
 from app.services.job_timing_service import start_encode_timing, stop_encode_timing, touch_encode_timing
 from app.services.plex_service import trigger_scan_after_job
@@ -390,6 +390,7 @@ def _process_job(job_id: int) -> None:
         job.hwaccel_used = metrics.hwaccel_used
         job.used_fallback = metrics.used_fallback
         job.fallback_reason = metrics.fallback_reason
+        duplicate_job_ids: list[int] = []
         if metrics.status == 'failed':
             job.error_message = metrics.error_message or metrics.skipped_reason or 'optimization_failed'
             workspace = Path(coerce_workspace_root(settings.workspace_root)) / str(job.id)
@@ -423,10 +424,27 @@ def _process_job(job_id: int) -> None:
             job.progress_percent = 100
             job.eta_seconds = 0
             _mark_finished(job)
+            removed_duplicates, duplicate_job_ids, duplicate_download_job_ids = cleanup_replaced_optimized_outputs(
+                db,
+                library_id=job.library_id,
+                source_path=job.input_path,
+                keep_output_path=job.output_path,
+                current_job_id=job.id,
+            )
+            if removed_duplicates:
+                logger.info(
+                    'Removed %s replaced optimized output(s) for completed job %s; affected_jobs=%s',
+                    removed_duplicates,
+                    job.id,
+                    duplicate_job_ids + duplicate_download_job_ids,
+                )
         else:
             _mark_finished(job)
         db.commit()
         _publish_job(job, throttle_progress=False)
+        if duplicate_job_ids:
+            for duplicate_job in db.query(Job).filter(Job.id.in_(duplicate_job_ids)).all():
+                _publish_job(duplicate_job, throttle_progress=False)
         if job.status == 'complete':
             trigger_scan_after_job(job.library_id)
             enqueue_job_complete(job)
