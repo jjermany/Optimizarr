@@ -670,6 +670,68 @@ def _cleanup_versioned_optimized_siblings(library_path: Path) -> int:
     return removed_files
 
 
+_VIDEO_SUFFIXES = {'.mkv', '.mp4', '.mov', '.m4v', '.avi', '.ts', '.m2ts', '.wmv'}
+
+
+def _has_exact_resolution_label(path: Path, target_resolution: int) -> bool:
+    stem_lower = path.stem.lower()
+    target = int(target_resolution)
+    if target == 1080 and re.search(r'\b2k\b', stem_lower):
+        return False
+    if re.search(rf'(?<!\d){target}p(?!\d)', stem_lower):
+        return True
+    if re.search(rf'(?<!\d){target}i(?!\d)', stem_lower):
+        return True
+    if re.search(rf'\b\d{{3,4}}x{target}\b', stem_lower):
+        return True
+    if target == 2160 and re.search(r'\b4k\b', stem_lower):
+        return True
+    return False
+
+
+def _is_target_resolution_artifact(path: Path, target_resolution: int) -> bool:
+    if _has_exact_resolution_label(path, target_resolution):
+        return True
+    if target_resolution == 1080 and re.search(r'\b2k\b', path.stem.lower()):
+        return False
+    probed = optimization_service.probe_video_height(str(path))
+    return probed is not None and abs(int(probed) - int(target_resolution)) <= 32
+
+
+def _cleanup_filesystem_duplicate_optimized_outputs(library_path: Path, target_resolution: int) -> int:
+    artifact_groups: dict[str, list[Path]] = {}
+    for candidate in library_path.rglob('*'):
+        if not candidate.is_file() or candidate.suffix.lower() not in _VIDEO_SUFFIXES:
+            continue
+        identity_key = media_identity_key(str(candidate))
+        if not identity_key:
+            continue
+        if not _is_target_resolution_artifact(candidate, target_resolution):
+            continue
+        artifact_groups.setdefault(identity_key, []).append(candidate)
+
+    removed_files = 0
+    for artifacts in artifact_groups.values():
+        unique_paths = list({str(path.resolve()): path for path in artifacts}.values())
+        if len(unique_paths) <= 1:
+            continue
+
+        def sort_key(path: Path) -> tuple[int, float, str]:
+            try:
+                stat = path.stat()
+                return (stat.st_size, stat.st_mtime, str(path))
+            except OSError:
+                return (0, 0.0, str(path))
+
+        sorted_artifacts = sorted(unique_paths, key=sort_key, reverse=True)
+        for duplicate in sorted_artifacts[1:]:
+            duplicate.unlink(missing_ok=True)
+            if not duplicate.exists():
+                removed_files += 1
+
+    return removed_files
+
+
 def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
     libraries = db.query(Library).all()
 
@@ -685,6 +747,8 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
         library_path = Path(str(library.path or '').strip())
         if not library_path.exists() or not library_path.is_dir():
             continue
+
+        target_resolution = int(getattr(profile, 'target_resolution', 1080) or 1080)
 
         versioned_removed = _cleanup_versioned_optimized_siblings(library_path)
         if versioned_removed:
@@ -792,6 +856,13 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
                 if library.id not in affected_library_ids_seen:
                     affected_library_ids.append(library.id)
                     affected_library_ids_seen.add(library.id)
+
+        filesystem_removed = _cleanup_filesystem_duplicate_optimized_outputs(library_path, target_resolution)
+        if filesystem_removed:
+            removed_files += filesystem_removed
+            if library.id not in affected_library_ids_seen:
+                affected_library_ids.append(library.id)
+                affected_library_ids_seen.add(library.id)
 
     db.commit()
 
