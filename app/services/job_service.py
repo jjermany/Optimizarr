@@ -547,30 +547,6 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
         if not library_path.exists() or not library_path.is_dir():
             continue
 
-        output_suffix = str(profile.output_suffix or '').strip()
-        if not output_suffix:
-            continue
-
-        container = str(profile.container.value if hasattr(
-            profile.container, 'value') else profile.container).lower().strip('.')
-        if not container:
-            continue
-
-        duplicate_pattern = re.compile(
-            rf'{re.escape(output_suffix)}-v\d+$', re.IGNORECASE)
-        for candidate in library_path.rglob(f'*.{container}'):
-            if not candidate.is_file():
-                continue
-            if not duplicate_pattern.search(candidate.stem):
-                continue
-
-            candidate.unlink(missing_ok=True)
-            if not candidate.exists():
-                removed_files += 1
-                if library.id not in affected_library_ids_seen:
-                    affected_library_ids.append(library.id)
-                    affected_library_ids_seen.add(library.id)
-
         artifact_groups: dict[str, list[dict]] = {}
         completed_encode_jobs = (
             db.query(Job)
@@ -628,15 +604,17 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
                 str(artifact['path']): artifact for artifact in artifacts}
             if len(unique_by_path) <= 1:
                 continue
-            keep_path = str(max(
-                unique_by_path.values(),
-                key=lambda artifact: (
+
+            def sort_key(artifact: dict) -> tuple:
+                return (
                     artifact['completed_at'] is not None,
                     artifact['completed_at'],
                     artifact['kind'] == 'download',
                     str(artifact['path']),
-                ),
-            )['path'])
+                )
+
+            sorted_artifacts = sorted(unique_by_path.values(), key=sort_key, reverse=True)
+            keep_path = str(sorted_artifacts[0]['path'])
             for artifact in unique_by_path.values():
                 artifact_path = Path(artifact['path'])
                 if str(artifact_path) == keep_path:
