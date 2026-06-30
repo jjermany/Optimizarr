@@ -608,10 +608,16 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
                 continue
 
             def sort_key(artifact: dict) -> tuple:
-                # Keep the highest resolution artifact, falling back to most recent.
+                # Keep the highest resolution artifact, falling back to largest
+                # file size, then most recent.
                 resolution = int(artifact.get('record').source_resolution or 0)
+                try:
+                    size = artifact['path'].stat().st_size
+                except OSError:
+                    size = 0
                 return (
                     resolution,
+                    size,
                     artifact['completed_at'] is not None,
                     artifact['completed_at'],
                     str(artifact['path']),
