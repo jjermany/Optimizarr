@@ -1309,6 +1309,245 @@ def _concat_partial_and_resume(
     return True
 
 
+def _handle_vaapi_buffer_retry(
+    return_code: int,
+    was_cancelled: bool,
+    output_lines: list[str],
+    job_tag: str,
+    job_id: int | None,
+    should_cancel: Callable[[], bool] | None,
+    workspace_path: Path,
+    input_path: str,
+    profile: dict[str, Any],
+    selection: EncoderSelection,
+    duration: float | None,
+    progress_callback: Callable[[dict[str, float | int | None]], None] | None,
+    ffmpeg_command: list[str],
+) -> tuple[int, bool, list[str], bool, Path | None, float, float | None]:
+    """Handle VAAPI buffer exhaustion by waiting and retrying the encode."""
+    can_resume = False
+    resume_segment_path = None
+    processed_seconds = 0.0
+    current_fps = None
+
+    for _wait_secs in _VAAPI_BUFFER_RETRY_WAITS:
+        if return_code == 0 or was_cancelled:
+            break
+        if not _has_vaapi_buffer_error(output_lines):
+            break
+
+        logger.warning(
+            '[%s] VAAPI encoder buffer exhausted (rc=%s); waiting %ds for GPU resources '
+            'to free before retrying from partial',
+            job_tag, return_code, _wait_secs,
+        )
+        _deadline = time.monotonic() + _wait_secs
+        while time.monotonic() < _deadline:
+            if should_cancel and should_cancel():
+                was_cancelled = True
+                break
+            time.sleep(1)
+        if was_cancelled:
+            break
+
+        for _stale in workspace_path.glob('output.resume.*'):
+            _stale.unlink(missing_ok=True)
+        _partial_dur = _probe_partial_duration(workspace_path)
+
+        if _partial_dur and _partial_dur > 0:
+            container = _container_from_profile(profile)
+            _retry_seg = workspace_path / f'output.resume.{container}'
+            _retry_cmd = _build_resume_command(
+                input_path, _partial_dur, str(_retry_seg), profile, selection,
+            )
+            _remaining = (duration - _partial_dur) if duration else None
+            _retry_start_pct = int((_partial_dur / duration) * 100) if duration else 0
+            _retry_span = 100 - _retry_start_pct
+            _orig_cb = progress_callback
+
+            def _retry_progress_cb(
+                update: dict,
+                _s: int = _retry_start_pct,
+                _sp: int = _retry_span,
+                _cb: Callable[[dict], None] | None = _orig_cb,
+            ) -> None:
+                if _cb:
+                    pct = int(update.get('progress_percent') or 0)
+                    update['progress_percent'] = min(99, _s + int(pct * _sp / 100))
+                    _cb(update)
+            logger.info(
+                '[%s] VAAPI buffer retry: resuming encode from %.1fs',
+                job_tag, _partial_dur,
+            )
+            resume_offset_seconds = _partial_dur
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id, _retry_cmd, _remaining, _retry_progress_cb, should_cancel,
+                active_position_offset=resume_offset_seconds,
+            )
+            if return_code == 0:
+                can_resume = True
+                resume_segment_path = _retry_seg
+        else:
+            logger.info('[%s] VAAPI buffer retry: no partial found, retrying from scratch', job_tag)
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id, ffmpeg_command, duration, progress_callback, should_cancel,
+            )
+
+    return return_code, was_cancelled, output_lines, can_resume, resume_segment_path, processed_seconds, current_fps
+
+
+def _handle_qsv_to_vaapi_fallback(
+    return_code: int,
+    was_cancelled: bool,
+    selection: EncoderSelection,
+    job_tag: str,
+    can_resume: bool,
+    workspace_path: Path,
+    encoder_selected_callback: Callable[[str, bool], None] | None,
+    input_path: str,
+    resume_position_seconds: float,
+    resume_segment_path: Path | None,
+    profile: dict[str, Any],
+    job_id: int | None,
+    remaining_duration: float | None,
+    resume_progress_callback: Callable[[dict[str, float | int | None]], None] | None,
+    should_cancel: Callable[[], bool] | None,
+    resume_offset_seconds: float,
+    partial_output_path: Path,
+    duration: float | None,
+    progress_callback: Callable[[dict[str, float | int | None]], None] | None,
+    metrics: OptimizationMetrics,
+) -> tuple[int, float | None, float | None, bool, list[str], EncoderSelection]:
+    """Handle QSV to VAAPI fallback."""
+    vaapi_encoder = _QSV_VAAPI_FALLBACK.get(selection.encoder)
+    if vaapi_encoder and _encoder_available(vaapi_encoder) and not selection.is_explicit_preference:
+        logger.warning(
+            '[%s] QSV encoder %r failed (rc=%s); retrying with VAAPI encoder %r '
+            '(same iGPU, no VPL runtime required)',
+            job_tag, selection.encoder, return_code, vaapi_encoder,
+        )
+        if not can_resume:
+            try:
+                _ensure_clean_workspace(workspace_path)
+            except OSError:
+                pass
+        vaapi_selection = EncoderSelection(
+            codec=selection.codec, encoder=vaapi_encoder, use_qsv=False, use_vaapi=True,
+            hw_decode=True,  # mirrors _select_encoder: all VAAPI encoders hw-decode via iHD
+        )
+        if encoder_selected_callback:
+            encoder_selected_callback(vaapi_encoder, True)
+        if can_resume:
+            ffmpeg_command = _build_resume_command(
+                input_path, resume_position_seconds, str(resume_segment_path), profile, vaapi_selection,
+            )
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id,
+                ffmpeg_command,
+                remaining_duration,
+                resume_progress_callback,
+                should_cancel,
+                active_position_offset=resume_offset_seconds,
+            )
+        else:
+            ffmpeg_command = _build_command_with_selection(
+                input_path, str(partial_output_path), profile, vaapi_selection,
+            )
+            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                job_id,
+                ffmpeg_command,
+                duration,
+                progress_callback,
+                should_cancel,
+            )
+        selection = vaapi_selection
+        metrics.used_fallback = True
+        metrics.fallback_reason = 'qsv_failed_vaapi_fallback'
+        return return_code, processed_seconds, current_fps, was_cancelled, output_lines, selection
+    return return_code, None, None, was_cancelled, [], selection
+
+
+def _handle_vaapi_sw_decode_fallback(
+    return_code: int,
+    was_cancelled: bool,
+    selection: EncoderSelection,
+    output_lines: list[str],
+    _vaapi_tonemap_failed: bool,
+    job_tag: str,
+    encoder_selected_callback: Callable[[str, bool], None] | None,
+    can_resume: bool,
+    workspace_path: Path,
+    input_path: str,
+    resume_position_seconds: float,
+    resume_segment_path: Path | None,
+    profile: dict[str, Any],
+    job_id: int | None,
+    remaining_duration: float | None,
+    resume_progress_callback: Callable[[dict[str, float | int | None]], None] | None,
+    should_cancel: Callable[[], bool] | None,
+    resume_offset_seconds: float,
+    partial_output_path: Path,
+    duration: float | None,
+    progress_callback: Callable[[dict[str, float | int | None]], None] | None,
+    metrics: OptimizationMetrics,
+) -> tuple[int, float | None, float | None, bool, list[str], EncoderSelection]:
+    """Handle VAAPI software decode fallback."""
+    _needs_sw_decode_retry = (
+        return_code is not None and return_code != 0 and not was_cancelled
+        and (
+            (selection.use_vaapi and selection.hw_decode and _has_qsv_error(output_lines))
+            or _vaapi_tonemap_failed
+        )
+    )
+    if _needs_sw_decode_retry:
+        _vaapi_sw_encoder = (
+            selection.encoder if selection.use_vaapi
+            else _QSV_VAAPI_FALLBACK.get(selection.encoder)
+        )
+        if _vaapi_sw_encoder:
+            sw_decode_selection = EncoderSelection(
+                codec=selection.codec, encoder=_vaapi_sw_encoder, use_qsv=False, use_vaapi=True, hw_decode=False,
+            )
+            _sw_reason = (
+                'VAAPI tone mapping failed' if _vaapi_tonemap_failed
+                else 'VAAPI hardware decode failed'
+            )
+            logger.warning(
+                '[%s] %s (rc=%s); retrying with software decode + hwupload',
+                job_tag, _sw_reason, return_code,
+            )
+            if encoder_selected_callback:
+                encoder_selected_callback(_vaapi_sw_encoder, True)
+            if not can_resume:
+                try:
+                    _ensure_clean_workspace(workspace_path)
+                except OSError:
+                    pass
+            if can_resume:
+                ffmpeg_command = _build_resume_command(
+                    input_path, resume_position_seconds, str(resume_segment_path), profile, sw_decode_selection,
+                )
+                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                    job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
+                    active_position_offset=resume_offset_seconds,
+                )
+            else:
+                ffmpeg_command = _build_command_with_selection(
+                    input_path, str(partial_output_path), profile, sw_decode_selection,
+                )
+                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
+                    job_id, ffmpeg_command, duration, progress_callback, should_cancel,
+                )
+            selection = sw_decode_selection
+            metrics.used_fallback = True
+            metrics.fallback_reason = (
+                'vaapi_tonemap_failed_swdecode_fallback' if _vaapi_tonemap_failed
+                else 'vaapi_hwdecode_failed_swdecode_fallback'
+            )
+            return return_code, processed_seconds, current_fps, was_cancelled, output_lines, selection
+    return return_code, None, None, was_cancelled, output_lines, selection
+
+
 def optimize_video(
     input_path: str,
     settings,
@@ -1483,6 +1722,9 @@ def optimize_video(
         encoder_selected_callback(selection.encoder, selection.use_qsv or selection.use_vaapi)
 
     resume_offset_seconds = float(resume_position_seconds or 0.0) if can_resume else 0.0
+    resume_progress_callback = None
+    remaining_duration = None
+    resume_segment_path = None
 
     if can_resume:
         # Encode only the remaining portion into a separate segment file.
@@ -1498,15 +1740,15 @@ def optimize_video(
             input_path, resume_position_seconds, str(resume_segment_path), profile, selection,
         )
         # Wrap the progress callback to offset progress by the already-encoded portion.
-        resume_progress_callback = progress_callback
         if progress_callback and duration and duration > 0:
             resume_start_pct = int((resume_position_seconds / duration) * 100)
             remaining_pct_span = 100 - resume_start_pct
             _orig_cb = progress_callback
-            def resume_progress_callback(update: dict, _start=resume_start_pct, _span=remaining_pct_span, _cb=_orig_cb) -> None:  # type: ignore[misc]
+            def resume_progress_callback_func(update: dict, _start=resume_start_pct, _span=remaining_pct_span, _cb=_orig_cb) -> None:  # type: ignore[misc]
                 pct = int(update.get('progress_percent') or 0)
                 update['progress_percent'] = min(99, _start + int(pct * _span / 100))
                 _cb(update)
+            resume_progress_callback = resume_progress_callback_func
         remaining_duration = (duration - resume_position_seconds) if duration else None
         return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
             job_id,
@@ -1527,78 +1769,29 @@ def optimize_video(
         )
 
     # VAAPI output-buffer exhaustion recovery.
-    # When the VAAPI encoder can't map output buffers (error 24 — transient GPU resource
-    # contention, typically from concurrent Plex transcodes holding encoder slots), wait
-    # for the load to ease and retry from wherever the partial output reached.
-    # The job stays "running" throughout; the queue never sees a failure for these waits.
-    # Falls through to the encoder-fallback chain below only if all waits are exhausted.
-    for _wait_secs in _VAAPI_BUFFER_RETRY_WAITS:
-        if return_code == 0 or was_cancelled:
-            break
-        if not _has_vaapi_buffer_error(output_lines):
-            break
-
-        logger.warning(
-            '[%s] VAAPI encoder buffer exhausted (rc=%s); waiting %ds for GPU resources '
-            'to free before retrying from partial',
-            job_tag, return_code, _wait_secs,
-        )
-        _deadline = time.monotonic() + _wait_secs
-        while time.monotonic() < _deadline:
-            if should_cancel and should_cancel():
-                was_cancelled = True
-                break
-            time.sleep(1)
-        if was_cancelled:
-            break
-
-        # Clean up any incomplete resume segment from the failed attempt, then probe
-        # the partial for the furthest safe restart point.
-        for _stale in workspace_path.glob('output.resume.*'):
-            _stale.unlink(missing_ok=True)
-        _partial_dur = _probe_partial_duration(workspace_path)
-
-        if _partial_dur and _partial_dur > 0:
-            container = _container_from_profile(profile)
-            _retry_seg = workspace_path / f'output.resume.{container}'
-            _retry_cmd = _build_resume_command(
-                input_path, _partial_dur, str(_retry_seg), profile, selection,
-            )
-            resume_position_seconds = _partial_dur
-            _remaining = (duration - _partial_dur) if duration else None
-            _retry_start_pct = int((_partial_dur / duration) * 100) if duration else 0
-            _retry_span = 100 - _retry_start_pct
-            _orig_cb = progress_callback
-            def _retry_progress_cb(
-                update: dict,
-                _s: int = _retry_start_pct,
-                _sp: int = _retry_span,
-                _cb: Callable[[dict], None] | None = _orig_cb,
-            ) -> None:
-                if _cb:
-                    pct = int(update.get('progress_percent') or 0)
-                    update['progress_percent'] = min(99, _s + int(pct * _sp / 100))
-                    _cb(update)
-            logger.info(
-                '[%s] VAAPI buffer retry: resuming encode from %.1fs',
-                job_tag, _partial_dur,
-            )
-            resume_offset_seconds = _partial_dur
-            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
-                job_id, _retry_cmd, _remaining, _retry_progress_cb, should_cancel,
-                active_position_offset=resume_offset_seconds,
-            )
-            if return_code == 0:
-                # Successful retry — wire up the resume state so the concat step below works.
-                can_resume = True
-                existing_partial = next(workspace_path.glob('output.partial.*'), None)
-                resume_segment_path = _retry_seg
-        else:
-            # No usable partial — retry the original command from scratch.
-            logger.info('[%s] VAAPI buffer retry: no partial found, retrying from scratch', job_tag)
-            return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
-                job_id, ffmpeg_command, duration, progress_callback, should_cancel,
-            )
+    (
+        return_code,
+        was_cancelled,
+        output_lines,
+        can_resume,
+        resume_segment_path,
+        processed_seconds,
+        current_fps,
+    ) = _handle_vaapi_buffer_retry(
+        return_code,
+        was_cancelled,
+        output_lines,
+        job_tag,
+        job_id,
+        should_cancel,
+        workspace_path,
+        input_path,
+        profile,
+        selection,
+        duration,
+        progress_callback,
+        ffmpeg_command,
+    )
 
     # If the QSV+HDR vpp_qsv path failed (driver too old, unsupported content, etc.)
     # retry with the same QSV encoder but use CPU (zscale) tone mapping instead.
@@ -1651,50 +1844,35 @@ def optimize_video(
         metrics.fallback_reason = 'qsv_vpp_tonemap_failed_sw_tonemap'
 
     if return_code is not None and return_code != 0 and not was_cancelled and selection.use_qsv:
-        vaapi_encoder = _QSV_VAAPI_FALLBACK.get(selection.encoder)
-        if vaapi_encoder and _encoder_available(vaapi_encoder) and not selection.is_explicit_preference:
-            logger.warning(
-                '[%s] QSV encoder %r failed (rc=%s); retrying with VAAPI encoder %r '
-                '(same iGPU, no VPL runtime required)',
-                job_tag, selection.encoder, return_code, vaapi_encoder,
-            )
-            if not can_resume:
-                try:
-                    _ensure_clean_workspace(workspace_path)
-                except OSError:
-                    pass
-            vaapi_selection = EncoderSelection(
-                codec=selection.codec, encoder=vaapi_encoder, use_qsv=False, use_vaapi=True,
-                hw_decode=True,  # mirrors _select_encoder: all VAAPI encoders hw-decode via iHD
-            )
-            if encoder_selected_callback:
-                encoder_selected_callback(vaapi_encoder, True)
-            if can_resume:
-                ffmpeg_command = _build_resume_command(
-                    input_path, resume_position_seconds, str(resume_segment_path), profile, vaapi_selection,
-                )
-                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
-                    job_id,
-                    ffmpeg_command,
-                    remaining_duration,
-                    resume_progress_callback,
-                    should_cancel,
-                    active_position_offset=resume_offset_seconds,
-                )
-            else:
-                ffmpeg_command = _build_command_with_selection(
-                    input_path, str(partial_output_path), profile, vaapi_selection,
-                )
-                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
-                    job_id,
-                    ffmpeg_command,
-                    duration,
-                    progress_callback,
-                    should_cancel,
-                )
-            selection = vaapi_selection
-            metrics.used_fallback = True
-            metrics.fallback_reason = 'qsv_failed_vaapi_fallback'
+        (
+            return_code,
+            processed_seconds,
+            current_fps,
+            was_cancelled,
+            output_lines,
+            selection,
+        ) = _handle_qsv_to_vaapi_fallback(
+            return_code,
+            was_cancelled,
+            selection,
+            job_tag,
+            can_resume,
+            workspace_path,
+            encoder_selected_callback,
+            input_path,
+            resume_position_seconds,
+            resume_segment_path,
+            profile,
+            job_id,
+            remaining_duration,
+            resume_progress_callback,
+            should_cancel,
+            resume_offset_seconds,
+            partial_output_path,
+            duration,
+            progress_callback,
+            metrics,
+        )
 
     # If VAAPI hw-decode + tonemap_vaapi failed (unusual DV/HDR10+ bitstream, driver
     # limitation, etc.), try the QSV equivalent first.  vpp_qsv=tonemap=1 (Intel VPP)
@@ -1749,63 +1927,37 @@ def optimize_video(
             metrics.used_fallback = True
             metrics.fallback_reason = 'vaapi_tonemap_failed_qsv_vpp_fallback'
 
-    # If VAAPI hardware decode failed, retry with software decode + hwupload.
-    # Triggers on QSV-pattern hw errors (non-tonemap) or when tonemap_vaapi failed
-    # and either QSV was unavailable or the QSV intermediate fallback also failed.
-    # When the intermediate fallback switched selection to QSV, look up the original
-    # VAAPI encoder via _QSV_VAAPI_FALLBACK for the sw-decode retry.
-    _needs_sw_decode_retry = (
-        return_code is not None and return_code != 0 and not was_cancelled
-        and (
-            (selection.use_vaapi and selection.hw_decode and _has_qsv_error(output_lines))
-            or _vaapi_tonemap_failed
-        )
+    (
+        return_code,
+        processed_seconds,
+        current_fps,
+        was_cancelled,
+        output_lines,
+        selection,
+    ) = _handle_vaapi_sw_decode_fallback(
+        return_code,
+        was_cancelled,
+        selection,
+        output_lines,
+        _vaapi_tonemap_failed,
+        job_tag,
+        encoder_selected_callback,
+        can_resume,
+        workspace_path,
+        input_path,
+        resume_position_seconds,
+        resume_segment_path,
+        profile,
+        job_id,
+        remaining_duration,
+        resume_progress_callback,
+        should_cancel,
+        resume_offset_seconds,
+        partial_output_path,
+        duration,
+        progress_callback,
+        metrics,
     )
-    if _needs_sw_decode_retry:
-        _vaapi_sw_encoder = (
-            selection.encoder if selection.use_vaapi
-            else _QSV_VAAPI_FALLBACK.get(selection.encoder)
-        )
-        if _vaapi_sw_encoder:
-            sw_decode_selection = EncoderSelection(
-                codec=selection.codec, encoder=_vaapi_sw_encoder, use_qsv=False, use_vaapi=True, hw_decode=False,
-            )
-            _sw_reason = (
-                'VAAPI tone mapping failed' if _vaapi_tonemap_failed
-                else 'VAAPI hardware decode failed'
-            )
-            logger.warning(
-                '[%s] %s (rc=%s); retrying with software decode + hwupload',
-                job_tag, _sw_reason, return_code,
-            )
-            if encoder_selected_callback:
-                encoder_selected_callback(_vaapi_sw_encoder, True)
-            if not can_resume:
-                try:
-                    _ensure_clean_workspace(workspace_path)
-                except OSError:
-                    pass
-            if can_resume:
-                ffmpeg_command = _build_resume_command(
-                    input_path, resume_position_seconds, str(resume_segment_path), profile, sw_decode_selection,
-                )
-                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
-                    job_id, ffmpeg_command, remaining_duration, resume_progress_callback, should_cancel,
-                    active_position_offset=resume_offset_seconds,
-                )
-            else:
-                ffmpeg_command = _build_command_with_selection(
-                    input_path, str(partial_output_path), profile, sw_decode_selection,
-                )
-                return_code, processed_seconds, current_fps, was_cancelled, output_lines = _run_ffmpeg(
-                    job_id, ffmpeg_command, duration, progress_callback, should_cancel,
-                )
-            selection = sw_decode_selection
-            metrics.used_fallback = True
-            metrics.fallback_reason = (
-                'vaapi_tonemap_failed_swdecode_fallback' if _vaapi_tonemap_failed
-                else 'vaapi_hwdecode_failed_swdecode_fallback'
-            )
 
     if return_code is None:
         logger.error('[%s] FFmpeg could not be launched (binary missing or not executable)', job_tag)
