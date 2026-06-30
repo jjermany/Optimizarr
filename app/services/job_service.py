@@ -54,7 +54,8 @@ def create_job(
     source_is_hdr: bool | None = None,
     status: str = 'queued',
 ) -> Job:
-    existing = get_existing_job_for_source(db, source_path, library_id=library_id)
+    existing = get_existing_job_for_source(
+        db, source_path, library_id=library_id)
     if existing is not None:
         changed = False
         if existing.library_id is None and library_id is not None:
@@ -124,8 +125,18 @@ def _normalize_identity_text(value: str) -> str:
 
 def _strip_release_suffix(value: str) -> str:
     stripped = re.sub(r'\[[^\]]+\]', ' ', value)
-    stripped = re.sub(r'\([^\)]*(?:2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|av1|web|bluray|remux)[^\)]*\)', ' ', stripped, flags=re.IGNORECASE)
-    stripped = re.sub(r'\b(?:2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|av1|web|bluray|remux|web-dl|webrip|hdrip|brrip|bdrip|atmos|truehd)\b', ' ', stripped, flags=re.IGNORECASE)
+    stripped = re.sub(
+        r'\([^\)]*(?:2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|av1|web|bluray|remux)[^\)]*\)',
+        ' ',
+        stripped,
+        flags=re.IGNORECASE,
+    )
+    stripped = re.sub(
+        r'\b(?:2160p|1080p|720p|480p|x264|x265|h264|h265|hevc|av1|web|bluray|remux|web-dl|webrip|hdrip|brrip|bdrip|atmos|truehd)\b',
+        ' ',
+        stripped,
+        flags=re.IGNORECASE,
+    )
     return stripped.replace('.', ' ').replace('_', ' ').strip()
 
 
@@ -136,7 +147,8 @@ def media_identity_key(source_path: str) -> str | None:
 
     stem = re.sub(r'\.[^.\\/]+$', '', parts[-1])
     searchable = _strip_release_suffix(' '.join(parts[-3:]))
-    episode_match = re.search(r'\bS(\d{1,2})\s*E(\d{1,3})\b', searchable, flags=re.IGNORECASE)
+    episode_match = re.search(
+        r'\bS(\d{1,2})\s*E(\d{1,3})\b', searchable, flags=re.IGNORECASE)
     if episode_match:
         title = searchable[:episode_match.start()].strip(' ._-')
         if not title and len(parts) >= 3:
@@ -153,7 +165,8 @@ def media_identity_key(source_path: str) -> str | None:
 
     for candidate in candidates:
         paren_match = re.search(r'\(((?:19|20)\d{2})\)', candidate)
-        year_match = paren_match or re.search(r'\b((?:19|20)\d{2})\b', candidate)
+        year_match = paren_match or re.search(
+            r'\b((?:19|20)\d{2})\b', candidate)
         if not year_match:
             continue
         title = candidate[:year_match.start()].strip(' ._-')
@@ -169,6 +182,13 @@ def _job_blocks_identity_dedupe(job: Job) -> bool:
 
 
 def get_existing_job_for_source(db: Session, source_path: str, library_id: int | None = None) -> Job | None:
+    if has_completed_job_for_identity(db, source_path, library_id):
+        return Job(
+            input_path=source_path,
+            status='skipped',
+            error_message='Completed job already exists for this media',
+        )
+
     # Completed jobs normally block re-queuing, but stale "complete" rows whose
     # output no longer exists are treated as retryable.
     _RETRYABLE_STATUSES = {'failed', 'skipped', 'cancelled'}
@@ -489,7 +509,8 @@ def has_completed_job_for_identity(db: Session, source_path: str, library_id: in
 
 
 def cleanup_optimized_outputs(db: Session) -> tuple[int, list[int]]:
-    terminal_jobs = db.query(Job).filter(Job.status.in_(TERMINAL_STATUSES), Job.output_path.is_not(None)).all()
+    terminal_jobs = db.query(Job).filter(Job.status.in_(
+        TERMINAL_STATUSES), Job.output_path.is_not(None)).all()
 
     removed_files = 0
     removed_job_ids: list[int] = []
@@ -530,11 +551,13 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
         if not output_suffix:
             continue
 
-        container = str(profile.container.value if hasattr(profile.container, 'value') else profile.container).lower().strip('.')
+        container = str(profile.container.value if hasattr(
+            profile.container, 'value') else profile.container).lower().strip('.')
         if not container:
             continue
 
-        duplicate_pattern = re.compile(rf'{re.escape(output_suffix)}-v\d+$', re.IGNORECASE)
+        duplicate_pattern = re.compile(
+            rf'{re.escape(output_suffix)}-v\d+$', re.IGNORECASE)
         for candidate in library_path.rglob(f'*.{container}'):
             if not candidate.is_file():
                 continue
@@ -584,7 +607,8 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
             .all()
         )
         for download_job in completed_download_jobs:
-            imported_path = Path(str(download_job.imported_file_path or '').strip())
+            imported_path = Path(
+                str(download_job.imported_file_path or '').strip())
             if not imported_path.exists() or not imported_path.is_file():
                 continue
             if imported_path == Path(str(download_job.source_file_path or '').strip()):
@@ -600,7 +624,8 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
             })
 
         for artifacts in artifact_groups.values():
-            unique_by_path = {str(artifact['path']): artifact for artifact in artifacts}
+            unique_by_path = {
+                str(artifact['path']): artifact for artifact in artifacts}
             if len(unique_by_path) <= 1:
                 continue
             keep_path = str(max(
@@ -660,7 +685,8 @@ def abort_all_jobs(db: Session) -> list[Job]:
 
 
 def remove_all_terminal_jobs(db: Session) -> list[int]:
-    terminal_jobs = db.query(Job).filter(Job.status.in_(TERMINAL_STATUSES)).all()
+    terminal_jobs = db.query(Job).filter(
+        Job.status.in_(TERMINAL_STATUSES)).all()
     if not terminal_jobs:
         return []
 

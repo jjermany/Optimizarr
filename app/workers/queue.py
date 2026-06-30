@@ -685,6 +685,15 @@ def _skip_stale_queued_job(db: Session, job: Job, reason: str) -> None:
 
 
 def _queued_job_still_matches_disk(db: Session, job: Job, profile: LibraryProfile | None) -> bool:
+    from app.services.job_service import has_completed_job_for_identity
+    if has_completed_job_for_identity(db, job.input_path, job.library_id):
+        logger.info(
+            'Queue precheck: skipping job %s because a completed job already exists for this media',
+            job.id,
+        )
+        _skip_stale_queued_job(db, job, 'Completed job already exists')
+        return False
+
     source_path = Path(job.input_path)
     if not source_path.exists():
         logger.info('Queue precheck: skipping job %s because source is missing: %r', job.id, job.input_path)

@@ -1545,6 +1545,8 @@ def create_optimization_job(
     db: Session = Depends(get_db),
 ) -> JobResponse:
     job = create_job(db, payload.source_path)
+    if job.status == 'skipped':
+        return JobResponse.from_orm_job(job)
     notification_service.register_scan_batch([job.id])
     response = JobResponse.from_orm_job(job)
     broker.publish_job_update(response.model_dump(), throttle_progress=False)
