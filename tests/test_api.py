@@ -1740,6 +1740,30 @@ def test_cleanup_optimized_endpoint_deletes_recorded_outputs(tmp_path):
     assert not output_file.exists()
 
 
+def test_clear_logs_endpoint_deletes_event_logs():
+    from app.core.database import SessionLocal
+    from app.models.event_log import EventLog
+    from app.services import event_log_service
+
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.query(EventLog).delete()
+            db.commit()
+            event_log_service.record_event(db, 'one', 'First event')
+            event_log_service.record_event(db, 'two', 'Second event')
+
+        response = client.delete('/logs')
+        assert response.status_code == 200
+        assert response.json() == {'deleted_logs': 2}
+
+        with SessionLocal() as db:
+            assert db.query(EventLog).count() == 0
+
+        logs_response = client.get('/logs')
+        assert logs_response.status_code == 200
+        assert logs_response.json() == []
+
+
 def test_cleanup_duplicate_optimized_endpoint_deletes_versioned_outputs(tmp_path):
     from app.core.database import SessionLocal
     from app.models.library import Library, LibraryProfile

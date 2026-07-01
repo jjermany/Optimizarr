@@ -79,6 +79,12 @@ def list_events(db: Session, *, limit: int = 200) -> list[EventLog]:
     )
 
 
+def clear_events(db: Session) -> int:
+    deleted_count = db.query(EventLog).delete(synchronize_session=False)
+    db.commit()
+    return int(deleted_count or 0)
+
+
 def _trim_old_events(db: Session) -> None:
     stale_ids = [
         row[0]

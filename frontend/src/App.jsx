@@ -7,6 +7,7 @@ import {
   cancelAllQueued,
   cancelJob,
   createTotpSecret,
+  clearLogs,
   clearQueue,
   removeAndResetDownloadJob,
   deleteDownloadJob,
@@ -79,6 +80,7 @@ const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const JOBS_PAGE_SIZE = 50;
 const HISTORY_PAGE_SIZE = 25;
+const LOGS_PAGE_SIZE = 25;
 const JOBS_UI_PREFS_KEY = 'optimizarr.jobsUiPrefs.v1';
 const PROFILE_SECTIONS_DEFAULT = {
   details: false,
@@ -1305,6 +1307,8 @@ export default function App() {
   const [accountSettings, setAccountSettings] = useState();
   const [logs, setLogs] = useState([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [clearingLogs, setClearingLogs] = useState(false);
+  const [logsPage, setLogsPage] = useState(1);
   const [logSearch, setLogSearch] = useState('');
   const [logEventFilter, setLogEventFilter] = useState('all');
   const [logSeverityFilter, setLogSeverityFilter] = useState('all');
@@ -1525,6 +1529,16 @@ export default function App() {
     return logMatchesSearch(log, logSearch);
   }), [logs, logEventFilter, logSeverityFilter, logSearch]);
 
+  const totalLogPages = useMemo(
+    () => Math.max(1, Math.ceil(filteredLogs.length / LOGS_PAGE_SIZE)),
+    [filteredLogs.length],
+  );
+
+  const pagedLogs = useMemo(() => {
+    const start = (logsPage - 1) * LOGS_PAGE_SIZE;
+    return filteredLogs.slice(start, start + LOGS_PAGE_SIZE);
+  }, [filteredLogs, logsPage]);
+
   const activeDlQueueItems = useMemo(
     () => downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())),
     [downloadJobs],
@@ -1620,6 +1634,14 @@ export default function App() {
   useEffect(() => {
     if (historyPage > totalHistoryPages) setHistoryPage(totalHistoryPages);
   }, [historyPage, totalHistoryPages]);
+
+  useEffect(() => {
+    if (logsPage > totalLogPages) setLogsPage(totalLogPages);
+  }, [logsPage, totalLogPages]);
+
+  useEffect(() => {
+    setLogsPage(1);
+  }, [logSearch, logEventFilter, logSeverityFilter]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1941,6 +1963,26 @@ export default function App() {
       pushToast(refreshError.message || 'Could not refresh logs.', 'error');
     } finally {
       setLoadingLogs(false);
+    }
+  }
+
+
+  async function handleClearLogs() {
+    if (clearingLogs) return;
+    setClearingLogs(true);
+    try {
+      const result = await clearLogs();
+      setLogs([]);
+      setLogsPage(1);
+      pushToast(`Cleared ${result?.deleted_logs ?? 0} log events.`, 'success');
+    } catch (clearError) {
+      if (clearError.status === 401) {
+        await refreshAuthStatus();
+        return;
+      }
+      pushToast(clearError.message || 'Could not clear logs.', 'error');
+    } finally {
+      setClearingLogs(false);
     }
   }
 
@@ -4580,25 +4622,30 @@ export default function App() {
             <SectionCard>
               <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                 <SectionTitle>Logs</SectionTitle>
-                <Btn variant="secondary" size="sm" disabled={loadingLogs} onClick={refreshLogs}>
-                  {loadingLogs ? 'Refreshing...' : 'Refresh'}
-                </Btn>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Btn variant="secondary" size="sm" disabled={loadingLogs || clearingLogs} onClick={refreshLogs}>
+                    {loadingLogs ? 'Refreshing...' : 'Refresh'}
+                  </Btn>
+                  <Btn variant="danger" size="sm" disabled={clearingLogs || logs.length === 0} onClick={handleClearLogs}>
+                    {clearingLogs ? 'Clearing...' : 'Clear logs'}
+                  </Btn>
+                </div>
               </div>
 
               <div className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_minmax(0,1fr)]">
                 <TextInput
                   type="search"
                   value={logSearch}
-                  onChange={(event) => setLogSearch(event.target.value)}
+                  onChange={(event) => { setLogSearch(event.target.value); setLogsPage(1); }}
                   placeholder="Search logs"
                 />
-                <SelectInput value={logEventFilter} onChange={(event) => setLogEventFilter(event.target.value)}>
+                <SelectInput value={logEventFilter} onChange={(event) => { setLogEventFilter(event.target.value); setLogsPage(1); }}>
                   <option value="all">All events</option>
                   {logEventOptions.map((eventType) => (
                     <option key={eventType} value={eventType}>{formatLogEventType(eventType)}</option>
                   ))}
                 </SelectInput>
-                <SelectInput value={logSeverityFilter} onChange={(event) => setLogSeverityFilter(event.target.value)}>
+                <SelectInput value={logSeverityFilter} onChange={(event) => { setLogSeverityFilter(event.target.value); setLogsPage(1); }}>
                   <option value="all">All severities</option>
                   {logSeverityOptions.map((severity) => (
                     <option key={severity} value={severity}>{severity}</option>
@@ -4607,7 +4654,7 @@ export default function App() {
               </div>
 
               <p className="mb-3 text-xs text-slate-500">
-                Showing {filteredLogs.length} of {logs.length} events
+                Showing {pagedLogs.length} of {filteredLogs.length} matching events ({logs.length} total)
               </p>
 
               <div className="space-y-2">
@@ -4618,7 +4665,7 @@ export default function App() {
                   <p className="text-sm text-slate-500">No events match the current filters.</p>
                 )}
 
-                {filteredLogs.map((log) => {
+                {pagedLogs.map((log) => {
                   const detailEntries = Object.entries(log.details ?? {})
                     .filter(([, value]) => value !== undefined && value !== null && value !== '');
                   return (
@@ -4653,6 +4700,24 @@ export default function App() {
                   );
                 })}
               </div>
+
+              {filteredLogs.length > LOGS_PAGE_SIZE && (
+                <div className="flex items-center justify-between border-t border-slate-700/70 pt-3 text-sm text-slate-400">
+                  <p>Page {logsPage} of {totalLogPages}</p>
+                  <div className="flex flex-wrap items-center gap-1">
+                    {Array.from({ length: totalLogPages }, (_, i) => i + 1).map((pageNum) => (
+                      <button
+                        key={pageNum}
+                        type="button"
+                        onClick={() => setLogsPage(pageNum)}
+                        className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${logsPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                      >
+                        {pageNum}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </SectionCard>
           </section>
         )}

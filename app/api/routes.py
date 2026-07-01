@@ -767,6 +767,10 @@ class DuplicateOptimizedCleanupResponse(BaseModel):
     affected_library_ids: list[int]
 
 
+class ClearEventLogsResponse(BaseModel):
+    deleted_logs: int
+
+
 class EventLogResponse(BaseModel):
     id: int
     event_type: str
@@ -2164,6 +2168,16 @@ def get_event_logs(
     db: Session = Depends(get_db),
 ) -> list[EventLogResponse]:
     return [EventLogResponse.from_orm_log(log) for log in event_log_service.list_events(db, limit=limit)]
+
+
+@router.delete('/logs', response_model=ClearEventLogsResponse)
+def clear_event_logs(
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> ClearEventLogsResponse:
+    deleted_logs = event_log_service.clear_events(db)
+    broker.publish_system_event('logs_cleared', deleted_logs=deleted_logs)
+    return ClearEventLogsResponse(deleted_logs=deleted_logs)
 
 
 @router.post('/cleanup/run', response_model=CleanupResponse)
