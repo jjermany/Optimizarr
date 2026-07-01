@@ -87,6 +87,16 @@ const PROFILE_SECTIONS_DEFAULT = {
   download: false,
 };
 
+const SETTINGS_SECTIONS_DEFAULT = {
+  account: false,
+  general: false,
+  notifications: false,
+  prowlarr: false,
+  qbittorrent: false,
+  sabnzbd: false,
+  plex: false,
+};
+
 const PAGE_KEYS = {
   dashboard: 'Dashboard',
   libraries: 'Libraries',
@@ -914,12 +924,40 @@ function SectionCard({ children, className = '' }) {
   );
 }
 
-function SectionTitle({ children }) {
+function SectionTitle({ children, className = '' }) {
   return (
-    <h2 className="mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
+    <h2 className={`mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 ${className}`}>
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-cyan-300/80" />
       {children}
     </h2>
+  );
+}
+
+
+function SettingsSectionCard({ title, open, onToggle, children }) {
+  const contentId = useId();
+
+  return (
+    <SectionCard className={!open ? 'p-0' : ''}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={contentId}
+        onClick={onToggle}
+        className={`relative flex w-full items-center justify-between gap-4 px-5 text-left transition-colors hover:bg-slate-800/40 ${open ? 'pb-4' : 'py-5'}`}
+      >
+        <SectionTitle className="mb-0">{title}</SectionTitle>
+        <span className="flex shrink-0 items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+          {open ? 'Collapse' : 'Expand'}
+          <span className={`inline-block transition-transform duration-200 ${open ? 'rotate-180' : ''}`} aria-hidden="true">⌄</span>
+        </span>
+      </button>
+      {open && (
+        <div id={contentId} className="relative px-5 pb-5">
+          {children}
+        </div>
+      )}
+    </SectionCard>
   );
 }
 
@@ -1313,6 +1351,7 @@ export default function App() {
     ...PROFILE_SECTIONS_DEFAULT,
     ...(jobsUiPrefs.profileSectionsOpen ?? {}),
   }));
+  const [settingsSectionsOpen, setSettingsSectionsOpen] = useState(SETTINGS_SECTIONS_DEFAULT);
   const [targetResolutionCustom, setTargetResolutionCustom] = useState(false);
   const [minimumResolutionCustom, setMinimumResolutionCustom] = useState(false);
   const [profileErrors, setProfileErrors] = useState({});
@@ -2468,6 +2507,10 @@ export default function App() {
     } finally {
       setSavingProfile(false);
     }
+  }
+
+  function toggleSettingsSection(sectionKey) {
+    setSettingsSectionsOpen((prev) => ({ ...prev, [sectionKey]: !prev[sectionKey] }));
   }
 
   async function saveSettings() {
@@ -4625,8 +4668,7 @@ export default function App() {
 
         {activePage === 'settings' && settings && accountSettings && notificationSettings && plexSettings && (
           <section className="animate-fade-in space-y-5">
-            <SectionCard>
-              <SectionTitle>Account Settings</SectionTitle>
+            <SettingsSectionCard title="Account Settings" open={settingsSectionsOpen.account} onToggle={() => toggleSettingsSection('account')}>
               <div className="grid gap-4 md:grid-cols-2">
                 <FormField label="Username">
                   <TextInput
@@ -4745,10 +4787,9 @@ export default function App() {
                   </div>
                 </div>
               )}
-            </SectionCard>
+            </SettingsSectionCard>
 
-            <SectionCard>
-              <SectionTitle>General Settings</SectionTitle>
+            <SettingsSectionCard title="General Settings" open={settingsSectionsOpen.general} onToggle={() => toggleSettingsSection('general')}>
               <div className="grid gap-4 md:grid-cols-2">
                 <FormField label="History Retention (Days)" hint="How long to keep completed job history.">
                   <TextInput type="number" min={1} value={settings.history_retention_days} onChange={(e) => setSettings((prev) => ({ ...prev, history_retention_days: Number(e.target.value) }))} />
@@ -4835,11 +4876,10 @@ export default function App() {
                   {savingSettings ? 'Saving…' : 'Save Settings'}
                 </Btn>
               </div>
-            </SectionCard>
+            </SettingsSectionCard>
 
             {/* Email Notifications */}
-            <SectionCard>
-              <SectionTitle>Email Notifications</SectionTitle>
+            <SettingsSectionCard title="Email Notifications" open={settingsSectionsOpen.notifications} onToggle={() => toggleSettingsSection('notifications')}>
               <div className="grid gap-4 md:grid-cols-2">
                 <FormField label="SMTP Host">
                   <TextInput type="text" value={notificationSettings.smtp_host} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_host: e.target.value }))} placeholder="smtp.example.com" />
@@ -4907,12 +4947,11 @@ export default function App() {
                   Send Test Email
                 </Btn>
               </div>
-            </SectionCard>
+            </SettingsSectionCard>
 
             {/* Prowlarr Integration */}
             {prowlarrSettings && (
-              <SectionCard>
-                <SectionTitle>Prowlarr Integration</SectionTitle>
+              <SettingsSectionCard title="Prowlarr Integration" open={settingsSectionsOpen.prowlarr} onToggle={() => toggleSettingsSection('prowlarr')}>
                 <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
                   <div>
                     <p className="text-sm font-medium text-slate-200">Enable Prowlarr</p>
@@ -5013,13 +5052,12 @@ export default function App() {
                     {testingProwlarrConnection ? 'Testing…' : 'Test Connection'}
                   </Btn>
                 </div>
-              </SectionCard>
+              </SettingsSectionCard>
             )}
 
             {/* qBittorrent */}
             {qbtSettings && (
-              <SectionCard>
-                <SectionTitle>qBittorrent</SectionTitle>
+              <SettingsSectionCard title="qBittorrent" open={settingsSectionsOpen.qbittorrent} onToggle={() => toggleSettingsSection('qbittorrent')}>
                 <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
                   <div>
                     <p className="text-sm font-medium text-slate-200">Enable qBittorrent</p>
@@ -5073,13 +5111,12 @@ export default function App() {
                     {testingQbtConnection ? 'Testing…' : 'Test Connection'}
                   </Btn>
                 </div>
-              </SectionCard>
+              </SettingsSectionCard>
             )}
 
             {/* SABnzbd */}
             {sabSettings && (
-              <SectionCard>
-                <SectionTitle>SABnzbd</SectionTitle>
+              <SettingsSectionCard title="SABnzbd" open={settingsSectionsOpen.sabnzbd} onToggle={() => toggleSettingsSection('sabnzbd')}>
                 <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
                   <div>
                     <p className="text-sm font-medium text-slate-200">Enable SABnzbd</p>
@@ -5125,12 +5162,11 @@ export default function App() {
                     {testingSabConnection ? 'Testing…' : 'Test Connection'}
                   </Btn>
                 </div>
-              </SectionCard>
+              </SettingsSectionCard>
             )}
 
             {/* Plex Integration */}
-            <SectionCard>
-              <SectionTitle>Plex Integration</SectionTitle>
+            <SettingsSectionCard title="Plex Integration" open={settingsSectionsOpen.plex} onToggle={() => toggleSettingsSection('plex')}>
               <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
                 <div>
                   <p className="text-sm font-medium text-slate-200">Enable Plex Scan</p>
@@ -5194,7 +5230,7 @@ export default function App() {
                   {loadingPlexLibraries ? 'Loading…' : 'Load Sections'}
                 </Btn>
               </div>
-            </SectionCard>
+            </SettingsSectionCard>
           </section>
         )}
 
