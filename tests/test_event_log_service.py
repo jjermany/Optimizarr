@@ -45,3 +45,15 @@ def test_record_event_once_keeps_changed_details():
 
         assert second.id != first.id
         assert db.query(EventLog).count() == 2
+
+
+def test_clear_events_removes_all_logs():
+    with SessionLocal() as db:
+        db.query(EventLog).delete()
+        db.commit()
+
+        event_log_service.record_event(db, 'one', 'First event')
+        event_log_service.record_event(db, 'two', 'Second event')
+
+        assert event_log_service.clear_events(db) == 2
+        assert db.query(EventLog).count() == 0

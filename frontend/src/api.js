@@ -233,6 +233,10 @@ export function fetchLogs(limit = 200) {
   return request(`/logs?limit=${encodeURIComponent(limit)}`);
 }
 
+export function clearLogs() {
+  return request('/logs', { method: 'DELETE' });
+}
+
 export function updateSettings(payload) {
   return request('/settings', {
     method: 'POST',
