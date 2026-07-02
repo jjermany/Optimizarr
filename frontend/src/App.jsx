@@ -2403,11 +2403,12 @@ export default function App() {
                 setPinnedOperation((prev) => {
                   const nextProgress = Math.max(0, Math.min(100, Math.round(progress)));
                   const previousProgress = prev?.title === 'Duplicate Output Cleanup' ? Number(prev.progress ?? 0) : 0;
+                  const displayedProgress = Math.max(previousProgress, nextProgress);
                   return {
                     title: 'Duplicate Output Cleanup',
                     detail,
-                    progress: Math.max(previousProgress, nextProgress),
-                    tone: nextProgress >= 100 ? 'success' : 'running',
+                    progress: displayedProgress,
+                    tone: displayedProgress >= 100 ? 'success' : 'running',
                   };
                 });
               }
