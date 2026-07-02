@@ -1366,6 +1366,9 @@ export default function App() {
   const [savingLibrary, setSavingLibrary] = useState(false);
   const [deletingLibraryId, setDeletingLibraryId] = useState(null);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [initialDataLoaded, setInitialDataLoaded] = useState(false);
+  const [initialDataError, setInitialDataError] = useState(null);
+  const [refreshingData, setRefreshingData] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState('connecting');
   const [fallbackPollingEnabled, setFallbackPollingEnabled] = useState(false);
   const [queuePaused, setQueuePaused] = useState(false);
@@ -1418,6 +1421,9 @@ export default function App() {
 
   const wsRef = useRef();
   const downloadReconcileInFlightRef = useRef(false);
+  const refreshAllRequestIdRef = useRef(0);
+  const refreshAllInFlightCountRef = useRef(0);
+  const liveRefreshInFlightRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef();
   const fallbackTimerRef = useRef();
@@ -1839,7 +1845,13 @@ export default function App() {
     }
   }
 
-  async function refreshAll() {
+  async function refreshAll({ showToast = true, markRefreshing = true } = {}) {
+    const requestId = refreshAllRequestIdRef.current + 1;
+    refreshAllRequestIdRef.current = requestId;
+    if (markRefreshing) {
+      refreshAllInFlightCountRef.current += 1;
+      setRefreshingData(true);
+    }
     try {
       const [nextMetrics, nextJobs, nextSettings, nextAccountSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus, nextProwlarrSettings, nextQbtSettings, nextSabSettings, nextDownloadJobs, nextLogs] = await Promise.all([
         fetchMetrics(),
@@ -1856,6 +1868,7 @@ export default function App() {
         fetchDownloadJobs().catch(() => []),
         fetchLogs().catch(() => []),
       ]);
+      if (requestId !== refreshAllRequestIdRef.current) return false;
       setMetrics(nextMetrics);
       setJobs(nextJobs);
       setSettings(nextSettings);
@@ -1878,29 +1891,44 @@ export default function App() {
       if (nextPlexSettings?.enabled && nextPlexSettings?.token) {
         fetchPlexLibraries().then((sections) => setPlexLibraries(sections ?? [])).catch(() => {});
       }
+      return true;
     } catch (refreshError) {
       if (refreshError.status === 401) {
         await refreshAuthStatus();
-        return;
+        return false;
       }
-      pushToast(refreshError.message || 'Could not refresh data.', 'error');
+      if (showToast) pushToast(refreshError.message || 'Could not refresh data.', 'error');
+      return false;
+    } finally {
+      if (markRefreshing) {
+        refreshAllInFlightCountRef.current = Math.max(0, refreshAllInFlightCountRef.current - 1);
+        if (refreshAllInFlightCountRef.current === 0) setRefreshingData(false);
+      }
     }
   }
 
   async function refreshQueueSnapshot() {
+    if (liveRefreshInFlightRef.current) return false;
+    liveRefreshInFlightRef.current = true;
     try {
-      const [nextJobs, nextQueueStatus, nextDownloadJobs] = await Promise.all([
+      const [nextMetrics, nextJobs, nextQueueStatus, nextDownloadJobs] = await Promise.all([
+        fetchMetrics().catch(() => null),
         fetchJobs(),
         fetchQueueStatus(),
         fetchDownloadJobs().catch(() => []),
       ]);
+      if (nextMetrics) setMetrics(nextMetrics);
       setJobs(nextJobs ?? []);
       setQueuePaused(nextQueueStatus?.status === 'paused');
       setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      return true;
     } catch (refreshError) {
       if (refreshError.status === 401) {
         await refreshAuthStatus();
       }
+      return false;
+    } finally {
+      liveRefreshInFlightRef.current = false;
     }
   }
 
@@ -1998,7 +2026,7 @@ export default function App() {
     }
   }
 
-  async function refreshLibrariesAndProfiles() {
+  async function refreshLibrariesAndProfiles({ showToast = true } = {}) {
     try {
       const nextLibraries = await fetchLibraries();
       setLibraries(nextLibraries);
@@ -2015,8 +2043,10 @@ export default function App() {
         }),
       );
       setLibraryProfiles(Object.fromEntries(profileEntries));
+      return true;
     } catch (refreshError) {
-      pushToast(refreshError.message || 'Could not refresh libraries.', 'error');
+      if (showToast) pushToast(refreshError.message || 'Could not refresh libraries.', 'error');
+      return false;
     }
   }
 
@@ -2078,8 +2108,27 @@ export default function App() {
 
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return;
-    refreshAll();
-    refreshLibrariesAndProfiles();
+    let active = true;
+    setInitialDataLoaded(false);
+    setInitialDataError(null);
+    setConnectionStatus('connecting');
+
+    async function loadInitialData() {
+      const [dataOk, librariesOk] = await Promise.all([
+        refreshAll({ showToast: false, markRefreshing: false }),
+        refreshLibrariesAndProfiles({ showToast: false }),
+      ]);
+      if (!active) return;
+      if (dataOk && librariesOk) {
+        setInitialDataLoaded(true);
+        setInitialDataError(null);
+        return;
+      }
+      setInitialDataError('Could not load the Optimizarr workspace. Check that the API is reachable and try again.');
+    }
+
+    loadInitialData();
+    return () => { active = false; };
   }, [authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
   useEffect(() => {
@@ -2133,7 +2182,7 @@ export default function App() {
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
     if (!fallbackPollingEnabled) return undefined;
-    const timer = setInterval(refreshAll, FALLBACK_POLL_MS);
+    const timer = setInterval(refreshQueueSnapshot, FALLBACK_POLL_MS);
     return () => clearInterval(timer);
   }, [fallbackPollingEnabled, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
@@ -2194,7 +2243,7 @@ export default function App() {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
     const hasActiveDownloads = downloadJobs.some((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase()));
     if (activeJobs.length === 0 && !hasActiveDownloads) return undefined;
-    const timer = setInterval(refreshAll, 5000);
+    const timer = setInterval(refreshQueueSnapshot, 5000);
     return () => clearInterval(timer);
   }, [activeJobs.length, downloadJobs, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
@@ -2252,7 +2301,8 @@ export default function App() {
           setConnectionStatus('online');
           setFallbackPollingEnabled(false);
           if (fallbackTimerRef.current) { clearTimeout(fallbackTimerRef.current); fallbackTimerRef.current = undefined; }
-          refreshAll();
+          refreshQueueSnapshot();
+          refreshLibrariesAndProfiles();
         };
 
         websocket.onmessage = (event) => {
@@ -3175,6 +3225,44 @@ export default function App() {
     );
   }
 
+  if (!initialDataLoaded) {
+    return (
+      <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
+        <div className="mx-auto flex min-h-[70vh] max-w-md items-center justify-center">
+          <SectionCard className="w-full space-y-4">
+            <SectionTitle>Loading Workspace</SectionTitle>
+            {!initialDataError ? (
+              <p className="text-sm text-slate-300">Loading dashboard, queue, libraries, and settings...</p>
+            ) : (
+              <>
+                <p className="text-sm text-red-300">{initialDataError}</p>
+                <div className="flex flex-wrap gap-2">
+                  <Btn
+                    variant="primary"
+                    onClick={async () => {
+                      setInitialDataError(null);
+                      const [dataOk, librariesOk] = await Promise.all([
+                        refreshAll({ showToast: false, markRefreshing: false }),
+                        refreshLibrariesAndProfiles({ showToast: false }),
+                      ]);
+                      if (dataOk && librariesOk) setInitialDataLoaded(true);
+                      else setInitialDataError('Could not load the Optimizarr workspace. Check that the API is reachable and try again.');
+                    }}
+                  >
+                    Retry
+                  </Btn>
+                  <Btn variant="secondary" onClick={handleLogout}>
+                    Logout
+                  </Btn>
+                </div>
+              </>
+            )}
+          </SectionCard>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
       <div className="mx-auto max-w-7xl space-y-5">
@@ -3194,6 +3282,11 @@ export default function App() {
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <StatusDot status={connectionStatus} />
+              {refreshingData && (
+                <span role="status" className="rounded-full border border-cyan-700/60 bg-cyan-950/30 px-2.5 py-1 text-xs text-cyan-200">
+                  Syncing
+                </span>
+              )}
               <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-300">
                 {authStatus.username}
               </span>
