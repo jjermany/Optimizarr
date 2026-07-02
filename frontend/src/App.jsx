@@ -614,12 +614,20 @@ function logMatchesSearch(log, search) {
   return haystack.includes(needle);
 }
 
-function logSeverityClass(severity) {
+function logSeverityRowClass(severity) {
   const normalized = String(severity ?? '').toLowerCase();
-  if (normalized === 'error') return 'border-red-800/70 bg-red-950/20 text-red-200';
-  if (normalized === 'warning' || normalized === 'warn') return 'border-amber-700/70 bg-amber-950/20 text-amber-200';
-  if (normalized === 'success') return 'border-emerald-700/70 bg-emerald-950/20 text-emerald-200';
-  return 'border-cyan-800/60 bg-cyan-950/15 text-cyan-200';
+  if (normalized === 'error') return 'border-l-red-500/80 bg-red-950/[0.08]';
+  if (normalized === 'warning' || normalized === 'warn') return 'border-l-amber-400/80 bg-amber-950/[0.07]';
+  if (normalized === 'success') return 'border-l-emerald-400/80 bg-emerald-950/[0.07]';
+  return 'border-l-cyan-400/55';
+}
+
+function logSeverityTextClass(severity) {
+  const normalized = String(severity ?? '').toLowerCase();
+  if (normalized === 'error') return 'text-red-300';
+  if (normalized === 'warning' || normalized === 'warn') return 'text-amber-300';
+  if (normalized === 'success') return 'text-emerald-300';
+  return 'text-cyan-300';
 }
 
 export function getElapsedSeconds(createdAt, nowMs = Date.now()) {
@@ -2084,14 +2092,15 @@ export default function App() {
     }
   }
 
-  function startPinnedOperation({ title, detail }) {
+  function startPinnedOperation({ title, detail, autoProgress = true }) {
     clearPinnedOperationTimer();
     setPinnedOperation({
       title,
       detail,
-      progress: 3,
+      progress: 1,
       tone: 'running',
     });
+    if (!autoProgress) return;
     pinnedOperationTimerRef.current = window.setInterval(() => {
       setPinnedOperation((prev) => {
         if (!prev || prev.tone !== 'running') return prev;
@@ -2393,10 +2402,11 @@ export default function App() {
               if (Number.isFinite(progress)) {
                 setPinnedOperation((prev) => {
                   const nextProgress = Math.max(0, Math.min(100, Math.round(progress)));
+                  const previousProgress = prev?.title === 'Duplicate Output Cleanup' ? Number(prev.progress ?? 0) : 0;
                   return {
                     title: 'Duplicate Output Cleanup',
                     detail,
-                    progress: nextProgress,
+                    progress: Math.max(previousProgress, nextProgress),
                     tone: nextProgress >= 100 ? 'success' : 'running',
                   };
                 });
@@ -3131,6 +3141,7 @@ export default function App() {
     startPinnedOperation({
       title: 'Duplicate Output Cleanup',
       detail: 'Scanning libraries for duplicate optimized outputs...',
+      autoProgress: false,
     });
     try {
       const result = await runDuplicateOptimizedCleanup();
@@ -4863,53 +4874,68 @@ export default function App() {
                 </SelectInput>
               </div>
 
-              <p className="mb-3 text-xs text-slate-500">
-                Showing {pagedLogs.length} of {filteredLogs.length} matching events ({logs.length} total)
-              </p>
+              <div className="overflow-hidden rounded-lg border border-slate-800/80 bg-slate-950/55 shadow-inner shadow-black/30">
+                <div className="grid grid-cols-[9rem_5.5rem_minmax(8rem,12rem)_minmax(0,1fr)] items-center border-b border-slate-800/80 bg-slate-950/80 px-3 py-2 font-mono text-[11px] uppercase text-slate-500 max-lg:hidden">
+                  <span>Time</span>
+                  <span>Level</span>
+                  <span>Event</span>
+                  <span>Message</span>
+                </div>
 
-              <div className="space-y-2">
                 {logs.length === 0 && (
-                  <p className="text-sm text-slate-500">No logged events yet.</p>
+                  <p className="px-4 py-5 text-sm text-slate-500">No logged events yet.</p>
                 )}
                 {logs.length > 0 && filteredLogs.length === 0 && (
-                  <p className="text-sm text-slate-500">No events match the current filters.</p>
+                  <p className="px-4 py-5 text-sm text-slate-500">No events match the current filters.</p>
                 )}
 
-                {pagedLogs.map((log) => {
-                  const detailEntries = Object.entries(log.details ?? {})
-                    .filter(([, value]) => value !== undefined && value !== null && value !== '');
-                  return (
-                    <div key={log.id} className="rounded-lg border border-slate-800/70 bg-slate-950/35 px-4 py-3">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide ${logSeverityClass(log.severity)}`}>
-                              {log.severity || 'info'}
+                {pagedLogs.length > 0 && (
+                  <div className="max-h-[62vh] overflow-auto">
+                    {pagedLogs.map((log) => {
+                      const detailEntries = Object.entries(log.details ?? {})
+                        .filter(([, value]) => value !== undefined && value !== null && value !== '');
+                      const severity = String(log.severity || 'info').toLowerCase();
+                      return (
+                        <div
+                          key={log.id}
+                          className={`border-l-2 border-b border-slate-900/90 px-3 py-2.5 last:border-b-0 ${logSeverityRowClass(log.severity)}`}
+                        >
+                          <div className="grid gap-2 lg:grid-cols-[9rem_5.5rem_minmax(8rem,12rem)_minmax(0,1fr)] lg:items-start">
+                            <time className="font-mono text-[12px] leading-5 text-slate-500">
+                              {formatLogCreatedAt(log.created_at)}
+                            </time>
+                            <span className={`font-mono text-[12px] font-semibold uppercase leading-5 ${logSeverityTextClass(log.severity)}`}>
+                              {severity}
                             </span>
-                            <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[11px] font-mono text-slate-300">
+                            <span className="truncate font-mono text-[12px] leading-5 text-slate-400" title={formatLogEventType(log.event_type)}>
                               {formatLogEventType(log.event_type)}
                             </span>
-                          </div>
-                          <p className="mt-2 text-sm font-medium text-slate-100">{log.message}</p>
-                        </div>
-                        <time className="shrink-0 text-xs text-slate-500">{formatLogCreatedAt(log.created_at)}</time>
-                      </div>
-                      {detailEntries.length > 0 && (
-                        <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
-                          {detailEntries.map(([key, value]) => (
-                            <div key={key} className="min-w-0 rounded-md border border-slate-800/60 bg-slate-900/45 px-2.5 py-2">
-                              <dt className="font-mono text-[11px] uppercase tracking-wide text-slate-500">{key}</dt>
-                              <dd className="mt-1 truncate text-slate-300" title={formatLogDetailValue(value)}>
-                                {formatLogDetailValue(value)}
-                              </dd>
+                            <div className="min-w-0">
+                              <p className="break-words text-sm leading-5 text-slate-100">{log.message}</p>
+                              {detailEntries.length > 0 && (
+                                <dl className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 font-mono text-[11px] leading-5 text-slate-500">
+                                  {detailEntries.map(([key, value]) => (
+                                    <div key={key} className="min-w-0 max-w-full">
+                                      <dt className="inline text-slate-600">{key}=</dt>
+                                      <dd className="inline break-all text-slate-400" title={formatLogDetailValue(value)}>
+                                        {formatLogDetailValue(value)}
+                                      </dd>
+                                    </div>
+                                  ))}
+                                </dl>
+                              )}
                             </div>
-                          ))}
-                        </dl>
-                      )}
-                    </div>
-                  );
-                })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
+
+              <p className="mt-3 text-xs text-slate-500">
+                Showing {pagedLogs.length} of {filteredLogs.length} matching events ({logs.length} total)
+              </p>
 
               {filteredLogs.length > LOGS_PAGE_SIZE && (
                 <div className="flex items-center justify-between border-t border-slate-700/70 pt-3 text-sm text-slate-400">
