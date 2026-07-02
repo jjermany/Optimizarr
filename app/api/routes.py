@@ -817,6 +817,18 @@ def _record_log_event(
     )
 
 
+def _enabled_libraries(db: Session) -> list[Library]:
+    return db.query(Library).filter(Library.enabled.is_(True)).order_by(Library.name.asc()).all()
+
+
+def _library_names_for_ids(db: Session, library_ids: list[int]) -> list[str]:
+    if not library_ids:
+        return []
+    libraries = db.query(Library).filter(Library.id.in_(library_ids)).all()
+    names_by_id = {library.id: library.name for library in libraries}
+    return [names_by_id[library_id] for library_id in library_ids if library_id in names_by_id]
+
+
 class AbortAllJobsResponse(BaseModel):
     aborted_job_ids: list[int]
 
@@ -1638,6 +1650,12 @@ def delete_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
 @router.post('/libraries/{library_id}/scan', response_model=ScanResponse)
 def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
     library = _get_library_or_404(db, library_id)
+    _record_log_event(
+        db,
+        'library_scan_started',
+        f'Library scan started for {library.name}',
+        details={'library_name': library.name},
+    )
     worker_queue.pause_queue(reason='manual_scan')
     try:
         jobs = scan_library(db, library, include_disabled=True)
@@ -1648,7 +1666,6 @@ def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: S
             'library_scan_summary',
             f'Library scan completed for {library.name}',
             details={
-                'library_id': library.id,
                 'library_name': library.name,
                 'created_jobs': len(jobs),
                 'job_ids': [job.id for job in jobs],
@@ -1661,6 +1678,14 @@ def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: S
 
 @router.post('/scan', response_model=ScanResponse)
 def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
+    libraries = _enabled_libraries(db)
+    library_names = [library.name for library in libraries]
+    _record_log_event(
+        db,
+        'library_scan_started',
+        'All enabled libraries scan started',
+        details={'library_names': library_names},
+    )
     worker_queue.pause_queue(reason='manual_scan')
     try:
         created_jobs = scan_enabled_libraries(db)
@@ -1671,6 +1696,7 @@ def scan_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db))
             'library_scan_summary',
             'All enabled libraries scan completed',
             details={
+                'library_names': library_names,
                 'created_jobs': len(created_jobs),
                 'job_ids': [job.id for job in created_jobs],
             },
@@ -2127,6 +2153,12 @@ def discard_progress_endpoint(job_id: int, _: None = Depends(require_ui_auth), d
 
 @router.post('/recovery/run', response_model=RecoveryResponse)
 def run_recovery_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> RecoveryResponse:
+    event_log_service.record_event(
+        db,
+        'recovery_started',
+        'Manual recovery started',
+        details={'trigger': 'manual'},
+    )
     summary = run_startup_recovery(db)
     for job_id in summary.get('interrupted_job_ids', []):
         broker.publish_system_event('job_interrupted', job_id=job_id)
@@ -2182,6 +2214,12 @@ def clear_event_logs(
 
 @router.post('/cleanup/run', response_model=CleanupResponse)
 def run_cleanup_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> CleanupResponse:
+    event_log_service.record_event(
+        db,
+        'cleanup_started',
+        'Manual workspace cleanup started',
+        details={'trigger': 'manual'},
+    )
     summary = run_workspace_cleanup(db)
     cleaned_workspaces = summary.get('cleaned_workspaces', 0)
     broker.publish_system_event(
@@ -2203,6 +2241,11 @@ def run_cleanup_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
 
 @router.post('/cleanup/optimized', response_model=OptimizedCleanupResponse)
 def run_optimized_cleanup_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> OptimizedCleanupResponse:
+    event_log_service.record_event(
+        db,
+        'optimized_cleanup_started',
+        'Optimized output cleanup started',
+    )
     deleted_files, affected_job_ids = cleanup_optimized_outputs(db)
     broker.publish_system_event(
         'optimized_cleanup_summary',
@@ -2227,6 +2270,12 @@ def run_duplicate_optimized_cleanup_endpoint(
     _: None = Depends(require_ui_auth),
     db: Session = Depends(get_db),
 ) -> DuplicateOptimizedCleanupResponse:
+    event_log_service.record_event(
+        db,
+        'duplicate_optimized_cleanup_started',
+        'Duplicate optimized cleanup started',
+    )
+
     def publish_progress(progress_percent: int, message: str) -> None:
         broker.publish_system_event(
             'duplicate_optimized_cleanup_progress',
@@ -2235,6 +2284,7 @@ def run_duplicate_optimized_cleanup_endpoint(
         )
 
     deleted_files, affected_library_ids = cleanup_duplicate_optimized_outputs(db, progress_callback=publish_progress)
+    affected_library_names = _library_names_for_ids(db, affected_library_ids)
     for library_id in affected_library_ids:
         plex_service.trigger_scan_after_job(library_id)
     broker.publish_system_event(
@@ -2250,7 +2300,7 @@ def run_duplicate_optimized_cleanup_endpoint(
         f'Duplicate optimized cleanup removed {deleted_files} file{"s" if deleted_files != 1 else ""}',
         details={
             'deleted_files': deleted_files,
-            'affected_library_ids': affected_library_ids,
+            'affected_library_names': affected_library_names,
             'affected_libraries': len(affected_library_ids),
         },
     )

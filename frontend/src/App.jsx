@@ -567,13 +567,18 @@ function formatLogDetailValue(value) {
 }
 
 const LOG_EVENT_LABELS = {
+  cleanup_started: 'Workspace Cleanup Started',
   cleanup_summary: 'Workspace Cleanup',
+  duplicate_optimized_cleanup_started: 'Duplicate Cleanup Started',
   duplicate_optimized_cleanup_summary: 'Duplicate Cleanup',
+  library_scan_started: 'Library Scan Started',
   library_scan_summary: 'Library Scan',
+  optimized_cleanup_started: 'Optimized Cleanup Started',
   optimized_cleanup_summary: 'Optimized Cleanup',
   queue_clear_summary: 'Queue Cleared',
   queue_paused: 'Queue Paused',
   queue_resumed: 'Queue Resumed',
+  recovery_started: 'Recovery Started',
   recovery_summary: 'Recovery',
   all_jobs_aborted: 'Abort All Jobs',
   history_purged: 'History Purged',

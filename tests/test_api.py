@@ -910,13 +910,19 @@ def test_scan_uses_enabled_libraries(monkeypatch, tmp_path):
         profile_update = client.put(f'/libraries/{enabled_library_id}/profile', json={'output_suffix': '-opt'})
         assert profile_update.status_code == 200
 
+        from app.core.database import SessionLocal
+        from app.models.event_log import EventLog
+
+        with SessionLocal() as session:
+            session.query(EventLog).delete()
+            session.commit()
+
         scan_response = client.post('/scan')
         assert scan_response.status_code == 200
         created_jobs = scan_response.json()['created_jobs']
         assert len(created_jobs) == 1
         assert created_jobs[0]['source_path'] == str(source_enabled)
 
-        from app.core.database import SessionLocal
         from app.models.job import Job
 
         with SessionLocal() as session:
@@ -924,6 +930,18 @@ def test_scan_uses_enabled_libraries(monkeypatch, tmp_path):
             assert job is not None
             assert job.library_id == enabled_library_id
             assert job.profile_snapshot_json is not None
+
+        logs_response = client.get('/logs')
+        assert logs_response.status_code == 200
+        logs = logs_response.json()
+        assert logs[0]['event_type'] == 'library_scan_summary'
+        assert 'Shows' in logs[0]['details']['library_names']
+        assert 'Movies' not in logs[0]['details']['library_names']
+        assert 'library_id' not in logs[0]['details']
+        assert logs[1]['event_type'] == 'library_scan_started'
+        assert 'Shows' in logs[1]['details']['library_names']
+        assert 'Movies' not in logs[1]['details']['library_names']
+        assert 'library_id' not in logs[1]['details']
 
 
 
@@ -1736,6 +1754,8 @@ def test_cleanup_optimized_endpoint_deletes_recorded_outputs(tmp_path):
         assert logs[0]['event_type'] == 'optimized_cleanup_summary'
         assert logs[0]['details']['deleted_files'] >= 1
         assert job_id in logs[0]['details']['affected_job_ids']
+        assert logs[1]['event_type'] == 'optimized_cleanup_started'
+        assert logs[1]['message'] == 'Optimized output cleanup started'
 
     assert not output_file.exists()
 
@@ -1766,6 +1786,7 @@ def test_clear_logs_endpoint_deletes_event_logs():
 
 def test_cleanup_duplicate_optimized_endpoint_deletes_versioned_outputs(tmp_path):
     from app.core.database import SessionLocal
+    from app.models.event_log import EventLog
     from app.models.library import Library, LibraryProfile
 
     library_path = tmp_path / 'movies'
@@ -1779,6 +1800,8 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_versioned_outputs(tmp_path
         path.write_text(path.name)
 
     with SessionLocal() as db:
+        db.query(EventLog).delete()
+        db.commit()
         library = Library(name='Duplicate Movies', path=str(library_path), enabled=True)
         db.add(library)
         db.commit()
@@ -1793,6 +1816,14 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_versioned_outputs(tmp_path
         payload = cleanup_response.json()
         assert payload['deleted_files'] == 2
         assert payload['affected_library_ids'] == [library_id]
+
+        logs_response = client.get('/logs')
+        assert logs_response.status_code == 200
+        logs = logs_response.json()
+        assert logs[0]['event_type'] == 'duplicate_optimized_cleanup_summary'
+        assert logs[0]['details']['affected_library_names'] == ['Duplicate Movies']
+        assert 'affected_library_ids' not in logs[0]['details']
+        assert logs[1]['event_type'] == 'duplicate_optimized_cleanup_started'
 
     assert source_file.exists()
     assert canonical_output.exists()
