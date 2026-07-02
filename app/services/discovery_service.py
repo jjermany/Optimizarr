@@ -863,9 +863,16 @@ def _finalize_candidate_with_probe(
         if has_download_job:
             return None
         if can_attempt_download(db):
-            create_download_job(db, source_path, library, profile)
+            download_job = create_download_job(db, source_path, library, profile)
             route_to_download = True
-            logger.info('Discovery: created download job for %r (library_id=%s)', source_path, library.id)
+            if download_job is None:
+                logger.info(
+                    'Discovery: download route already satisfied for %r (library_id=%s)',
+                    source_path,
+                    library.id,
+                )
+            else:
+                logger.info('Discovery: created download job for %r (library_id=%s)', source_path, library.id)
         else:
             logger.info(
                 'Discovery: download mode enabled but Prowlarr/download client unavailable; '

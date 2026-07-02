@@ -813,10 +813,16 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
             )
             if recover_completed_artifact_for_queue_job(db, job, library, profile):
                 logger.info(
-                    'Queue precheck: imported completed artifact for queued job %s source=%r',
+                    'Queue cleanup: removing stale encode placeholder job %s for source %r '
+                    'because the download route is already satisfied',
                     job.id,
                     job.source_path,
                 )
+                placeholder_job_id = job.id
+                db.delete(job)
+                db.commit()
+                broker.publish_system_event('job_removed', job_id=placeholder_job_id)
+                continue
             completed_import_row = (
                 db.query(DownloadJob.id)
                 .filter(

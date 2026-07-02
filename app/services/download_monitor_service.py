@@ -1032,20 +1032,37 @@ def any_active_download_job(db: Session) -> bool:
     ).scalar()
 
 
-def create_download_job(db: Session, source_path: str, library: Library, profile: LibraryProfile) -> DownloadJob:
-    if recover_completed_artifact_for_source(db, source_path, library, profile):
-        existing = (
-            db.query(DownloadJob)
-            .filter(
-                DownloadJob.library_id == library.id,
-                DownloadJob.source_file_path == source_path,
-            )
-            .order_by(DownloadJob.id.desc())
-            .first()
-        )
-        if existing is not None:
-            return existing
+def _profile_value(value: object, default: object = None) -> object:
+    if value is None:
+        return default
+    return getattr(value, 'value', value)
 
+
+def _download_import_destination(source_path: str, profile: LibraryProfile) -> Path:
+    source = Path(source_path)
+    container = str(_profile_value(getattr(profile, 'container', None), 'mkv') or 'mkv').lower().strip('.')
+    output_suffix = str(getattr(profile, 'output_suffix', '-1080p') or '-1080p')
+    return source.with_name(f'{source.stem}{output_suffix}.{container}')
+
+
+def _skip_policy_existing_output(source_path: str, profile: LibraryProfile) -> Path | None:
+    policy = str(_profile_value(getattr(profile, 'output_conflict_policy', None), 'skip') or 'skip').lower()
+    if policy != 'skip':
+        return None
+
+    dest = _download_import_destination(source_path, profile)
+    return dest if dest.exists() else None
+
+
+def _log_existing_output_skip(source_path: str, existing_output_path: Path) -> None:
+    logger.info(
+        'Download skipped for %r because optimized output already exists: %r',
+        source_path,
+        str(existing_output_path),
+    )
+
+
+def create_download_job(db: Session, source_path: str, library: Library, profile: LibraryProfile) -> DownloadJob | None:
     existing = (
         db.query(DownloadJob)
         .filter(
@@ -1074,6 +1091,24 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
                 imported = Path(dj.imported_file_path) if dj.imported_file_path else None
                 if imported and imported.exists():
                     return dj
+
+    existing_output = _skip_policy_existing_output(source_path, profile)
+    if existing_output is not None:
+        _log_existing_output_skip(source_path, existing_output)
+        return None
+
+    if recover_completed_artifact_for_source(db, source_path, library, profile):
+        recovered = (
+            db.query(DownloadJob)
+            .filter(
+                DownloadJob.library_id == library.id,
+                DownloadJob.source_file_path == source_path,
+            )
+            .order_by(DownloadJob.id.desc())
+            .first()
+        )
+        if recovered is not None:
+            return recovered
 
     dj = DownloadJob(
         library_id=library.id,
@@ -1299,6 +1334,11 @@ def recover_completed_artifact_for_source(
         return False
     if download_job_exists_for_source(db, source_path):
         return False
+
+    existing_output = _skip_policy_existing_output(source_path, profile)
+    if existing_output is not None:
+        _log_existing_output_skip(source_path, existing_output)
+        return True
 
     qbt = download_client_service.get_or_create_qbt_settings(db)
     sab = download_client_service.get_or_create_sab_settings(db)
@@ -2918,6 +2958,19 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         return
 
     profile = library.profile
+    existing_output = _skip_policy_existing_output(dj.source_file_path, profile)
+    if existing_output is not None:
+        logger.info(
+            'Download job %s removed before Prowlarr search because optimized output already exists: %r',
+            dj.id,
+            str(existing_output),
+        )
+        download_job_id = dj.id
+        db.delete(dj)
+        db.commit()
+        broker.publish_system_event('download_job_removed', download_job_id=download_job_id)
+        return
+
     search_passes = _search_passes_for_job(dj, profile)
     dj.search_query = str(search_passes[0]['query'])
     dj.indexer_id = None
@@ -3760,9 +3813,7 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     db.commit()
 
     # Build destination path mirroring encoding output naming
-    source = Path(dj.source_file_path)
-    container = str(profile.container.value if hasattr(profile.container, 'value') else profile.container).lower().strip('.')
-    dest = source.with_name(f'{source.stem}{profile.output_suffix}.{container}')
+    dest = _download_import_destination(dj.source_file_path, profile)
 
     # Apply output conflict policy
     policy = str(profile.output_conflict_policy.value if hasattr(profile.output_conflict_policy, 'value') else profile.output_conflict_policy).lower()
@@ -3770,6 +3821,8 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
         if policy == 'overwrite':
             dest.unlink(missing_ok=True)
         elif policy == 'rename':
+            source = Path(dj.source_file_path)
+            container = str(_profile_value(getattr(profile, 'container', None), 'mkv') or 'mkv').lower().strip('.')
             version = 2
             while dest.exists():
                 dest = source.with_name(f'{source.stem}{profile.output_suffix}-v{version}.{container}')

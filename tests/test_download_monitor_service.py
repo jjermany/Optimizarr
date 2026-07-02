@@ -22,6 +22,7 @@ from app.services.download_monitor_service import (
     _build_search_query,
     _check_download_progress,
     _cleanup_stale_qbt_torrents,
+    _do_search,
     _import_file,
     _mark_failed,
     _process_searching_jobs,
@@ -31,6 +32,7 @@ from app.services.download_monitor_service import (
     _release_matches_source_title,
     _release_title_matches_profile,
     _select_best_release,
+    create_download_job,
     download_job_exists_for_source,
     run_download_startup_recovery,
     run_scan_recovery,
@@ -817,6 +819,72 @@ def _seed_library_with_profile(db):
     db.commit()
     db.refresh(profile)
     return library
+
+
+def test_create_download_job_completes_without_search_when_optimized_output_exists(monkeypatch, tmp_path):
+    source = tmp_path / 'The Gorge (2025).mkv'
+    source.write_bytes(b'original')
+    existing_output = tmp_path / 'The Gorge (2025)-1080p.mkv'
+    existing_output.write_bytes(b'optimized')
+
+    recovery_calls = []
+    monkeypatch.setattr(
+        'app.services.download_monitor_service.recover_completed_artifact_for_source',
+        lambda *_args, **_kwargs: recovery_calls.append(True) or False,
+    )
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        profile = db.query(LibraryProfile).filter_by(library_id=library.id).first()
+
+        dj = create_download_job(db, str(source), library, profile)
+
+        assert dj is None
+        assert recovery_calls == []
+        assert db.query(DownloadJob).count() == 0
+
+
+def test_do_search_completes_existing_output_without_querying_prowlarr(monkeypatch, tmp_path):
+    source = tmp_path / 'Existing Movie (2026).mkv'
+    source.write_bytes(b'original')
+    existing_output = tmp_path / 'Existing Movie (2026)-1080p.mkv'
+    existing_output.write_bytes(b'optimized')
+
+    search_calls = []
+    monkeypatch.setattr(
+        'app.services.prowlarr_service.get_indexers',
+        lambda _prowlarr: [{'id': 1, 'name': 'Indexer'}],
+    )
+    monkeypatch.setattr(
+        'app.services.prowlarr_service.search',
+        lambda *_args, **_kwargs: search_calls.append(True) or [],
+    )
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path=str(source),
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        _do_search(db, dj, SimpleNamespace(enabled=True), SimpleNamespace(enabled=True), SimpleNamespace(enabled=False))
+
+        assert db.query(DownloadJob).filter(DownloadJob.id == dj.id).first() is None
+        assert search_calls == []
 
 
 def test_startup_recovery_imports_match_from_completed_download_root(monkeypatch, tmp_path):
