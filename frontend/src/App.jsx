@@ -1373,6 +1373,7 @@ export default function App() {
   const [fallbackPollingEnabled, setFallbackPollingEnabled] = useState(false);
   const [queuePaused, setQueuePaused] = useState(false);
   const [toasts, setToasts] = useState([]);
+  const [pinnedOperation, setPinnedOperation] = useState(null);
   const [authStatus, setAuthStatus] = useState({ loading: true, setup_required: false, authenticated: false, username: null, two_factor_enabled: false });
   const [setupForm, setSetupForm] = useState({
     username: 'admin',
@@ -1430,6 +1431,7 @@ export default function App() {
   const queueSnapshotTimerRef = useRef();
   const intentionallyClosedRef = useRef(false);
   const toastTimersRef = useRef({});
+  const pinnedOperationTimerRef = useRef();
 
   // Build a lookup map: library id → library name
   const libraryById = useMemo(
@@ -1839,6 +1841,8 @@ export default function App() {
     try {
       await logoutRequest();
     } finally {
+      clearPinnedOperationTimer();
+      setPinnedOperation(null);
       setAuthStatus({ loading: false, setup_required: false, authenticated: false, username: null, two_factor_enabled: false });
       setConnectionStatus('offline');
       setFallbackPollingEnabled(false);
@@ -2071,6 +2075,57 @@ export default function App() {
       delete toastTimersRef.current[id];
     }, durationMs);
     toastTimersRef.current[id] = timer;
+  }
+
+  function clearPinnedOperationTimer() {
+    if (pinnedOperationTimerRef.current) {
+      window.clearInterval(pinnedOperationTimerRef.current);
+      pinnedOperationTimerRef.current = undefined;
+    }
+  }
+
+  function startPinnedOperation({ title, detail }) {
+    clearPinnedOperationTimer();
+    setPinnedOperation({
+      title,
+      detail,
+      progress: 3,
+      tone: 'running',
+    });
+    pinnedOperationTimerRef.current = window.setInterval(() => {
+      setPinnedOperation((prev) => {
+        if (!prev || prev.tone !== 'running') return prev;
+        const nextProgress = prev.progress < 72
+          ? prev.progress + 3
+          : prev.progress < 88
+            ? prev.progress + 1
+            : Math.min(92, prev.progress + 0.25);
+        return { ...prev, progress: Math.min(92, Math.round(nextProgress)) };
+      });
+    }, 1200);
+  }
+
+  function updatePinnedOperation(detail, progress, { force = false } = {}) {
+    setPinnedOperation((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        detail,
+        progress: force ? Math.min(100, progress) : Math.max(prev.progress ?? 0, Math.min(99, progress)),
+      };
+    });
+  }
+
+  function completePinnedOperation(detail) {
+    clearPinnedOperationTimer();
+    setPinnedOperation((prev) => prev ? { ...prev, detail, progress: 100, tone: 'success' } : null);
+    window.setTimeout(() => setPinnedOperation(null), 2200);
+  }
+
+  function failPinnedOperation(detail) {
+    clearPinnedOperationTimer();
+    setPinnedOperation((prev) => prev ? { ...prev, detail, tone: 'error' } : null);
+    window.setTimeout(() => setPinnedOperation(null), 7000);
   }
 
   function mergeJobUpdate(nextJob) {
@@ -2332,6 +2387,22 @@ export default function App() {
           }
           if (payload.type === 'system_event') {
             const systemEvent = payload.data?.event;
+            if (systemEvent === 'duplicate_optimized_cleanup_progress') {
+              const progress = Number(payload.data?.progress_percent);
+              const detail = payload.data?.message || 'Duplicate cleanup is running...';
+              if (Number.isFinite(progress)) {
+                setPinnedOperation((prev) => {
+                  const nextProgress = Math.max(0, Math.min(100, Math.round(progress)));
+                  return {
+                    title: 'Duplicate Output Cleanup',
+                    detail,
+                    progress: nextProgress,
+                    tone: nextProgress >= 100 ? 'success' : 'running',
+                  };
+                });
+              }
+              return;
+            }
             if (LOG_REFRESH_SYSTEM_EVENTS.has(systemEvent)) refreshLogs();
             if (systemEvent === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
             if (systemEvent === 'job_removed') {
@@ -2404,6 +2475,7 @@ export default function App() {
       }
       Object.values(toastTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
       toastTimersRef.current = {};
+      clearPinnedOperationTimer();
       if (wsRef.current) { wsRef.current.close(); wsRef.current = undefined; }
     };
   }, [authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
@@ -3055,12 +3127,21 @@ export default function App() {
   }
 
   async function handleDuplicateOptimizedCleanupRun() {
+    if (pinnedOperation?.tone === 'running' && pinnedOperation.title === 'Duplicate Output Cleanup') return;
+    startPinnedOperation({
+      title: 'Duplicate Output Cleanup',
+      detail: 'Scanning libraries for duplicate optimized outputs...',
+    });
     try {
       const result = await runDuplicateOptimizedCleanup();
+      updatePinnedOperation('Cleanup finished. Refreshing dashboard data...', 94);
       pushToast(`Deleted ${result.deleted_files} duplicate optimized file(s) from ${result.affected_library_ids.length} librar${result.affected_library_ids.length === 1 ? 'y' : 'ies'}.`, 'success');
       await refreshAll();
+      updatePinnedOperation('Refreshing logs...', 98);
       await refreshLogs();
+      completePinnedOperation(`Complete. Removed ${result.deleted_files} duplicate file${result.deleted_files === 1 ? '' : 's'}.`);
     } catch (cleanupError) {
+      failPinnedOperation(cleanupError.message || 'Duplicate cleanup failed.');
       pushToast(cleanupError.message || 'Duplicate cleanup failed.', 'error');
     }
   }
@@ -3346,6 +3427,42 @@ export default function App() {
             </div>
           ))}
         </div>
+
+        {pinnedOperation && (
+          <div
+            role="status"
+            aria-live="polite"
+            className={`fixed left-4 right-4 bottom-4 z-40 rounded-xl border p-4 shadow-2xl backdrop-blur-sm sm:right-auto sm:w-[24rem] ${
+              pinnedOperation.tone === 'error'
+                ? 'border-red-700/70 bg-red-950/95 text-red-100'
+                : pinnedOperation.tone === 'success'
+                  ? 'border-emerald-700/70 bg-emerald-950/95 text-emerald-100'
+                  : 'border-cyan-700/70 bg-slate-950/95 text-slate-100'
+            }`}
+          >
+            <div className="mb-2 flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold">{pinnedOperation.title}</p>
+                <p className="mt-0.5 text-xs text-slate-300">{pinnedOperation.detail}</p>
+              </div>
+              <span className="shrink-0 font-mono text-sm font-semibold">
+                {Math.round(pinnedOperation.progress)}%
+              </span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${
+                  pinnedOperation.tone === 'error'
+                    ? 'bg-red-400'
+                    : pinnedOperation.tone === 'success'
+                      ? 'bg-emerald-400'
+                      : 'bg-cyan-400'
+                }`}
+                style={{ width: `${Math.max(0, Math.min(100, pinnedOperation.progress))}%` }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* ── Dashboard ──────────────────────────────────────────────────────── */}
         {activePage === 'dashboard' && (
@@ -5025,7 +5142,15 @@ export default function App() {
               <div className="mt-5 flex flex-wrap gap-3">
                 <Btn variant="indigo" onClick={handleRecoveryRun}>Run Recovery Now</Btn>
                 <Btn variant="primary" onClick={handleCleanupRun}>Run Workspace Cleanup</Btn>
-                <Btn variant="warning" onClick={handleDuplicateOptimizedCleanupRun}>Remove Duplicate Optimized Outputs</Btn>
+                <Btn
+                  variant="warning"
+                  disabled={pinnedOperation?.tone === 'running' && pinnedOperation.title === 'Duplicate Output Cleanup'}
+                  onClick={handleDuplicateOptimizedCleanupRun}
+                >
+                  {pinnedOperation?.tone === 'running' && pinnedOperation.title === 'Duplicate Output Cleanup'
+                    ? 'Cleanup Running...'
+                    : 'Remove Duplicate Optimized Outputs'}
+                </Btn>
                 <Btn variant="warning" onClick={handleOptimizedCleanupRun}>Remove Optimized Outputs</Btn>
               </div>
 

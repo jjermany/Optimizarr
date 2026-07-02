@@ -2227,7 +2227,14 @@ def run_duplicate_optimized_cleanup_endpoint(
     _: None = Depends(require_ui_auth),
     db: Session = Depends(get_db),
 ) -> DuplicateOptimizedCleanupResponse:
-    deleted_files, affected_library_ids = cleanup_duplicate_optimized_outputs(db)
+    def publish_progress(progress_percent: int, message: str) -> None:
+        broker.publish_system_event(
+            'duplicate_optimized_cleanup_progress',
+            progress_percent=max(0, min(100, int(progress_percent))),
+            message=message,
+        )
+
+    deleted_files, affected_library_ids = cleanup_duplicate_optimized_outputs(db, progress_callback=publish_progress)
     for library_id in affected_library_ids:
         plex_service.trigger_scan_after_job(library_id)
     broker.publish_system_event(

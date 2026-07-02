@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import re
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
@@ -648,11 +649,15 @@ def cleanup_replaced_optimized_outputs(
     return removed_files, affected_job_ids, affected_download_job_ids
 
 
-def _cleanup_versioned_optimized_siblings(library_path: Path) -> int:
+DuplicateCleanupProgressCallback = Callable[[int, str], None]
+
+
+def _cleanup_versioned_optimized_siblings(library_path: Path, candidates: list[Path] | None = None) -> int:
     removed_files = 0
     versioned_pattern = re.compile(r'^(?P<base>.+)-v\d+$', flags=re.IGNORECASE)
 
-    for candidate in library_path.rglob('*'):
+    candidate_iterable = candidates if candidates is not None else library_path.rglob('*')
+    for candidate in candidate_iterable:
         if not candidate.is_file():
             continue
         match = versioned_pattern.match(candidate.stem)
@@ -737,9 +742,24 @@ def find_existing_target_artifact_for_identity(
     return None
 
 
-def _cleanup_filesystem_duplicate_optimized_outputs(library_path: Path, target_resolution: int) -> int:
+def _cleanup_filesystem_duplicate_optimized_outputs(
+    library_path: Path,
+    target_resolution: int,
+    candidates: list[Path] | None = None,
+    progress_callback: DuplicateCleanupProgressCallback | None = None,
+    progress_start: int = 0,
+    progress_end: int = 100,
+) -> int:
     artifact_groups: dict[str, list[Path]] = {}
-    for candidate in library_path.rglob('*'):
+    candidate_iterable = candidates if candidates is not None else list(library_path.rglob('*'))
+    total_candidates = max(1, len(candidate_iterable))
+    last_reported = -1
+    for index, candidate in enumerate(candidate_iterable, start=1):
+        if progress_callback is not None:
+            progress = progress_start + int(((progress_end - progress_start) * index) / total_candidates)
+            if progress != last_reported and (progress - last_reported >= 2 or index == total_candidates):
+                progress_callback(progress, 'Checking filesystem artifacts')
+                last_reported = progress
         if not candidate.is_file() or candidate.suffix.lower() not in _VIDEO_SUFFIXES:
             continue
         identity_key = media_identity_key(str(candidate))
@@ -771,14 +791,35 @@ def _cleanup_filesystem_duplicate_optimized_outputs(library_path: Path, target_r
     return removed_files
 
 
-def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
-    libraries = db.query(Library).all()
+def cleanup_duplicate_optimized_outputs(
+    db: Session,
+    progress_callback: DuplicateCleanupProgressCallback | None = None,
+) -> tuple[int, list[int]]:
+    libraries: list[Library] = []
+    for library in db.query(Library).all():
+        if library.profile is None:
+            continue
+        library_path_value = str(library.path or '').strip()
+        if not library_path_value:
+            continue
+        library_path = Path(library_path_value)
+        if library_path.exists() and library_path.is_dir():
+            libraries.append(library)
 
     removed_files = 0
     affected_library_ids: list[int] = []
     affected_library_ids_seen: set[int] = set()
 
-    for library in libraries:
+    if progress_callback is not None:
+        progress_callback(1, 'Starting duplicate optimized output cleanup')
+
+    if not libraries:
+        if progress_callback is not None:
+            progress_callback(100, 'No libraries found to scan')
+        return 0, []
+
+    total_libraries = len(libraries)
+    for library_index, library in enumerate(libraries, start=1):
         profile = library.profile
         if profile is None:
             continue
@@ -787,14 +828,33 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
         if not library_path.exists() or not library_path.is_dir():
             continue
 
+        library_name = str(library.name or library.path or f'Library {library.id}')
+        library_start = int(((library_index - 1) / total_libraries) * 92) + 2
+        library_end = int((library_index / total_libraries) * 92) + 2
+        library_span = max(1, library_end - library_start)
+        version_progress = library_start + max(1, int(library_span * 0.18))
+        records_progress = library_start + max(1, int(library_span * 0.42))
+        filesystem_start = library_start + max(1, int(library_span * 0.45))
+        filesystem_end = library_start + max(1, int(library_span * 0.95))
+
+        if progress_callback is not None:
+            progress_callback(library_start, f'Indexing files in {library_name}')
+
+        library_files = [candidate for candidate in library_path.rglob('*') if candidate.is_file()]
         target_resolution = int(getattr(profile, 'target_resolution', 1080) or 1080)
 
-        versioned_removed = _cleanup_versioned_optimized_siblings(library_path)
+        if progress_callback is not None:
+            progress_callback(version_progress, f'Checking versioned outputs in {library_name}')
+
+        versioned_removed = _cleanup_versioned_optimized_siblings(library_path, library_files)
         if versioned_removed:
             removed_files += versioned_removed
             if library.id not in affected_library_ids_seen:
                 affected_library_ids.append(library.id)
                 affected_library_ids_seen.add(library.id)
+
+        if progress_callback is not None:
+            progress_callback(records_progress, f'Checking recorded outputs in {library_name}')
 
         artifact_groups: dict[str, list[dict]] = {}
         completed_encode_jobs = (
@@ -896,14 +956,32 @@ def cleanup_duplicate_optimized_outputs(db: Session) -> tuple[int, list[int]]:
                     affected_library_ids.append(library.id)
                     affected_library_ids_seen.add(library.id)
 
-        filesystem_removed = _cleanup_filesystem_duplicate_optimized_outputs(library_path, target_resolution)
+        filesystem_removed = _cleanup_filesystem_duplicate_optimized_outputs(
+            library_path,
+            target_resolution,
+            library_files,
+            progress_callback=(
+                (lambda progress, message, name=library_name: progress_callback(progress, f'{message} in {name}'))
+                if progress_callback is not None else None
+            ),
+            progress_start=filesystem_start,
+            progress_end=filesystem_end,
+        )
         if filesystem_removed:
             removed_files += filesystem_removed
             if library.id not in affected_library_ids_seen:
                 affected_library_ids.append(library.id)
                 affected_library_ids_seen.add(library.id)
 
+        if progress_callback is not None:
+            progress_callback(library_end, f'Finished scanning {library_name}')
+
+    if progress_callback is not None:
+        progress_callback(96, 'Saving cleanup results')
     db.commit()
+
+    if progress_callback is not None:
+        progress_callback(100, f'Duplicate cleanup complete. Removed {removed_files} file{"s" if removed_files != 1 else ""}')
 
     return removed_files, affected_library_ids
 

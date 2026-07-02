@@ -6,7 +6,7 @@ from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
 from app.services import optimization_service
-from app.services.job_service import abort_job, cancel_job, cleanup_replaced_optimized_outputs, create_job, delete_job, job_exists_for_source, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
+from app.services.job_service import abort_job, cancel_job, cleanup_duplicate_optimized_outputs, cleanup_replaced_optimized_outputs, create_job, delete_job, job_exists_for_source, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
 
 
 def test_create_job_stores_profile_snapshot():
@@ -31,6 +31,44 @@ def test_create_job_stores_profile_snapshot():
         assert '"codec": "av1"' in job.profile_snapshot_json
         assert '"output_suffix": "-opt"' in job.profile_snapshot_json
     assert '"minimum_source_resolution"' in job.profile_snapshot_json
+
+
+def test_cleanup_duplicate_optimized_outputs_reports_progress(tmp_path):
+    library_path = tmp_path / 'movies'
+    library_path.mkdir()
+    canonical_output = library_path / 'Movie Title (2024)-1080p.mkv'
+    duplicate_output = library_path / 'Movie Title (2024)-1080p-v2.mkv'
+    canonical_output.write_text('canonical')
+    duplicate_output.write_text('duplicate')
+
+    progress_events: list[tuple[int, str]] = []
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+        db.add(LibraryProfile(library_id=library.id, target_resolution=1080))
+        db.commit()
+
+        deleted_files, affected_library_ids = cleanup_duplicate_optimized_outputs(
+            db,
+            progress_callback=lambda progress, message: progress_events.append((progress, message)),
+        )
+
+    assert deleted_files == 1
+    assert affected_library_ids
+    assert not duplicate_output.exists()
+    assert progress_events[0][0] == 1
+    assert progress_events[-1][0] == 100
+    assert all(0 <= progress <= 100 for progress, _ in progress_events)
+    assert any('Indexing files' in message for _, message in progress_events)
 
 
 def test_delete_job_stops_active_encoder_and_removes_workspace(monkeypatch, tmp_path):
