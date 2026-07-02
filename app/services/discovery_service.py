@@ -18,7 +18,7 @@ from app.models.discovery_index import DiscoveryFileIndex
 from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import DiscoveryMethodEnum, Settings, clamp_scan_probe_workers
-from app.services.job_service import create_job, job_exists_for_source, has_completed_job_for_identity
+from app.services.job_service import create_job, job_exists_for_source, has_completed_job_for_identity, media_identity_key
 from app.services.optimization_service import is_hdr_video, probe_video_height
 from app.services.realtime_service import broker
 from app.workers.queue import is_queue_paused
@@ -602,6 +602,26 @@ def _has_existing_target_sdr_sibling(media_file: Path, target_resolution: int) -
     return False
 
 
+def _has_existing_target_identity_sibling(media_file: Path, profile: LibraryProfile) -> bool:
+    """Return True when another file for the same media already satisfies target output."""
+    identity_key = media_identity_key(str(media_file))
+    if not identity_key:
+        return False
+
+    target_resolution = int(getattr(profile, 'target_resolution', 1080) or 1080)
+    output_suffix = str(getattr(profile, 'output_suffix', '') or '')
+    for sibling in media_file.parent.iterdir():
+        if sibling == media_file or not sibling.is_file() or sibling.suffix.lower() not in MEDIA_SUFFIXES:
+            continue
+        if media_identity_key(str(sibling)) != identity_key:
+            continue
+        if output_suffix and sibling.stem.endswith(output_suffix):
+            return True
+        if _release_matches_target_resolution_label(sibling, target_resolution):
+            return True
+    return False
+
+
 def _effective_scan_probe_workers(value: int | None) -> int:
     return clamp_scan_probe_workers(value)
 
@@ -753,6 +773,8 @@ def _prepare_probe_candidate(
     container = str(profile.container.value if hasattr(profile.container, 'value') else profile.container).lower().strip('.')
     output_path = media_file.with_name(f'{media_file.stem}{profile.output_suffix}.{container}')
     if output_path.exists():
+        return None
+    if _has_existing_target_identity_sibling(media_file, profile):
         return None
 
     bracket_pos = media_file.stem.find('[')

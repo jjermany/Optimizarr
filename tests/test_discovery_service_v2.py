@@ -49,3 +49,44 @@ def test_prepare_probe_candidate_skips_if_completed_job_exists(tmp_path):
         candidate = _prepare_probe_candidate(db, another_movie_file, library, profile)
         assert candidate is not None
         assert candidate.media_file == another_movie_file
+
+
+def test_prepare_probe_candidate_skips_same_movie_target_sibling_with_different_id_tag(tmp_path):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library_path = tmp_path / "movies"
+        library_path.mkdir()
+
+        library = Library(name='Movies', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(
+            library_id=library.id,
+            output_suffix='-1080p',
+            target_resolution=1080,
+        )
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        existing_optimized = library_path / (
+            "Companion (2025) {imdb-tt26584495} [Bluray-2160p][DV HDR10Plus]"
+            "[TrueHD Atmos 7.1][x265]-SEV-1080p.mkv"
+        )
+        existing_optimized.touch()
+
+        source_file = library_path / (
+            "Companion (2025) {tmdb-1084199} [MA][WEBDL-2160p][DV HDR10]"
+            "[EAC3 5.1][h265]-DVT.mkv"
+        )
+        source_file.touch()
+
+        candidate = _prepare_probe_candidate(db, source_file, library, profile)
+
+        assert candidate is None
