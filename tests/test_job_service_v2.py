@@ -2,8 +2,13 @@ from app.core.database import SessionLocal
 from app.models.job import Job
 from app.models.download_job import DownloadJob
 from app.models.library import Library
-from app.services.job_service import has_completed_job_for_identity, media_identity_key
+from app.services.job_service import (
+    find_existing_target_artifact_for_identity,
+    has_completed_job_for_identity,
+    media_identity_key,
+)
 from pathlib import Path
+
 
 def test_media_identity_key_strips_release_info():
     assert media_identity_key('/media/movies/Example Movie (2023)/Example Movie (2023) 1080p BluRay.mkv') == 'movie:examplemovie:2023'
@@ -11,6 +16,21 @@ def test_media_identity_key_strips_release_info():
     assert media_identity_key('/media/movies/Example Movie (2023)/Example Movie (2023) [2160p WEB-DL].mkv') == 'movie:examplemovie:2023'
     assert media_identity_key('/media/movies/Example Movie (2023)/Example.Movie.2023.1080p.BluRay.x264-GROUP.mkv') == 'movie:examplemovie:2023'
     assert media_identity_key('/media/tv/Example Show/Season 01/Example Show S01E01 1080p.mkv') == 'tv:exampleshow:s01:e001'
+
+
+def test_find_existing_target_artifact_for_identity_matches_different_id_tag(tmp_path):
+    existing = tmp_path / (
+        'Companion (2025) {imdb-tt26584495} [Bluray-2160p][DV HDR10Plus]'
+        '[TrueHD Atmos 7.1][x265]-SEV-1080p.mkv'
+    )
+    source = tmp_path / (
+        'Companion (2025) {tmdb-1084199} [MA][WEBDL-2160p][DV HDR10]'
+        '[EAC3 5.1][h265]-DVT.mkv'
+    )
+    existing.touch()
+    source.touch()
+
+    assert find_existing_target_artifact_for_identity(str(source), 1080, '-1080p') == existing
 
 
 def test_has_completed_job_for_identity(tmp_path):

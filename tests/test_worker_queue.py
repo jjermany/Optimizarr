@@ -785,6 +785,60 @@ def test_claim_next_queued_job_removes_placeholder_when_download_already_importe
         assert events == [('job_removed', {'job_id': placeholder_id})]
 
 
+def test_claim_next_queued_job_skips_when_same_movie_target_sibling_exists(tmp_path):
+    queue.resume_queue()
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.query(Settings).delete()
+        db.add(Settings(enable_optimizer=True, max_workers=1, global_quiet_enabled=False))
+        db.commit()
+
+        library = Library(name='Movies', path=str(tmp_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(
+            library_id=library.id,
+            download_enabled=True,
+            hdr_only=False,
+            tone_map_hdr=False,
+            schedule_enabled=False,
+            output_suffix='-1080p',
+            target_resolution=1080,
+        )
+        db.add(profile)
+        db.commit()
+
+        existing = tmp_path / (
+            'Companion (2025) {imdb-tt26584495} [Bluray-2160p][DV HDR10Plus]'
+            '[TrueHD Atmos 7.1][x265]-SEV-1080p.mkv'
+        )
+        source = tmp_path / (
+            'Companion (2025) {tmdb-1084199} [MA][WEBDL-2160p][DV HDR10]'
+            '[EAC3 5.1][h265]-DVT.mkv'
+        )
+        existing.write_text('optimized')
+        source.write_text('source')
+
+        job = Job(input_path=str(source), status='queued', library_id=library.id)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+
+        settings = queue._get_settings(db)
+        selected_id = queue._claim_next_queued_job(db, settings, datetime.now())
+        skipped_job = db.query(Job).filter(Job.id == job_id).first()
+
+        assert selected_id is None
+        assert skipped_job.status == 'skipped'
+        assert skipped_job.error_message == 'Target optimized file already exists'
+
+
 def test_claim_next_queued_job_prechecks_completed_artifact_and_removes_placeholder(monkeypatch, tmp_path):
     queue.resume_queue()
 

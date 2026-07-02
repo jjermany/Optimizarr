@@ -849,6 +849,38 @@ def test_create_download_job_completes_without_search_when_optimized_output_exis
         assert db.query(DownloadJob).count() == 0
 
 
+def test_create_download_job_skips_same_movie_target_sibling_with_different_id_tag(monkeypatch, tmp_path):
+    existing = tmp_path / (
+        'Companion (2025) {imdb-tt26584495} [Bluray-2160p][DV HDR10Plus]'
+        '[TrueHD Atmos 7.1][x265]-SEV-1080p.mkv'
+    )
+    source = tmp_path / (
+        'Companion (2025) {tmdb-1084199} [MA][WEBDL-2160p][DV HDR10]'
+        '[EAC3 5.1][h265]-DVT.mkv'
+    )
+    existing.write_bytes(b'optimized')
+    source.write_bytes(b'source')
+
+    monkeypatch.setattr(
+        'app.services.download_monitor_service.recover_completed_artifact_for_source',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('recovery should not run')),
+    )
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        profile = db.query(LibraryProfile).filter_by(library_id=library.id).first()
+
+        dj = create_download_job(db, str(source), library, profile)
+
+        assert dj is None
+        assert db.query(DownloadJob).count() == 0
+
+
 def test_do_search_completes_existing_output_without_querying_prowlarr(monkeypatch, tmp_path):
     source = tmp_path / 'Existing Movie (2026).mkv'
     source.write_bytes(b'original')

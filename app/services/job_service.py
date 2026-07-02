@@ -698,6 +698,45 @@ def _is_target_resolution_artifact(path: Path, target_resolution: int) -> bool:
     return probed is not None and abs(int(probed) - int(target_resolution)) <= 32
 
 
+def find_existing_target_artifact_for_identity(
+    source_path: str,
+    target_resolution: int,
+    output_suffix: str = '',
+) -> Path | None:
+    """Find a same-folder artifact for the same media that satisfies the target."""
+    identity_key = media_identity_key(source_path)
+    if not identity_key:
+        return None
+
+    source = Path(source_path)
+    parent = source.parent
+    if not parent.exists() or not parent.is_dir():
+        return None
+
+    source_resolved = None
+    try:
+        source_resolved = source.resolve()
+    except OSError:
+        source_resolved = None
+
+    for candidate in parent.iterdir():
+        if not candidate.is_file() or candidate.suffix.lower() not in _VIDEO_SUFFIXES:
+            continue
+        try:
+            if source_resolved is not None and candidate.resolve() == source_resolved:
+                continue
+        except OSError:
+            if candidate == source:
+                continue
+        if media_identity_key(str(candidate)) != identity_key:
+            continue
+        if output_suffix and candidate.stem.endswith(output_suffix):
+            return candidate
+        if _has_exact_resolution_label(candidate, target_resolution):
+            return candidate
+    return None
+
+
 def _cleanup_filesystem_duplicate_optimized_outputs(library_path: Path, target_resolution: int) -> int:
     artifact_groups: dict[str, list[Path]] = {}
     for candidate in library_path.rglob('*'):

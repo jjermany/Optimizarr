@@ -703,7 +703,7 @@ def _skip_stale_queued_job(db: Session, job: Job, reason: str) -> None:
 
 
 def _queued_job_still_matches_disk(db: Session, job: Job, profile: LibraryProfile | None) -> bool:
-    from app.services.job_service import has_completed_job_for_identity
+    from app.services.job_service import find_existing_target_artifact_for_identity, has_completed_job_for_identity
     if has_completed_job_for_identity(db, job.input_path, job.library_id):
         logger.info(
             'Queue precheck: skipping job %s because a completed job already exists for this media',
@@ -723,10 +723,25 @@ def _queued_job_still_matches_disk(db: Session, job: Job, profile: LibraryProfil
         _coerce_profile_value(profile, snapshot, 'hdr_only', False)
         or _coerce_profile_value(profile, snapshot, 'tone_map_hdr', False)
     )
+    target_resolution = int(_coerce_profile_value(profile, snapshot, 'target_resolution', 1080) or 1080)
     if not hdr_required:
+        output_suffix = str(_coerce_profile_value(profile, snapshot, 'output_suffix', '') or '')
+        existing_artifact = find_existing_target_artifact_for_identity(
+            job.input_path,
+            target_resolution,
+            output_suffix,
+        )
+        if existing_artifact is not None:
+            logger.info(
+                'Queue precheck: skipping job %s for %r because target artifact already exists: %r',
+                job.id,
+                job.input_path,
+                str(existing_artifact),
+            )
+            _skip_stale_queued_job(db, job, 'Target optimized file already exists')
+            return False
         return True
 
-    target_resolution = int(_coerce_profile_value(profile, snapshot, 'target_resolution', 1080) or 1080)
     if _has_existing_target_sdr_sibling(source_path, target_resolution):
         logger.info(
             'Queue precheck: skipping job %s for %r because a target SDR sibling already exists',

@@ -22,7 +22,12 @@ from app.models.job import Job
 from app.models.library import DownloadQualityProfileEnum, Library, LibraryProfile
 from app.models.settings import QueueSortEnum, Settings
 from app.services import download_client_service, notification_service, prowlarr_service
-from app.services.job_service import cleanup_replaced_optimized_outputs, create_job, media_identity_key
+from app.services.job_service import (
+    cleanup_replaced_optimized_outputs,
+    create_job,
+    find_existing_target_artifact_for_identity,
+    media_identity_key,
+)
 from app.services.optimization_service import is_hdr_video, probe_video_height, stop_active_ffmpeg
 from app.services.realtime_service import broker
 
@@ -1051,7 +1056,14 @@ def _skip_policy_existing_output(source_path: str, profile: LibraryProfile) -> P
         return None
 
     dest = _download_import_destination(source_path, profile)
-    return dest if dest.exists() else None
+    if dest.exists():
+        return dest
+
+    return find_existing_target_artifact_for_identity(
+        source_path,
+        int(getattr(profile, 'target_resolution', 1080) or 1080),
+        str(getattr(profile, 'output_suffix', '') or ''),
+    )
 
 
 def _log_existing_output_skip(source_path: str, existing_output_path: Path) -> None:
