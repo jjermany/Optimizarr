@@ -671,6 +671,24 @@ def _has_exact_resolution_label(path: Path, target_resolution: int) -> bool:
     return False
 
 
+def _is_optimized_cleanup_artifact(
+    path: Path,
+    *,
+    kind: str,
+    target_resolution: int,
+    output_suffix: str,
+) -> bool:
+    if kind == 'encode':
+        return True
+    if output_suffix and path.stem.endswith(output_suffix):
+        return True
+    if _has_exact_resolution_label(path, target_resolution):
+        return True
+
+    probed = optimization_service.probe_video_height(str(path))
+    return probed is not None and abs(int(probed) - int(target_resolution)) <= 32
+
+
 def find_existing_target_artifact_for_identity(
     source_path: str,
     target_resolution: int,
@@ -752,6 +770,8 @@ def cleanup_duplicate_optimized_outputs(
         library_end = int((library_index / total_libraries) * 92) + 2
         library_span = max(1, library_end - library_start)
         records_progress = library_start + max(1, int(library_span * 0.42))
+        target_resolution = int(getattr(profile, 'target_resolution', 1080) or 1080)
+        output_suffix = str(getattr(profile, 'output_suffix', '') or '')
 
         if progress_callback is not None:
             progress_callback(library_start, f'Checking cleanup records in {library_name}')
@@ -830,30 +850,34 @@ def cleanup_duplicate_optimized_outputs(
             if len(unique_by_path) <= 1:
                 continue
 
-            def sort_key(artifact: dict) -> tuple:
-                # Keep the highest resolution artifact, falling back to largest
-                # file size, then most recent.
-                if artifact['kind'] == 'encode' and artifact['record'] and getattr(artifact['record'], 'source_resolution', None):
-                    resolution = int(artifact['record'].source_resolution)
-                else:
-                    probed = optimization_service.probe_video_height(str(artifact['path']))
-                    resolution = probed if probed is not None else 0
+            optimized_artifacts = [
+                artifact
+                for artifact in unique_by_path.values()
+                if _is_optimized_cleanup_artifact(
+                    Path(artifact['path']),
+                    kind=str(artifact['kind']),
+                    target_resolution=target_resolution,
+                    output_suffix=output_suffix,
+                )
+            ]
+            if len(optimized_artifacts) <= 1:
+                continue
 
+            def sort_key(artifact: dict) -> tuple:
                 try:
                     size = artifact['path'].stat().st_size
                 except OSError:
                     size = 0
                 return (
-                    resolution,
                     size,
                     artifact['completed_at'] is not None,
                     artifact['completed_at'],
                     str(artifact['path']),
                 )
 
-            sorted_artifacts = sorted(unique_by_path.values(), key=sort_key, reverse=True)
+            sorted_artifacts = sorted(optimized_artifacts, key=sort_key, reverse=True)
             keep_path = str(sorted_artifacts[0]['path'])
-            for artifact in unique_by_path.values():
+            for artifact in optimized_artifacts:
                 artifact_path = Path(artifact['path'])
                 if str(artifact_path) == keep_path:
                     continue

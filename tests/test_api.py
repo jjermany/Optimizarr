@@ -1941,6 +1941,121 @@ def test_cleanup_duplicate_optimized_endpoint_preserves_unrecorded_4k_filesystem
     assert optimized_1080p.exists()
 
 
+def test_cleanup_duplicate_optimized_endpoint_preserves_single_4k_original_with_1080p_output(tmp_path):
+    from datetime import UTC, datetime
+
+    from app.core.database import SessionLocal
+    from app.models.job import Job
+    from app.models.library import Library, LibraryProfile
+
+    library_path = tmp_path / 'movies'
+    library_path.mkdir()
+    source_4k = library_path / 'Movie Title (2024) 2160p HDR.mkv'
+    optimized_1080p = library_path / 'Movie Title (2024)-1080p.mkv'
+    source_4k.write_text('single-original-4k-file')
+    optimized_1080p.write_text('optimized-1080p-output')
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Radarr Movies', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+        db.add(LibraryProfile(library_id=library.id, target_resolution=1080))
+        db.add(Job(
+            input_path=str(source_4k),
+            output_path=str(optimized_1080p),
+            status='complete',
+            library_id=library.id,
+            completed_at=datetime.now(UTC),
+        ))
+        db.commit()
+
+    with TestClient(app) as client:
+        cleanup_response = client.post('/cleanup/optimized/duplicates')
+        assert cleanup_response.status_code == 200
+        payload = cleanup_response.json()
+        assert payload['deleted_files'] == 0
+        assert payload['affected_library_ids'] == []
+
+    assert source_4k.exists()
+    assert optimized_1080p.exists()
+
+
+def test_cleanup_duplicate_optimized_endpoint_keeps_4k_and_one_optimized_floor(tmp_path):
+    from datetime import UTC, datetime
+
+    from app.core.database import SessionLocal
+    from app.models.download_job import DownloadJob, DownloadJobStatus
+    from app.models.job import Job
+    from app.models.library import Library, LibraryProfile
+
+    library_path = tmp_path / 'movies'
+    library_path.mkdir()
+    source_4k = library_path / 'Movie Title (2024) 2160p HDR.mkv'
+    imported_4k = library_path / 'Movie Title (2024) 2160p Remux.mkv'
+    encoded_1080p = library_path / 'Movie Title (2024)-1080p.mkv'
+    imported_1080p = library_path / 'Movie Title (2024) 1080p WEB-DL.mkv'
+    source_4k.write_text('source-4k')
+    imported_4k.write_text('recorded-4k-artifact')
+    encoded_1080p.write_text('small')
+    imported_1080p.write_text('larger-optimized-artifact')
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Radarr Movies', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+        db.add(LibraryProfile(library_id=library.id, target_resolution=1080))
+        db.add(Job(
+            input_path=str(source_4k),
+            output_path=str(encoded_1080p),
+            status='complete',
+            library_id=library.id,
+            completed_at=datetime.now(UTC),
+        ))
+        db.add_all([
+            DownloadJob(
+                library_id=library.id,
+                source_file_path=str(source_4k),
+                status=DownloadJobStatus.complete.value,
+                imported_file_path=str(imported_4k),
+                completed_at=datetime.now(UTC),
+            ),
+            DownloadJob(
+                library_id=library.id,
+                source_file_path=str(source_4k),
+                status=DownloadJobStatus.complete.value,
+                imported_file_path=str(imported_1080p),
+                completed_at=datetime.now(UTC),
+            ),
+        ])
+        db.commit()
+        library_id = library.id
+
+    with TestClient(app) as client:
+        cleanup_response = client.post('/cleanup/optimized/duplicates')
+        assert cleanup_response.status_code == 200
+        payload = cleanup_response.json()
+        assert payload['deleted_files'] == 1
+        assert payload['affected_library_ids'] == [library_id]
+
+    assert source_4k.exists()
+    assert imported_4k.exists()
+    assert not encoded_1080p.exists()
+    assert imported_1080p.exists()
+
+
 def test_cleanup_duplicate_optimized_endpoint_deletes_recorded_duplicate_artifacts_across_labels(tmp_path):
     from datetime import UTC, datetime
 

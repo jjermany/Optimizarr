@@ -176,6 +176,16 @@ def _clear_low_disk_alert() -> None:
 def _apply_output_conflict_policy(job: Job, snapshot: dict) -> bool:
     policy = str(snapshot.get('output_conflict_policy') or 'skip').lower()
     output_path = Path(job.output_path or '')
+    source_path = Path(job.input_path or '')
+    try:
+        output_is_source = output_path.resolve() == source_path.resolve()
+    except OSError:
+        output_is_source = output_path == source_path
+    if output_is_source:
+        job.status = 'skipped'
+        job.error_message = 'Output path matches source'
+        return False
+
     if not output_path.exists():
         return True
 

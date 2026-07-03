@@ -403,6 +403,34 @@ def test_preflight_job_applies_output_conflict_policy_rename(monkeypatch, tmp_pa
     assert job.output_path.endswith('-opt-v2.mkv')
 
 
+def test_preflight_job_never_overwrites_source_when_output_matches_input(monkeypatch, tmp_path):
+    media = tmp_path / 'movie.mkv'
+    media.write_text('original-4k')
+
+    job = Job(
+        input_path=str(media),
+        status='queued',
+        profile_snapshot_json=json.dumps({
+            'output_suffix': '-1080p',
+            'container': 'mkv',
+            'output_conflict_policy': 'overwrite',
+            'minimum_source_resolution': 1080,
+            'target_resolution': 1080,
+        }),
+    )
+
+    monkeypatch.setattr(queue, 'probe_video_height', lambda _: 2160)
+    monkeypatch.setattr(queue, '_cache_free_bytes', lambda _: 100 * queue.BYTES_PER_GB)
+    monkeypatch.setattr(queue, '_preflight_output_path', lambda _job, _snapshot: str(media))
+
+    passed = queue.preflight_job(job, queue.Settings(min_free_gb=25))
+
+    assert passed is False
+    assert job.status == 'skipped'
+    assert job.error_message == 'Output path matches source'
+    assert media.read_text() == 'original-4k'
+
+
 def test_extract_year_from_path_uses_show_folder_when_episode_name_has_no_year():
     assert queue._extract_year_from_path('/media/TV/Severance (2022)/Season 01/Severance.S01E03.2160p.mkv') == 2022
 
