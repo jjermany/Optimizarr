@@ -14,7 +14,6 @@ from app.core.logging_config import configure_logging
 from app.services.discovery_service import start_discovery_worker, stop_discovery_worker, trigger_immediate_scan
 from app.services.download_monitor_service import register_job_complete_callback, run_download_startup_recovery, start_download_monitor, stop_download_monitor
 from app.services import auth_service, event_log_service, notification_service
-from app.services.job_service import cleanup_duplicate_optimized_outputs
 from app.services.notification_service import start_notification_worker, stop_notification_worker
 from app.services.optimization_service import refresh_encoder_cache
 from app.services.recovery_service import run_startup_recovery, run_workspace_cleanup
@@ -24,7 +23,6 @@ from app.workers.queue import pause_queue, start_worker, stop_worker
 
 logger = logging.getLogger(__name__)
 CLEANUP_INTERVAL_SECONDS = 6 * 60 * 60
-DUPLICATE_CLEANUP_POLL_SECONDS = 60
 
 # Built frontend lives at /app/static when running inside the container
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / 'static'
@@ -68,53 +66,6 @@ def _cleanup_loop(stop_event: Event) -> None:
         )
 
     logger.info('Workspace cleanup worker stopped')
-
-
-def _duplicate_cleanup_loop(stop_event: Event) -> None:
-    logger.info('Duplicate optimized cleanup scheduler started')
-    last_cleanup_at = time.monotonic()
-    while not stop_event.wait(DUPLICATE_CLEANUP_POLL_SECONDS):
-        with SessionLocal() as db:
-            settings = db.query(Settings).first()
-            if settings is None or not settings.duplicate_cleanup_enabled:
-                continue
-
-            interval_seconds = max(1, int(settings.duplicate_cleanup_interval_hours or 24)) * 60 * 60
-            now = time.monotonic()
-            if last_cleanup_at and now - last_cleanup_at < interval_seconds:
-                continue
-            last_cleanup_at = now
-
-            event_log_service.record_event(
-                db,
-                'duplicate_optimized_cleanup_started',
-                'Scheduled duplicate optimized cleanup started',
-                details={'trigger': 'scheduled'},
-            )
-            deleted_files, affected_library_ids = cleanup_duplicate_optimized_outputs(db)
-            event_log_service.record_event(
-                db,
-                'duplicate_optimized_cleanup_summary',
-                f'Scheduled duplicate optimized cleanup removed {deleted_files} file{"s" if deleted_files != 1 else ""}',
-                details={
-                    'trigger': 'scheduled',
-                    'deleted_files': deleted_files,
-                    'affected_library_ids': affected_library_ids,
-                },
-            )
-        logger.info(
-            'Scheduled duplicate optimized cleanup completed; deleted_files=%s affected_libraries=%s',
-            deleted_files,
-            affected_library_ids,
-        )
-        broker.publish_system_event(
-            'duplicate_optimized_cleanup_summary',
-            trigger='scheduled',
-            deleted_files=deleted_files,
-            affected_library_ids=affected_library_ids,
-        )
-
-    logger.info('Duplicate optimized cleanup scheduler stopped')
 
 
 @asynccontextmanager
@@ -221,14 +172,6 @@ async def lifespan(_: FastAPI):
     cleanup_stop_event = Event()
     cleanup_thread = Thread(target=_cleanup_loop, args=(cleanup_stop_event,), name='cleanup-worker', daemon=True)
     cleanup_thread.start()
-    duplicate_cleanup_stop_event = Event()
-    duplicate_cleanup_thread = Thread(
-        target=_duplicate_cleanup_loop,
-        args=(duplicate_cleanup_stop_event,),
-        name='duplicate-cleanup-scheduler',
-        daemon=True,
-    )
-    duplicate_cleanup_thread.start()
     notification_thread = start_notification_worker()
     worker_thread = start_worker()
     discovery_thread = start_discovery_worker()
@@ -242,14 +185,12 @@ async def lifespan(_: FastAPI):
         stop_discovery_worker()
         stop_download_monitor()
         cleanup_stop_event.set()
-        duplicate_cleanup_stop_event.set()
         broker.stop()
         worker_thread.join(timeout=5)
         notification_thread.join(timeout=5)
         discovery_thread.join(timeout=5)
         download_monitor_thread.join(timeout=5)
         cleanup_thread.join(timeout=5)
-        duplicate_cleanup_thread.join(timeout=5)
         logger.info('Optimizarr shutdown complete')
 
 

@@ -1790,7 +1790,7 @@ def test_clear_logs_endpoint_deletes_event_logs():
         assert logs_response.json() == []
 
 
-def test_cleanup_duplicate_optimized_endpoint_deletes_versioned_outputs(tmp_path):
+def test_cleanup_duplicate_optimized_endpoint_preserves_unrecorded_versioned_outputs(tmp_path):
     from app.core.database import SessionLocal
     from app.models.event_log import EventLog
     from app.models.library import Library, LibraryProfile
@@ -1820,21 +1820,21 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_versioned_outputs(tmp_path
         cleanup_response = client.post('/cleanup/optimized/duplicates')
         assert cleanup_response.status_code == 200
         payload = cleanup_response.json()
-        assert payload['deleted_files'] == 2
-        assert payload['affected_library_ids'] == [library_id]
+        assert payload['deleted_files'] == 0
+        assert payload['affected_library_ids'] == []
 
         logs_response = client.get('/logs')
         assert logs_response.status_code == 200
         logs = logs_response.json()
         assert logs[0]['event_type'] == 'duplicate_optimized_cleanup_summary'
-        assert logs[0]['details']['affected_library_names'] == ['Duplicate Movies']
+        assert logs[0]['details']['affected_library_names'] == []
         assert 'affected_library_ids' not in logs[0]['details']
         assert logs[1]['event_type'] == 'duplicate_optimized_cleanup_started'
 
     assert source_file.exists()
     assert canonical_output.exists()
-    assert not duplicate_v2.exists()
-    assert not duplicate_v10.exists()
+    assert duplicate_v2.exists()
+    assert duplicate_v10.exists()
     assert wrong_container.exists()
 
 
@@ -1871,7 +1871,7 @@ def test_cleanup_duplicate_optimized_endpoint_keeps_2k_sibling_when_canonical_ex
     assert duplicate_2k.exists()
 
 
-def test_cleanup_duplicate_optimized_endpoint_deletes_extra_1080p_filesystem_version(tmp_path):
+def test_cleanup_duplicate_optimized_endpoint_preserves_unrecorded_1080p_filesystem_versions(tmp_path):
     from app.core.database import SessionLocal
     from app.models.library import Library, LibraryProfile
 
@@ -1897,15 +1897,15 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_extra_1080p_filesystem_ver
         cleanup_response = client.post('/cleanup/optimized/duplicates')
         assert cleanup_response.status_code == 200
         payload = cleanup_response.json()
-        assert payload['deleted_files'] == 1
-        assert payload['affected_library_ids'] == [library_id]
+        assert payload['deleted_files'] == 0
+        assert payload['affected_library_ids'] == []
 
     assert source_4k.exists()
     assert larger_1080p.exists()
-    assert not smaller_1080p.exists()
+    assert smaller_1080p.exists()
 
 
-def test_cleanup_duplicate_optimized_endpoint_deletes_extra_4k_filesystem_version(tmp_path):
+def test_cleanup_duplicate_optimized_endpoint_preserves_unrecorded_4k_filesystem_versions(tmp_path):
     from app.core.database import SessionLocal
     from app.models.library import Library, LibraryProfile
 
@@ -1933,10 +1933,10 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_extra_4k_filesystem_versio
         cleanup_response = client.post('/cleanup/optimized/duplicates')
         assert cleanup_response.status_code == 200
         payload = cleanup_response.json()
-        assert payload['deleted_files'] == 1
-        assert payload['affected_library_ids'] == [library_id]
+        assert payload['deleted_files'] == 0
+        assert payload['affected_library_ids'] == []
 
-    assert not stale_larger_4k.exists()
+    assert stale_larger_4k.exists()
     assert current_smaller_4k.exists()
     assert optimized_1080p.exists()
 

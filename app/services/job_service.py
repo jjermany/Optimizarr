@@ -652,29 +652,6 @@ def cleanup_replaced_optimized_outputs(
 DuplicateCleanupProgressCallback = Callable[[int, str], None]
 
 
-def _cleanup_versioned_optimized_siblings(library_path: Path, candidates: list[Path] | None = None) -> int:
-    removed_files = 0
-    versioned_pattern = re.compile(r'^(?P<base>.+)-v\d+$', flags=re.IGNORECASE)
-
-    candidate_iterable = candidates if candidates is not None else library_path.rglob('*')
-    for candidate in candidate_iterable:
-        if not candidate.is_file():
-            continue
-        match = versioned_pattern.match(candidate.stem)
-        if not match:
-            continue
-
-        canonical = candidate.with_name(f'{match.group("base")}{candidate.suffix}')
-        if not canonical.exists() or not canonical.is_file():
-            continue
-
-        candidate.unlink(missing_ok=True)
-        if not candidate.exists():
-            removed_files += 1
-
-    return removed_files
-
-
 _VIDEO_SUFFIXES = {'.mkv', '.mp4', '.mov', '.m4v', '.avi', '.ts', '.m2ts', '.wmv'}
 
 
@@ -692,37 +669,6 @@ def _has_exact_resolution_label(path: Path, target_resolution: int) -> bool:
     if target == 2160 and re.search(r'\b4k\b', stem_lower):
         return True
     return False
-
-
-def _is_target_resolution_artifact(path: Path, target_resolution: int) -> bool:
-    if _has_exact_resolution_label(path, target_resolution):
-        return True
-    if target_resolution == 1080 and re.search(r'\b2k\b', path.stem.lower()):
-        return False
-    probed = optimization_service.probe_video_height(str(path))
-    return probed is not None and abs(int(probed) - int(target_resolution)) <= 32
-
-
-def _cleanup_resolution_bucket(path: Path, target_resolution: int) -> int | None:
-    stem_lower = path.stem.lower()
-    for resolution in (2160, 1440, 1080, 720, 480):
-        if _has_exact_resolution_label(path, resolution):
-            return resolution
-
-    if target_resolution == 1080 and re.search(r'\b2k\b', stem_lower):
-        return 1440
-    if re.search(r'\b2k\b', stem_lower):
-        return 1440
-
-    probed = optimization_service.probe_video_height(str(path))
-    if probed is None:
-        return None
-
-    height = int(probed)
-    for resolution in (2160, 1440, 1080, 720, 480):
-        if abs(height - resolution) <= 32:
-            return resolution
-    return height
 
 
 def find_existing_target_artifact_for_identity(
@@ -762,58 +708,6 @@ def find_existing_target_artifact_for_identity(
         if _has_exact_resolution_label(candidate, target_resolution):
             return candidate
     return None
-
-
-def _cleanup_filesystem_duplicate_optimized_outputs(
-    library_path: Path,
-    target_resolution: int,
-    candidates: list[Path] | None = None,
-    progress_callback: DuplicateCleanupProgressCallback | None = None,
-    progress_start: int = 0,
-    progress_end: int = 100,
-) -> int:
-    artifact_groups: dict[tuple[str, int], list[Path]] = {}
-    candidate_iterable = candidates if candidates is not None else list(library_path.rglob('*'))
-    total_candidates = max(1, len(candidate_iterable))
-    last_reported = -1
-    for index, candidate in enumerate(candidate_iterable, start=1):
-        if progress_callback is not None:
-            progress = progress_start + int(((progress_end - progress_start) * index) / total_candidates)
-            if progress != last_reported and (progress - last_reported >= 2 or index == total_candidates):
-                progress_callback(progress, 'Checking filesystem artifacts')
-                last_reported = progress
-        if not candidate.is_file() or candidate.suffix.lower() not in _VIDEO_SUFFIXES:
-            continue
-        identity_key = media_identity_key(str(candidate))
-        if not identity_key:
-            continue
-        resolution_bucket = _cleanup_resolution_bucket(candidate, target_resolution)
-        if resolution_bucket is None:
-            continue
-        artifact_groups.setdefault((identity_key, resolution_bucket), []).append(candidate)
-
-    removed_files = 0
-    for (_identity_key, resolution_bucket), artifacts in artifact_groups.items():
-        unique_paths = list({str(path.resolve()): path for path in artifacts}.values())
-        if len(unique_paths) <= 1:
-            continue
-
-        def sort_key(path: Path) -> tuple[int, float, str]:
-            try:
-                stat = path.stat()
-                if resolution_bucket == int(target_resolution):
-                    return (stat.st_size, stat.st_mtime, str(path))
-                return (int(stat.st_mtime), stat.st_size, str(path))
-            except OSError:
-                return (0, 0.0, str(path))
-
-        sorted_artifacts = sorted(unique_paths, key=sort_key, reverse=True)
-        for duplicate in sorted_artifacts[1:]:
-            duplicate.unlink(missing_ok=True)
-            if not duplicate.exists():
-                removed_files += 1
-
-    return removed_files
 
 
 def cleanup_duplicate_optimized_outputs(
@@ -857,26 +751,10 @@ def cleanup_duplicate_optimized_outputs(
         library_start = int(((library_index - 1) / total_libraries) * 92) + 2
         library_end = int((library_index / total_libraries) * 92) + 2
         library_span = max(1, library_end - library_start)
-        version_progress = library_start + max(1, int(library_span * 0.18))
         records_progress = library_start + max(1, int(library_span * 0.42))
-        filesystem_start = library_start + max(1, int(library_span * 0.45))
-        filesystem_end = library_start + max(1, int(library_span * 0.95))
 
         if progress_callback is not None:
-            progress_callback(library_start, f'Indexing files in {library_name}')
-
-        library_files = [candidate for candidate in library_path.rglob('*') if candidate.is_file()]
-        target_resolution = int(getattr(profile, 'target_resolution', 1080) or 1080)
-
-        if progress_callback is not None:
-            progress_callback(version_progress, f'Checking versioned outputs in {library_name}')
-
-        versioned_removed = _cleanup_versioned_optimized_siblings(library_path, library_files)
-        if versioned_removed:
-            removed_files += versioned_removed
-            if library.id not in affected_library_ids_seen:
-                affected_library_ids.append(library.id)
-                affected_library_ids_seen.add(library.id)
+            progress_callback(library_start, f'Checking cleanup records in {library_name}')
 
         if progress_callback is not None:
             progress_callback(records_progress, f'Checking recorded outputs in {library_name}')
@@ -895,7 +773,12 @@ def cleanup_duplicate_optimized_outputs(
             output_path = Path(str(job.output_path or '').strip())
             if not output_path.exists() or not output_path.is_file():
                 continue
-            if output_path == Path(str(job.input_path or '').strip()):
+            input_path = Path(str(job.input_path or '').strip())
+            try:
+                is_recorded_source = output_path.resolve() == input_path.resolve()
+            except OSError:
+                is_recorded_source = output_path == input_path
+            if is_recorded_source:
                 continue
             identity_key = media_identity_key(job.input_path)
             if not identity_key:
@@ -921,7 +804,12 @@ def cleanup_duplicate_optimized_outputs(
                 str(download_job.imported_file_path or '').strip())
             if not imported_path.exists() or not imported_path.is_file():
                 continue
-            if imported_path == Path(str(download_job.source_file_path or '').strip()):
+            source_file_path = Path(str(download_job.source_file_path or '').strip())
+            try:
+                is_recorded_source = imported_path.resolve() == source_file_path.resolve()
+            except OSError:
+                is_recorded_source = imported_path == source_file_path
+            if is_recorded_source:
                 continue
             # Use the original source path for identity, not the imported path,
             # so downloaded artifacts can be grouped with encoded ones from the
@@ -980,23 +868,6 @@ def cleanup_duplicate_optimized_outputs(
                 if library.id not in affected_library_ids_seen:
                     affected_library_ids.append(library.id)
                     affected_library_ids_seen.add(library.id)
-
-        filesystem_removed = _cleanup_filesystem_duplicate_optimized_outputs(
-            library_path,
-            target_resolution,
-            library_files,
-            progress_callback=(
-                (lambda progress, message, name=library_name: progress_callback(progress, f'{message} in {name}'))
-                if progress_callback is not None else None
-            ),
-            progress_start=filesystem_start,
-            progress_end=filesystem_end,
-        )
-        if filesystem_removed:
-            removed_files += filesystem_removed
-            if library.id not in affected_library_ids_seen:
-                affected_library_ids.append(library.id)
-                affected_library_ids_seen.add(library.id)
 
         if progress_callback is not None:
             progress_callback(library_end, f'Finished scanning {library_name}')

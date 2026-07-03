@@ -62,14 +62,14 @@ def test_cleanup_duplicate_optimized_outputs_reports_progress(tmp_path):
             progress_callback=lambda progress, message: progress_events.append((progress, message)),
         )
 
-    assert deleted_files == 1
-    assert affected_library_ids
-    assert not duplicate_output.exists()
+    assert deleted_files == 0
+    assert affected_library_ids == []
+    assert duplicate_output.exists()
     assert progress_events[0][0] == 1
     assert progress_events[-1][0] == 100
     assert all(0 <= progress <= 100 for progress, _ in progress_events)
     assert [progress for progress, _ in progress_events] == sorted(progress for progress, _ in progress_events)
-    assert any('Indexing files' in message for _, message in progress_events)
+    assert any('Checking cleanup records' in message for _, message in progress_events)
 
 
 def test_delete_job_stops_active_encoder_and_removes_workspace(monkeypatch, tmp_path):
