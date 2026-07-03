@@ -703,6 +703,28 @@ def _is_target_resolution_artifact(path: Path, target_resolution: int) -> bool:
     return probed is not None and abs(int(probed) - int(target_resolution)) <= 32
 
 
+def _cleanup_resolution_bucket(path: Path, target_resolution: int) -> int | None:
+    stem_lower = path.stem.lower()
+    for resolution in (2160, 1440, 1080, 720, 480):
+        if _has_exact_resolution_label(path, resolution):
+            return resolution
+
+    if target_resolution == 1080 and re.search(r'\b2k\b', stem_lower):
+        return 1440
+    if re.search(r'\b2k\b', stem_lower):
+        return 1440
+
+    probed = optimization_service.probe_video_height(str(path))
+    if probed is None:
+        return None
+
+    height = int(probed)
+    for resolution in (2160, 1440, 1080, 720, 480):
+        if abs(height - resolution) <= 32:
+            return resolution
+    return height
+
+
 def find_existing_target_artifact_for_identity(
     source_path: str,
     target_resolution: int,
@@ -750,7 +772,7 @@ def _cleanup_filesystem_duplicate_optimized_outputs(
     progress_start: int = 0,
     progress_end: int = 100,
 ) -> int:
-    artifact_groups: dict[str, list[Path]] = {}
+    artifact_groups: dict[tuple[str, int], list[Path]] = {}
     candidate_iterable = candidates if candidates is not None else list(library_path.rglob('*'))
     total_candidates = max(1, len(candidate_iterable))
     last_reported = -1
@@ -765,12 +787,13 @@ def _cleanup_filesystem_duplicate_optimized_outputs(
         identity_key = media_identity_key(str(candidate))
         if not identity_key:
             continue
-        if not _is_target_resolution_artifact(candidate, target_resolution):
+        resolution_bucket = _cleanup_resolution_bucket(candidate, target_resolution)
+        if resolution_bucket is None:
             continue
-        artifact_groups.setdefault(identity_key, []).append(candidate)
+        artifact_groups.setdefault((identity_key, resolution_bucket), []).append(candidate)
 
     removed_files = 0
-    for artifacts in artifact_groups.values():
+    for (_identity_key, resolution_bucket), artifacts in artifact_groups.items():
         unique_paths = list({str(path.resolve()): path for path in artifacts}.values())
         if len(unique_paths) <= 1:
             continue
@@ -778,7 +801,9 @@ def _cleanup_filesystem_duplicate_optimized_outputs(
         def sort_key(path: Path) -> tuple[int, float, str]:
             try:
                 stat = path.stat()
-                return (stat.st_size, stat.st_mtime, str(path))
+                if resolution_bucket == int(target_resolution):
+                    return (stat.st_size, stat.st_mtime, str(path))
+                return (int(stat.st_mtime), stat.st_size, str(path))
             except OSError:
                 return (0, 0.0, str(path))
 

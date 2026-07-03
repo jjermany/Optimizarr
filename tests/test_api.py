@@ -1899,6 +1899,42 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_extra_1080p_filesystem_ver
     assert not smaller_1080p.exists()
 
 
+def test_cleanup_duplicate_optimized_endpoint_deletes_extra_4k_filesystem_version(tmp_path):
+    from app.core.database import SessionLocal
+    from app.models.library import Library, LibraryProfile
+
+    library_path = tmp_path / 'movies'
+    library_path.mkdir()
+    stale_larger_4k = library_path / 'Movie Title (2024) 2160p Remux.mkv'
+    current_smaller_4k = library_path / 'Movie Title (2024) 4K WEB-DL.mkv'
+    optimized_1080p = library_path / 'Movie Title (2024)-1080p.mkv'
+    stale_larger_4k.write_text('larger-original-4k-version')
+    current_smaller_4k.write_text('small-4k')
+    optimized_1080p.write_text('optimized-1080p')
+    os.utime(stale_larger_4k, (1_600_000_000, 1_600_000_000))
+    os.utime(current_smaller_4k, (1_700_000_000, 1_700_000_000))
+
+    with SessionLocal() as db:
+        library = Library(name='Duplicate Plex 4K Versions', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+        db.add(LibraryProfile(library_id=library.id, target_resolution=1080))
+        db.commit()
+        library_id = library.id
+
+    with TestClient(app) as client:
+        cleanup_response = client.post('/cleanup/optimized/duplicates')
+        assert cleanup_response.status_code == 200
+        payload = cleanup_response.json()
+        assert payload['deleted_files'] == 1
+        assert payload['affected_library_ids'] == [library_id]
+
+    assert not stale_larger_4k.exists()
+    assert current_smaller_4k.exists()
+    assert optimized_1080p.exists()
+
+
 def test_cleanup_duplicate_optimized_endpoint_deletes_recorded_duplicate_artifacts_across_labels(tmp_path):
     from datetime import UTC, datetime
 
