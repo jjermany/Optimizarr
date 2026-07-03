@@ -289,6 +289,18 @@ def init_db() -> None:
         )
         _add_column_if_missing(
             connection,
+            'settings',
+            'duplicate_cleanup_enabled',
+            'duplicate_cleanup_enabled BOOLEAN NOT NULL DEFAULT 0',
+        )
+        _add_column_if_missing(
+            connection,
+            'settings',
+            'duplicate_cleanup_interval_hours',
+            'duplicate_cleanup_interval_hours INTEGER NOT NULL DEFAULT 24',
+        )
+        _add_column_if_missing(
+            connection,
             'download_jobs',
             'client_type',
             'client_type VARCHAR(16)',

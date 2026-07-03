@@ -151,6 +151,8 @@ def test_get_and_update_settings():
         assert payload['scan_probe_workers'] >= 1
         assert isinstance(payload['requeue_interrupted_jobs'], bool)
         assert isinstance(payload['cleanup_workspaces_on_startup'], bool)
+        assert isinstance(payload['duplicate_cleanup_enabled'], bool)
+        assert payload['duplicate_cleanup_interval_hours'] >= 1
         assert payload['min_free_gb'] >= 1
         assert payload['qbt_strike_check_interval_seconds'] >= 1
         assert payload['qbt_metadata_max_strikes'] >= 0
@@ -172,6 +174,8 @@ def test_get_and_update_settings():
                 'scan_probe_workers': 9999,
                 'requeue_interrupted_jobs': False,
                 'cleanup_workspaces_on_startup': False,
+                'duplicate_cleanup_enabled': True,
+                'duplicate_cleanup_interval_hours': 12,
                 'min_free_gb': 32,
                 'qbt_strike_check_interval_seconds': 60,
                 'qbt_metadata_max_strikes': 3,
@@ -193,6 +197,8 @@ def test_get_and_update_settings():
         assert updated['scan_probe_workers'] == max(1, os.cpu_count() or 1)
         assert updated['requeue_interrupted_jobs'] is False
         assert updated['cleanup_workspaces_on_startup'] is False
+        assert updated['duplicate_cleanup_enabled'] is True
+        assert updated['duplicate_cleanup_interval_hours'] == 12
         assert updated['min_free_gb'] == 32
         assert updated['qbt_strike_check_interval_seconds'] == 60
         assert updated['qbt_metadata_max_strikes'] == 3

@@ -676,6 +676,8 @@ class SettingsResponse(BaseModel):
     scan_probe_workers: int
     requeue_interrupted_jobs: bool
     cleanup_workspaces_on_startup: bool
+    duplicate_cleanup_enabled: bool
+    duplicate_cleanup_interval_hours: int
     min_free_gb: int
     qbt_strike_check_interval_seconds: int
     qbt_metadata_max_strikes: int
@@ -703,6 +705,8 @@ class SettingsResponse(BaseModel):
             scan_probe_workers=clamp_scan_probe_workers(settings.scan_probe_workers),
             requeue_interrupted_jobs=settings.requeue_interrupted_jobs,
             cleanup_workspaces_on_startup=settings.cleanup_workspaces_on_startup,
+            duplicate_cleanup_enabled=settings.duplicate_cleanup_enabled,
+            duplicate_cleanup_interval_hours=settings.duplicate_cleanup_interval_hours,
             min_free_gb=settings.min_free_gb,
             qbt_strike_check_interval_seconds=settings.qbt_strike_check_interval_seconds,
             qbt_metadata_max_strikes=settings.qbt_metadata_max_strikes,
@@ -730,6 +734,8 @@ class SettingsUpdateRequest(BaseModel):
     scan_probe_workers: int | None = Field(default=None, ge=1)
     requeue_interrupted_jobs: bool | None = None
     cleanup_workspaces_on_startup: bool | None = None
+    duplicate_cleanup_enabled: bool | None = None
+    duplicate_cleanup_interval_hours: int | None = Field(default=None, ge=1)
     min_free_gb: int | None = Field(default=None, ge=1)
     qbt_strike_check_interval_seconds: int | None = Field(default=None, ge=1)
     qbt_metadata_max_strikes: int | None = Field(default=None, ge=0)

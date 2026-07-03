@@ -5134,6 +5134,17 @@ export default function App() {
                 <FormField label="Minimum Free Disk (GB)" hint="Pause the queue when free disk drops below this threshold.">
                   <TextInput type="number" min={1} value={settings.min_free_gb} onChange={(e) => setSettings((prev) => ({ ...prev, min_free_gb: Number(e.target.value) }))} />
                 </FormField>
+
+                <FormField label="Duplicate Cleanup Interval (Hours)" hint="How often scheduled duplicate optimized cleanup runs when enabled.">
+                  <TextInput
+                    type="number"
+                    min={1}
+                    value={settings.duplicate_cleanup_interval_hours}
+                    disabled={!settings.duplicate_cleanup_enabled}
+                    className={!settings.duplicate_cleanup_enabled ? 'cursor-not-allowed border-slate-700/70 bg-slate-900/40 text-slate-500' : ''}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, duplicate_cleanup_interval_hours: Number(e.target.value) }))}
+                  />
+                </FormField>
               </div>
 
               <div className="mt-4 space-y-3">
@@ -5167,6 +5178,17 @@ export default function App() {
                   <Toggle
                     checked={settings.cleanup_workspaces_on_startup}
                     onChange={(e) => setSettings((prev) => ({ ...prev, cleanup_workspaces_on_startup: e.target.checked }))}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200">Scheduled Duplicate Cleanup</p>
+                    <p className="text-xs text-slate-500">Automatically remove duplicate optimized/source artifacts on the configured interval.</p>
+                  </div>
+                  <Toggle
+                    checked={settings.duplicate_cleanup_enabled}
+                    onChange={(e) => setSettings((prev) => ({ ...prev, duplicate_cleanup_enabled: e.target.checked }))}
                   />
                 </div>
               </div>
