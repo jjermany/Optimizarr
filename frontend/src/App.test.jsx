@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  ACTIVE_QUEUE_POLL_MS,
   buildQrCodeDataUrl,
   buildFallbackHistoryByEncodeJobId,
   buildUnifiedHistoryItems,
@@ -18,6 +19,12 @@ import {
   removeJobById,
   shouldShowDownloadElapsed,
 } from './App';
+
+describe('realtime refresh cadence', () => {
+  it('keeps active queue polling fast enough for progress bars', () => {
+    expect(ACTIVE_QUEUE_POLL_MS).toBeLessThanOrEqual(1000);
+  });
+});
 
 describe('buildQrCodeDataUrl', () => {
   it('returns a PNG data URL for a valid otpauth URI', async () => {

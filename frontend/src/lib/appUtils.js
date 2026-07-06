@@ -6,6 +6,7 @@ export const WS_PATH = '/ws';
 export const FALLBACK_AFTER_MS = 5000;
 export const REALTIME_BATCH_MS = 250;
 export const FALLBACK_POLL_MS = 10000;
+export const ACTIVE_QUEUE_POLL_MS = 1000;
 export const METRICS_POLL_MS = 10000;
 export const QUEUE_RECONCILE_POLL_MS = 15000;
 export const RECONNECT_BASE_DELAY_MS = 1000;

@@ -63,6 +63,7 @@ import {
   FALLBACK_AFTER_MS,
   REALTIME_BATCH_MS,
   FALLBACK_POLL_MS,
+  ACTIVE_QUEUE_POLL_MS,
   METRICS_POLL_MS,
   QUEUE_RECONCILE_POLL_MS,
   RECONNECT_BASE_DELAY_MS,
@@ -559,7 +560,7 @@ export default function App() {
     }
   }
 
-  function scheduleQueueSnapshotRefresh(delayMs = 250) {
+  function scheduleQueueSnapshotRefresh(delayMs = 0) {
     if (queueSnapshotTimerRef.current) {
       window.clearTimeout(queueSnapshotTimerRef.current);
     }
@@ -958,7 +959,7 @@ export default function App() {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
     const hasActiveDownloads = downloadJobs.some((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase()));
     if (activeJobs.length === 0 && !hasActiveDownloads) return undefined;
-    const timer = setInterval(refreshQueueSnapshot, 5000);
+    const timer = setInterval(refreshQueueSnapshot, ACTIVE_QUEUE_POLL_MS);
     return () => clearInterval(timer);
   }, [activeJobs.length, downloadJobs, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
@@ -1016,7 +1017,13 @@ export default function App() {
         };
 
         websocket.onmessage = (event) => {
-          const payload = JSON.parse(event.data);
+          let payload;
+          try {
+            payload = JSON.parse(event.data);
+          } catch {
+            return;
+          }
+          if (!payload || typeof payload !== 'object') return;
           if (payload.type === 'job_update') {
             queueRealtimeJobUpdate(payload.data);
             return;
