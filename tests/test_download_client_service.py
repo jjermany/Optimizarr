@@ -29,6 +29,65 @@ def test_get_sab_status_parses_timeleft_eta_and_speed(monkeypatch):
     assert status['not_found'] is False
 
 
+def test_get_sab_status_head_slot_without_real_speed_is_waiting(monkeypatch):
+    # A slot can occupy array position 0 and carry partial percentage (e.g.
+    # from a brief article/par2 pre-check) without actually being the item
+    # SAB is currently transferring. With no reported per-slot or queue-level
+    # throughput, it should be treated as still waiting its turn rather than
+    # "downloading".
+    queue_payload = {
+        'queue': {
+            'slots': [
+                {
+                    'nzo_id': 'NZO-PRECHECK-ONLY',
+                    'percentage': '1',
+                    'status': 'Downloading',
+                    'timeleft': '19:29',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-PRECHECK-ONLY')
+
+    assert status['is_waiting'] is True
+    assert status['eta_seconds'] is None
+    assert status['download_speed_bps'] == 0
+    assert status['progress_percent'] == 1
+
+
+def test_get_sab_status_head_slot_with_real_speed_is_not_waiting(monkeypatch):
+    queue_payload = {
+        'queue': {
+            'slots': [
+                {
+                    'nzo_id': 'NZO-ACTUALLY-ACTIVE',
+                    'percentage': '38',
+                    'status': 'Downloading',
+                    'timeleft': '1:26',
+                    'kbpersec': '11800',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-ACTUALLY-ACTIVE')
+
+    assert status['is_waiting'] is False
+    assert status['download_speed_bps'] == int(11800 * 1024)
+    assert status['eta_seconds'] == 86
+
+
 def test_set_sab_category_uses_change_cat_first(monkeypatch):
     calls = []
 

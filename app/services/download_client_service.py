@@ -462,12 +462,6 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
         # when the pause was applied.
         queue_paused = bool(queue_info.get('paused'))
         slots = queue_info.get('slots', [])
-        logger.warning(
-            'SAB_QUEUE_DEBUG target=%s queue_paused=%s slots=%s',
-            nzo_id,
-            queue_paused,
-            [(i, sl.get('nzo_id'), sl.get('status'), sl.get('percentage')) for i, sl in enumerate(slots)],
-        )
         for slot_index, slot in enumerate(slots):
             if slot.get('nzo_id') == nzo_id:
                 pct = slot.get('percentage', 0)
@@ -479,30 +473,23 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                 status_text = str(status or '').strip().lower()
                 is_stalled = status_text in {'stalled', 'failed'}
                 is_moving = _sab_is_moving_status(status)
-                # A queue-wide pause freezes every slot except ones actively
-                # post-processing (moving) or already errored (stalled/
-                # failed) -- SAB keeps those running even while the download
-                # queue itself is paused.
-                is_queue_wide_paused = queue_paused and not is_moving and not is_stalled
-                is_waiting = is_queue_wide_paused or _sab_is_waiting_status(status) or slot_index > 0
-                # Normalize the reported status so downstream consumers see
-                # "Paused" even when SAB left this slot's own status text
-                # unchanged (e.g. still "Downloading") while the queue is
-                # globally paused.
-                effective_status = 'Paused' if is_queue_wide_paused else status
-                eta_seconds = None if is_waiting else _parse_sab_eta_seconds(slot.get('timeleft'))
-                if eta_seconds is None and not is_waiting and slot_index == 0:
-                    eta_seconds = _parse_sab_eta_seconds(queue_info.get('timeleft'))
+
+                # Compute the slot's own reported transfer speed before
+                # deciding is_waiting. SAB's queue array position alone is
+                # not a fully reliable signal for "actively receiving bytes
+                # right now" -- a brief article/par2 pre-check can leave a
+                # not-yet-active slot with partial percentage even though
+                # it's still waiting its turn, so the head slot must also
+                # show real throughput, not just occupy position 0.
                 speed_bps: int | None = None
-                # Prefer explicit speed metrics. "mb" is a size field, not speed.
                 speed_sources: list[tuple[object, str]] = []
-                if not is_waiting and slot.get('mbps') is not None:
+                if slot.get('mbps') is not None:
                     speed_sources.append((slot.get('mbps'), 'mbps'))
-                if not is_waiting and slot.get('kbpersec') is not None:
+                if slot.get('kbpersec') is not None:
                     speed_sources.append((slot.get('kbpersec'), 'kbps'))
-                if not is_waiting and slot_index == 0 and queue_info.get('mbps') is not None:
+                if slot_index == 0 and queue_info.get('mbps') is not None:
                     speed_sources.append((queue_info.get('mbps'), 'mbps'))
-                if not is_waiting and slot_index == 0 and queue_info.get('kbpersec') is not None:
+                if slot_index == 0 and queue_info.get('kbpersec') is not None:
                     speed_sources.append((queue_info.get('kbpersec'), 'kbps'))
 
                 for raw_value, unit_hint in speed_sources:
@@ -520,6 +507,27 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                         speed_bps = None
                     if speed_bps is not None:
                         break
+
+                # A queue-wide pause freezes every slot except ones actively
+                # post-processing (moving) or already errored (stalled/
+                # failed) -- SAB keeps those running even while the download
+                # queue itself is paused.
+                is_queue_wide_paused = queue_paused and not is_moving and not is_stalled
+                has_active_speed = bool(speed_bps)
+                is_waiting = (
+                    is_queue_wide_paused
+                    or _sab_is_waiting_status(status)
+                    or slot_index > 0
+                    or (slot_index == 0 and not is_moving and not has_active_speed)
+                )
+                # Normalize the reported status so downstream consumers see
+                # "Paused" even when SAB left this slot's own status text
+                # unchanged (e.g. still "Downloading") while the queue is
+                # globally paused.
+                effective_status = 'Paused' if is_queue_wide_paused else status
+                eta_seconds = None if is_waiting else _parse_sab_eta_seconds(slot.get('timeleft'))
+                if eta_seconds is None and not is_waiting and slot_index == 0:
+                    eta_seconds = _parse_sab_eta_seconds(queue_info.get('timeleft'))
                 if is_waiting:
                     speed_bps = 0
                 return {

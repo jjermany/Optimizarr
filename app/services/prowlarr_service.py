@@ -12,6 +12,11 @@ from app.models.prowlarr_settings import ProwlarrSettings
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 15
+# Prowlarr fans a search out to every configured indexer and waits on the
+# slowest one before responding. A broad/free-text fallback query can hit far
+# more indexers than a precise TmdbId query, so it routinely needs longer than
+# the default timeout used for simple, single-purpose Prowlarr endpoints.
+_SEARCH_TIMEOUT = 60
 _SEARCH_RESULT_LIMIT = 100
 
 
@@ -102,7 +107,7 @@ def search(
             url,
             params=params,
             headers={'X-Api-Key': api_key},
-            timeout=_DEFAULT_TIMEOUT,
+            timeout=_SEARCH_TIMEOUT,
         )
         resp.raise_for_status()
         return resp.json()

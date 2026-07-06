@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from app.services import download_client_service, download_monitor_service; print\\('OK'\\)\")"
+    ]
+  }
+}
