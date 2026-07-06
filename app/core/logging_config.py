@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -8,6 +9,18 @@ DEFAULT_LOG_DIR = '/config/logs'
 DEFAULT_LOG_LEVEL = 'INFO'
 DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
 DEFAULT_LOG_BACKUP_COUNT = 10
+QUIET_POLL_ACCESS_PATHS = frozenset({
+    '/api/download-jobs',
+    '/api/jobs',
+    '/api/metrics',
+    '/api/queue/status',
+    '/download-jobs',
+    '/jobs',
+    '/metrics',
+    '/queue/status',
+})
+_ACCESS_MESSAGE_RE = re.compile(r'"(?P<method>[A-Z]+)\s+(?P<path>\S+)\s+HTTP/[^"]+"\s+(?P<status>\d{3})')
+_POLL_ACCESS_FILTER_MARKER = '_optimizarr_poll_access_filter'
 
 
 def _parse_positive_int_env(name: str, default: int) -> int:
@@ -21,6 +34,69 @@ def _parse_positive_int_env(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _parse_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {'1', 'true', 'yes', 'on'}:
+        return True
+    if normalized in {'0', 'false', 'no', 'off'}:
+        return False
+    return default
+
+
+class PollingAccessLogFilter(logging.Filter):
+    def __init__(self) -> None:
+        super().__init__()
+        setattr(self, _POLL_ACCESS_FILTER_MARKER, True)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        parsed = self._parse_record(record)
+        if parsed is None:
+            return True
+        method, path, status_code = parsed
+        normalized_path = path.split('?', 1)[0]
+        if method in {'GET', 'HEAD'} and normalized_path in QUIET_POLL_ACCESS_PATHS and 200 <= status_code < 400:
+            return False
+        return True
+
+    @staticmethod
+    def _parse_record(record: logging.LogRecord) -> tuple[str, str, int] | None:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 5:
+            try:
+                method = str(args[1]).upper()
+                path = str(args[2])
+                status_code = int(args[4])
+                return method, path, status_code
+            except (TypeError, ValueError):
+                return None
+
+        message = record.getMessage()
+        match = _ACCESS_MESSAGE_RE.search(message)
+        if not match:
+            return None
+        try:
+            status_code = int(match.group('status'))
+        except ValueError:
+            return None
+        return match.group('method').upper(), match.group('path'), status_code
+
+
+def _configure_uvicorn_access_logging() -> None:
+    access_logger = logging.getLogger('uvicorn.access')
+    existing_filters = [
+        existing_filter
+        for existing_filter in access_logger.filters
+        if not getattr(existing_filter, _POLL_ACCESS_FILTER_MARKER, False)
+    ]
+    access_logger.filters = existing_filters
+
+    if _parse_bool_env('OPTIMIZARR_SUPPRESS_POLL_ACCESS_LOGS', True):
+        access_logger.addFilter(PollingAccessLogFilter())
+
+
 def configure_logging() -> None:
     log_dir = Path(os.getenv('OPTIMIZARR_LOG_DIR', DEFAULT_LOG_DIR))
     log_file = log_dir / 'optimizarr.log'
@@ -29,6 +105,7 @@ def configure_logging() -> None:
     backup_count = _parse_positive_int_env('OPTIMIZARR_LOG_BACKUP_COUNT', DEFAULT_LOG_BACKUP_COUNT)
 
     log_dir.mkdir(parents=True, exist_ok=True)
+    _configure_uvicorn_access_logging()
 
     level = getattr(logging, log_level_name, logging.INFO)
 
