@@ -525,6 +525,63 @@ def test_get_sab_status_marks_moving_state(monkeypatch):
     assert status['not_found'] is False
 
 
+def test_get_sab_status_marks_unpacking_state(monkeypatch):
+    queue_payload = {
+        'queue': {
+            'slots': [
+                {
+                    'nzo_id': 'NZO-UNPACK',
+                    'percentage': '0',
+                    'status': 'Extracting',
+                    'timeleft': '0:04:30',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-UNPACK')
+
+    assert status['is_unpacking'] is True
+    assert status['is_waiting'] is False
+    assert status['is_complete'] is False
+    assert status['not_found'] is False
+    assert status['eta_seconds'] == 270
+
+
+def test_get_sab_status_marks_repairing_state_separately(monkeypatch):
+    queue_payload = {
+        'queue': {
+            'slots': [
+                {
+                    'nzo_id': 'NZO-REPAIR',
+                    'percentage': '0',
+                    'status': 'Repairing',
+                    'timeleft': '0:02:00',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-REPAIR')
+
+    assert status['is_repairing'] is True
+    assert status['is_unpacking'] is False
+    assert status['is_waiting'] is False
+    assert status['is_complete'] is False
+    assert status['not_found'] is False
+    assert status['eta_seconds'] == 120
+
+
 def test_get_sab_status_marks_queued_status_as_waiting(monkeypatch):
     queue_payload = {
         'queue': {

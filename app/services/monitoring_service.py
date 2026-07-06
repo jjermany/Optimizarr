@@ -23,6 +23,8 @@ ACTIVE_DOWNLOAD_STATUSES = {
     DownloadJobStatus.queued.value,
     DownloadJobStatus.paused.value,
     DownloadJobStatus.downloading.value,
+    DownloadJobStatus.repairing.value,
+    DownloadJobStatus.unpacking.value,
     DownloadJobStatus.moving.value,
     DownloadJobStatus.importing.value,
 }

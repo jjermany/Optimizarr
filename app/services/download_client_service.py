@@ -457,6 +457,22 @@ def _sab_is_moving_status(status: object) -> bool:
     return status_text in {'moving', 'move'}
 
 
+def _sab_is_unpacking_status(status: object) -> bool:
+    status_text = str(status or '').strip().lower()
+    return status_text in {
+        'extracting',
+        'unpacking',
+    }
+
+
+def _sab_is_repairing_status(status: object) -> bool:
+    status_text = str(status or '').strip().lower()
+    return status_text in {
+        'repairing',
+        'verifying',
+    }
+
+
 def _sab_is_waiting_status(status: object) -> bool:
     status_text = str(status or '').strip().lower()
     return status_text in {
@@ -495,6 +511,8 @@ def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict 
             status_text = str(status or '').strip().lower()
             is_stalled = status_text in {'stalled', 'failed'}
             is_moving = _sab_is_moving_status(status)
+            is_repairing = _sab_is_repairing_status(status)
+            is_unpacking = _sab_is_unpacking_status(status)
 
             # Compute the slot's own reported transfer speed before
             # deciding is_waiting. SAB's queue array position alone is
@@ -534,7 +552,7 @@ def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict 
             # post-processing (moving) or already errored (stalled/
             # failed) -- SAB keeps those running even while the download
             # queue itself is paused.
-            is_queue_wide_paused = queue_paused and not is_moving and not is_stalled
+            is_queue_wide_paused = queue_paused and not is_moving and not is_repairing and not is_unpacking and not is_stalled
             has_active_speed = bool(speed_bps)
             # A slot already reporting its own "Stalled"/"Failed" status
             # text is a stronger, more specific signal than the lack of
@@ -544,8 +562,8 @@ def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict 
             is_waiting = (
                 is_queue_wide_paused
                 or _sab_is_waiting_status(status)
-                or slot_index > 0
-                or (slot_index == 0 and not is_moving and not is_stalled and not has_active_speed)
+                or (slot_index > 0 and not is_repairing and not is_unpacking)
+                or (slot_index == 0 and not is_moving and not is_repairing and not is_unpacking and not is_stalled and not has_active_speed)
             )
             # Normalize the reported status so downstream consumers see
             # "Paused" even when SAB left this slot's own status text
@@ -564,6 +582,8 @@ def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict 
                 'client_queue_position': slot_index,
                 'is_complete': False,
                 'is_moving': is_moving,
+                'is_repairing': is_repairing,
+                'is_unpacking': is_unpacking,
                 'is_waiting': is_waiting,
                 'is_stalled': is_stalled,
                 # Unlike a transient stall, SAB reporting "Failed" text
@@ -584,6 +604,8 @@ def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict 
                 status = slot.get('status', '')
                 is_complete = status == 'Completed'
                 is_moving = _sab_is_moving_status(status) and not is_complete
+                is_repairing = _sab_is_repairing_status(status) and not is_complete
+                is_unpacking = _sab_is_unpacking_status(status) and not is_complete
                 is_waiting = _sab_is_waiting_status(status) and not is_complete
                 save_path = slot.get('storage') if is_complete else None
                 return {
@@ -593,6 +615,8 @@ def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict 
                     'client_queue_position': None,
                     'is_complete': is_complete,
                     'is_moving': is_moving,
+                    'is_repairing': is_repairing,
+                    'is_unpacking': is_unpacking,
                     'is_waiting': is_waiting,
                     'is_stalled': status == 'Failed',
                     # A history entry means SAB has already given up on this
@@ -612,6 +636,8 @@ def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict 
         'client_queue_position': None,
         'is_complete': False,
         'is_moving': False,
+        'is_repairing': False,
+        'is_unpacking': False,
         'is_waiting': False,
         'is_stalled': False,
         'is_failed': False,

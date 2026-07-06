@@ -3425,6 +3425,99 @@ def test_check_download_progress_marks_moving_and_preserves_nonzero_progress(mon
         assert dj.progress_percent == 88
 
 
+def test_check_download_progress_marks_unpacking_and_preserves_nonzero_progress(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Unpacking.Phase.Item.mkv',
+            release_name='Unpacking.Phase.Item.2025.1080p.WEB-DL',
+            download_hash='SAB_UNPACK_NZO',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            progress_percent=100,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': 240,
+            'download_speed_bps': 0,
+            'is_complete': False,
+            'is_moving': False,
+            'is_unpacking': True,
+            'is_waiting': False,
+            'is_stalled': False,
+            'sab_status': 'Extracting',
+            'save_path': None,
+            'not_found': False,
+        })
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.unpacking.value
+        assert dj.progress_percent == 100
+        assert dj.eta_seconds == 240
+
+
+def test_check_download_progress_marks_repairing_and_preserves_nonzero_progress(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Repairing.Phase.Item.mkv',
+            release_name='Repairing.Phase.Item.2025.1080p.WEB-DL',
+            download_hash='SAB_REPAIR_NZO',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            progress_percent=100,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': 120,
+            'download_speed_bps': 0,
+            'is_complete': False,
+            'is_moving': False,
+            'is_repairing': True,
+            'is_unpacking': False,
+            'is_waiting': False,
+            'is_stalled': False,
+            'sab_status': 'Repairing',
+            'save_path': None,
+            'not_found': False,
+        })
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.repairing.value
+        assert dj.progress_percent == 100
+        assert dj.eta_seconds == 120
+
+
 def test_check_download_progress_sab_stalled_stays_tracked_until_timeout(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()

@@ -17,6 +17,8 @@ class DownloadJobStatus(str, Enum):
     queued = 'queued'             # accepted by client, waiting for client-side queue slot
     paused = 'paused'             # paused in the download client
     downloading = 'downloading'
+    repairing = 'repairing'
+    unpacking = 'unpacking'
     moving = 'moving'
     stalled = 'stalled'
     importing = 'importing'

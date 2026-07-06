@@ -134,6 +134,8 @@ describe('buildUnifiedQueueItems', () => {
         { id: 40, status: 'queued', source_file_path: '/downloads/Queued.Older.2025.mkv', created_at: '2026-03-01T10:00:00Z' },
         { id: 42, status: 'downloading', source_file_path: '/downloads/Active.Download.2024.mkv', created_at: '2026-03-01T09:00:00Z' },
         { id: 43, status: 'importing', source_file_path: '/downloads/Importing.Download.2023.mkv', created_at: '2026-03-01T08:00:00Z' },
+        { id: 44, status: 'unpacking', source_file_path: '/downloads/Unpacking.Download.2023.mkv', created_at: '2026-03-01T07:00:00Z' },
+        { id: 45, status: 'repairing', source_file_path: '/downloads/Repairing.Download.2023.mkv', created_at: '2026-03-01T06:00:00Z' },
       ],
       sortOption: 'newest',
       extractTitleYear,
@@ -141,6 +143,8 @@ describe('buildUnifiedQueueItems', () => {
     });
 
     expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
+      'download-45',
+      'download-44',
       'download-43',
       'download-42',
       'download-40',

@@ -52,7 +52,7 @@ const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionP
   const elapsedStart = dj.download_started_at ?? dj.created_at;
   const elapsedSeconds = getElapsedSeconds(elapsedStart, nowMs);
   const elapsedLabel = formatElapsed(elapsedSeconds);
-  const showEta = ['searching', 'downloading', 'moving', 'importing'].includes(dj.status);
+  const showEta = ['searching', 'downloading', 'repairing', 'unpacking', 'moving', 'importing'].includes(dj.status);
   const showElapsed = shouldShowDownloadElapsed(dj.status);
   const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
   const speedLabel = formatDownloadSpeed(dj.download_speed_bps);
@@ -68,7 +68,7 @@ const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionP
       </div>
       <div className="flex items-start justify-between gap-2">
         <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={dj.source_file_path}>{title || 'Unknown Title'}</p>
-        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'importing' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : dj.status === 'searching' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : ['queued', 'paused'].includes(dj.status) ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'downloading' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : dj.status === 'moving' ? 'border-indigo-500/40 bg-indigo-950/30 text-indigo-300' : dj.status === 'stalled' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'waiting_encode' ? 'border-fuchsia-500/40 bg-fuchsia-950/30 text-fuchsia-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>
+        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'importing' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : dj.status === 'searching' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : ['queued', 'paused'].includes(dj.status) ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'downloading' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : dj.status === 'repairing' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'unpacking' ? 'border-teal-500/40 bg-teal-950/30 text-teal-300' : dj.status === 'moving' ? 'border-indigo-500/40 bg-indigo-950/30 text-indigo-300' : dj.status === 'stalled' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'waiting_encode' ? 'border-fuchsia-500/40 bg-fuchsia-950/30 text-fuchsia-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>
           {statusLabel}
         </span>
       </div>
@@ -86,7 +86,7 @@ const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionP
         {clientLabel && <span>Client: {clientLabel}</span>}
         {indexerLabel && <span>Indexer: {indexerLabel}</span>}
       </div>
-      {['paused', 'downloading', 'moving'].includes(dj.status) && (
+      {['paused', 'downloading', 'repairing', 'unpacking', 'moving'].includes(dj.status) && (
         <div className="mt-2">
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-700">
             <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
@@ -96,7 +96,7 @@ const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionP
       )}
       {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
       <MobileActionMenu>
-        {['searching', 'queued', 'paused', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
+        {['searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
           <Btn size="sm" variant="danger" disabled={Boolean(actionPending)} onClick={() => onCancel(dj.id)}>
             {actionPending === 'remove_reset' ? 'Working…' : 'Reset Search'}
           </Btn>
@@ -120,7 +120,7 @@ const QueueEncodeCard = memo(function QueueEncodeCard({ job, libName, actionPend
   const eta = formatEta(job.eta_seconds);
   const { year } = extractTitleYear(job.source_path);
   const title = getDisplayTitle(job.source_path);
-  const djIsActive = activeDj && ['searching', 'queued', 'paused', 'downloading', 'moving', 'importing'].includes(activeDj.status);
+  const djIsActive = activeDj && ['searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'importing'].includes(activeDj.status);
   const queueWaitingForRoute = downloadEnabled
     && !djIsActive
     && (
@@ -168,6 +168,18 @@ const QueueEncodeCard = memo(function QueueEncodeCard({ job, libName, actionPend
           {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
         </p>
       )}
+      {djIsActive && activeDj.status === 'repairing' && (
+        <p className="mt-2.5 text-xs text-emerald-400">
+          Repairing {activeDj.progress_percent}%
+          {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
+        </p>
+      )}
+      {djIsActive && activeDj.status === 'unpacking' && (
+        <p className="mt-2.5 text-xs text-teal-400">
+          Unpacking {activeDj.progress_percent}%
+          {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
+        </p>
+      )}
       {djIsActive && activeDj.status === 'importing' && <p className="mt-2.5 text-xs text-violet-400">Importing…</p>}
       <div className="mt-2.5">
         <div className="h-1.5 w-full rounded-full bg-slate-700">
@@ -201,6 +213,8 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
   const statusColor =
     ['queued', 'paused'].includes(dj.status) ? 'text-amber-400' :
     dj.status === 'downloading' ? 'text-cyan-400' :
+    dj.status === 'repairing' ? 'text-emerald-400' :
+    dj.status === 'unpacking' ? 'text-teal-400' :
     dj.status === 'moving' ? 'text-indigo-400' :
     dj.status === 'importing' ? 'text-violet-400' :
     dj.status === 'searching' ? 'text-sky-400' :
@@ -210,7 +224,7 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
   const elapsedStart = dj.download_started_at ?? dj.created_at;
   const elapsedSeconds = getElapsedSeconds(elapsedStart, nowMs);
   const elapsedLabel = formatElapsed(elapsedSeconds);
-  const showEta = ['searching', 'downloading', 'moving', 'importing'].includes(dj.status);
+  const showEta = ['searching', 'downloading', 'repairing', 'unpacking', 'moving', 'importing'].includes(dj.status);
   const showElapsed = shouldShowDownloadElapsed(dj.status);
   const etaLabel = formatEta(getDownloadEtaSeconds(dj, nowMs)) ?? '—';
   const speedLabel = formatDownloadSpeed(dj.download_speed_bps);
@@ -234,9 +248,11 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
       <td className="px-4 py-2.5 align-top text-sm">
         <div className="flex items-center gap-1.5">
           {dj.status === 'searching' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />}
+          {dj.status === 'repairing' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />}
+          {dj.status === 'unpacking' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-teal-400" />}
           {dj.status === 'moving' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-400" />}
           {dj.status === 'importing' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-violet-400" />}
-          <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${statusColor === 'text-violet-400' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : statusColor === 'text-indigo-400' ? 'border-indigo-500/40 bg-indigo-950/30 text-indigo-300' : statusColor === 'text-sky-400' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : statusColor === 'text-cyan-400' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : statusColor === 'text-amber-400' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : statusColor === 'text-fuchsia-400' ? 'border-fuchsia-500/40 bg-fuchsia-950/30 text-fuchsia-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{statusLabel}</span>
+          <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${statusColor === 'text-violet-400' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : statusColor === 'text-indigo-400' ? 'border-indigo-500/40 bg-indigo-950/30 text-indigo-300' : statusColor === 'text-emerald-400' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : statusColor === 'text-teal-400' ? 'border-teal-500/40 bg-teal-950/30 text-teal-300' : statusColor === 'text-sky-400' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : statusColor === 'text-cyan-400' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : statusColor === 'text-amber-400' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : statusColor === 'text-fuchsia-400' ? 'border-fuchsia-500/40 bg-fuchsia-950/30 text-fuchsia-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{statusLabel}</span>
         </div>
         {showEta && <p className="mt-0.5 text-xs text-slate-400">ETA: {etaLabel}</p>}
         {speedLabel && <p className="mt-0.5 text-xs text-slate-400">Speed: {speedLabel}</p>}
@@ -253,7 +269,7 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
       </td>
       <td className="hidden px-4 py-2.5 align-top text-xs text-slate-600 xl:table-cell">—</td>
       <td className="px-4 py-2.5 align-top">
-        {['paused', 'downloading', 'moving'].includes(dj.status) ? (
+        {['paused', 'downloading', 'repairing', 'unpacking', 'moving'].includes(dj.status) ? (
           <div>
             <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-700 md:w-32">
               <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
@@ -264,7 +280,7 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
       </td>
       <td className="px-4 py-2.5 align-top">
         <div className="flex flex-wrap gap-1.5">
-          {['searching', 'queued', 'paused', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
+          {['searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
             <Btn size="sm" variant="danger" disabled={Boolean(actionPending)} onClick={() => onCancel(dj.id)}>
               {actionPending === 'remove_reset' ? 'Working…' : 'Reset Search'}
             </Btn>
@@ -289,7 +305,7 @@ const QueueEncodeRow = memo(function QueueEncodeRow({ job, libName, actionPendin
   const eta = formatEta(job.eta_seconds);
   const { year } = extractTitleYear(job.source_path);
   const title = getDisplayTitle(job.source_path);
-  const djIsActive = activeDj && ['searching', 'queued', 'paused', 'downloading', 'moving', 'importing'].includes(activeDj.status);
+  const djIsActive = activeDj && ['searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'importing'].includes(activeDj.status);
   const queueWaitingForRoute = downloadEnabled
     && !djIsActive
     && (
@@ -341,6 +357,20 @@ const QueueEncodeRow = memo(function QueueEncodeRow({ job, libName, actionPendin
           <p className="mt-0.5 flex items-center gap-1 text-xs text-indigo-400">
             <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-400" />
             Moving {activeDj.progress_percent}%
+            {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
+          </p>
+        )}
+        {djIsActive && activeDj.status === 'repairing' && (
+          <p className="mt-0.5 flex items-center gap-1 text-xs text-emerald-400">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
+            Repairing {activeDj.progress_percent}%
+            {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
+          </p>
+        )}
+        {djIsActive && activeDj.status === 'unpacking' && (
+          <p className="mt-0.5 flex items-center gap-1 text-xs text-teal-400">
+            <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-teal-400" />
+            Unpacking {activeDj.progress_percent}%
             {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
           </p>
         )}

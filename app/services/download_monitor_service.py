@@ -74,6 +74,8 @@ _CLIENT_TRACKED_DOWNLOAD_STATUSES = {
     DownloadJobStatus.queued.value,
     DownloadJobStatus.paused.value,
     DownloadJobStatus.downloading.value,
+    DownloadJobStatus.repairing.value,
+    DownloadJobStatus.unpacking.value,
     DownloadJobStatus.moving.value,
     DownloadJobStatus.stalled.value,
     DownloadJobStatus.importing.value,
@@ -212,6 +214,8 @@ def _monitor_loop() -> None:
                     DownloadJobStatus.queued.value,
                     DownloadJobStatus.paused.value,
                     DownloadJobStatus.downloading.value,
+                    DownloadJobStatus.repairing.value,
+                    DownloadJobStatus.unpacking.value,
                     DownloadJobStatus.moving.value,
                 ]))
                 .count()
@@ -271,6 +275,8 @@ def download_job_exists_for_source(db: Session, source_path: str, library_id: in
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,
         DownloadJobStatus.downloading.value,
+        DownloadJobStatus.repairing.value,
+        DownloadJobStatus.unpacking.value,
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
@@ -322,6 +328,8 @@ _IDENTITY_BLOCKING_DOWNLOAD_STATUSES = {
     DownloadJobStatus.queued.value,
     DownloadJobStatus.paused.value,
     DownloadJobStatus.downloading.value,
+    DownloadJobStatus.repairing.value,
+    DownloadJobStatus.unpacking.value,
     DownloadJobStatus.moving.value,
     DownloadJobStatus.stalled.value,
     DownloadJobStatus.importing.value,
@@ -694,6 +702,8 @@ def _active_download_identity_keys(db: Session) -> set[str]:
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,
         DownloadJobStatus.downloading.value,
+        DownloadJobStatus.repairing.value,
+        DownloadJobStatus.unpacking.value,
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
@@ -732,6 +742,8 @@ def _active_download_jobs_for_identity(db: Session, identity_key: str) -> list[D
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,
         DownloadJobStatus.downloading.value,
+        DownloadJobStatus.repairing.value,
+        DownloadJobStatus.unpacking.value,
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
@@ -1056,13 +1068,15 @@ _ACTIVE_DOWNLOAD_STATUSES = (
     DownloadJobStatus.queued.value,
     DownloadJobStatus.paused.value,
     DownloadJobStatus.downloading.value,
+    DownloadJobStatus.repairing.value,
+    DownloadJobStatus.unpacking.value,
     DownloadJobStatus.moving.value,
     DownloadJobStatus.importing.value,
 )
 
 
 def any_active_download_job(db: Session) -> bool:
-    """Return True if any download job is currently searching, downloading, moving, or importing."""
+    """Return True if any download job is currently searching, downloading, repairing, unpacking, moving, or importing."""
     return db.query(
         db.query(DownloadJob)
         .filter(DownloadJob.status.in_(_ACTIVE_DOWNLOAD_STATUSES))
@@ -1118,6 +1132,8 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
                 DownloadJobStatus.queued.value,
                 DownloadJobStatus.paused.value,
                 DownloadJobStatus.downloading.value,
+                DownloadJobStatus.repairing.value,
+                DownloadJobStatus.unpacking.value,
                 DownloadJobStatus.moving.value,
                 DownloadJobStatus.stalled.value,
                 DownloadJobStatus.importing.value,
@@ -1244,7 +1260,20 @@ def _sync_sab_download_job_state_from_client(db: Session, dj: DownloadJob, sab) 
         speed_bps = 0
     else:
         is_moving = bool(status.get('is_moving')) and not bool(status.get('is_complete'))
-        expected_status = DownloadJobStatus.moving.value if is_moving else DownloadJobStatus.downloading.value
+        is_repairing = bool(status.get('is_repairing')) and not bool(status.get('is_complete'))
+        is_unpacking = bool(status.get('is_unpacking')) and not bool(status.get('is_complete'))
+        if is_moving:
+            expected_status = DownloadJobStatus.moving.value
+        elif is_repairing:
+            expected_status = DownloadJobStatus.repairing.value
+            if progress == 0 and int(dj.progress_percent or 0) > 0:
+                progress = int(dj.progress_percent or 0)
+        elif is_unpacking:
+            expected_status = DownloadJobStatus.unpacking.value
+            if progress == 0 and int(dj.progress_percent or 0) > 0:
+                progress = int(dj.progress_percent or 0)
+        else:
+            expected_status = DownloadJobStatus.downloading.value
 
     if (
         dj.status != expected_status
@@ -3414,6 +3443,8 @@ def _process_downloading_jobs(db: Session) -> None:
             DownloadJobStatus.queued.value,
             DownloadJobStatus.paused.value,
             DownloadJobStatus.downloading.value,
+            DownloadJobStatus.repairing.value,
+            DownloadJobStatus.unpacking.value,
             DownloadJobStatus.moving.value,
         ]))
         .all()
@@ -3771,8 +3802,10 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
 
     is_complete = bool(status.get('is_complete'))
     is_moving = bool(status.get('is_moving')) and not is_complete
-    if is_moving and progress == 0 and int(dj.progress_percent or 0) > 0:
-        # Clients can report 0% while post-download file moves are in progress.
+    is_repairing = bool(status.get('is_repairing')) and not is_complete
+    is_unpacking = bool(status.get('is_unpacking')) and not is_complete
+    if (is_moving or is_repairing or is_unpacking) and progress == 0 and int(dj.progress_percent or 0) > 0:
+        # Clients can report 0% while post-download processing is in progress.
         # Keep the last known progress to avoid UI regressions/jumps.
         progress = int(dj.progress_percent or 0)
 
@@ -3806,7 +3839,14 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
         eta_seconds = None
         speed_bps = 0
     else:
-        expected_status = DownloadJobStatus.moving.value if is_moving else DownloadJobStatus.downloading.value
+        if is_moving:
+            expected_status = DownloadJobStatus.moving.value
+        elif is_repairing:
+            expected_status = DownloadJobStatus.repairing.value
+        elif is_unpacking:
+            expected_status = DownloadJobStatus.unpacking.value
+        else:
+            expected_status = DownloadJobStatus.downloading.value
     should_update = (
         progress != dj.progress_percent
         or eta_seconds != dj.eta_seconds
@@ -4543,6 +4583,8 @@ def run_download_startup_recovery(db: Session) -> dict:
                 DownloadJobStatus.queued.value,
                 DownloadJobStatus.paused.value,
                 DownloadJobStatus.downloading.value,
+                DownloadJobStatus.repairing.value,
+                DownloadJobStatus.unpacking.value,
                 DownloadJobStatus.moving.value,
                 DownloadJobStatus.importing.value,
             ])
@@ -4556,6 +4598,8 @@ def run_download_startup_recovery(db: Session) -> dict:
     # was persisted on the DownloadJob row.
     _skip_statuses = {
         DownloadJobStatus.downloading.value,  # already covered by in_flight_jobs loop
+        DownloadJobStatus.repairing.value,
+        DownloadJobStatus.unpacking.value,
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,
         DownloadJobStatus.moving.value,
@@ -4900,6 +4944,8 @@ def run_scan_recovery(db: Session) -> dict:
             DownloadJobStatus.queued.value,
             DownloadJobStatus.paused.value,
             DownloadJobStatus.downloading.value,
+            DownloadJobStatus.repairing.value,
+            DownloadJobStatus.unpacking.value,
             DownloadJobStatus.moving.value,
             DownloadJobStatus.importing.value,
         }

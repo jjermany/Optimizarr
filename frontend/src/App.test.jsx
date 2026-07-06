@@ -378,6 +378,8 @@ describe('shouldShowDownloadElapsed', () => {
 
   it('shows elapsed time for actively progressing download states', () => {
     expect(shouldShowDownloadElapsed('downloading')).toBe(true);
+    expect(shouldShowDownloadElapsed('repairing')).toBe(true);
+    expect(shouldShowDownloadElapsed('unpacking')).toBe(true);
     expect(shouldShowDownloadElapsed('importing')).toBe(true);
   });
 });
