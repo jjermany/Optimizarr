@@ -262,7 +262,7 @@ def test_should_cancel_when_job_row_was_deleted():
 
 def test_batch_tracking_enqueues_completion_email(monkeypatch):
     sent = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: sent.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: sent.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)

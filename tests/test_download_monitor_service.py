@@ -3272,6 +3272,105 @@ def test_check_download_progress_qbit_stalled_stays_tracked(monkeypatch):
         assert fallback_calls == []
 
 
+def test_check_download_progress_sab_history_failed_retries_immediately(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Sab.History.Failed.Item.mkv',
+            release_name='Sab.History.Failed.Item.2025.1080p.WEB-DL',
+            download_hash='SAB_HISTORY_FAILED',
+            indexer_id=42,
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            max_retries=5,
+            progress_percent=40,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 40,
+            'eta_seconds': None,
+            'download_speed_bps': 0,
+            'is_complete': False,
+            'is_moving': False,
+            'is_waiting': False,
+            'is_stalled': True,
+            'is_failed': True,
+            'sab_status': 'Failed',
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.searching.value
+        assert dj.retry_count == 1
+        assert dj.download_hash is None
+        assert 'Download failed in sabnzbd' in (dj.error_message or '')
+
+
+def test_check_download_progress_qbit_error_state_retries_immediately(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Qbit.Error.Item.mkv',
+            release_name='Qbit.Error.Item.2025.1080p.WEB-DL',
+            download_hash='eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            max_retries=5,
+            progress_percent=8,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 8,
+            'eta_seconds': None,
+            'download_speed_bps': 0,
+            'is_complete': False,
+            'is_stalled': True,
+            'is_failed': True,
+            'qbt_state': 'error',
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kwargs: True)
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.searching.value
+        assert dj.retry_count == 1
+        assert dj.download_hash is None
+        assert 'Download failed in qbittorrent' in (dj.error_message or '')
+
+
 def test_check_download_progress_qbit_queued_does_not_timeout_or_retry(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
@@ -4923,7 +5022,7 @@ def test_import_file_sends_completion_notification(monkeypatch, tmp_path):
         db.refresh(dj)
 
         queued = []
-        monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+        monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
         monkeypatch.setattr(download_client_service, 'remove_qbt_torrent', lambda *_args, **_kwargs: True)
 
         _import_file(
@@ -5026,7 +5125,7 @@ def test_mark_failed_sends_failure_notification(monkeypatch):
         db.refresh(dj)
 
         queued = []
-        monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+        monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
 
         _mark_failed(db, dj, 'Download timed out after 60 minutes')
         db.refresh(dj)

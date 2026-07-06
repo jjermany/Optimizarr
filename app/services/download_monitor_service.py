@@ -3572,6 +3572,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                 'is_moving': replacement.get('state', '') in download_client_service._QBT_MOVING_STATES,
                 'is_waiting': replacement.get('state', '') in download_client_service._QBT_WAITING_STATES,
                 'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
+                'is_failed': replacement.get('state', '') in ('error', 'missingFiles'),
                 'qbt_state': replacement.get('state', ''),
                 'save_path': replacement.get('content_path') or replacement.get('save_path'),
                 'not_found': False,
@@ -3605,6 +3606,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                     'is_moving': replacement.get('state', '') in download_client_service._QBT_MOVING_STATES,
                     'is_waiting': replacement.get('state', '') in download_client_service._QBT_WAITING_STATES,
                     'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
+                    'is_failed': replacement.get('state', '') in ('error', 'missingFiles'),
                     'qbt_state': replacement.get('state', ''),
                     'save_path': replacement.get('content_path') or replacement.get('save_path'),
                     'not_found': False,
@@ -3729,7 +3731,22 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             _fallback_to_encode(db, dj, library, profile)
         return
 
-    if status.get('is_stalled') and client_type in {'qbittorrent', 'sabnzbd'}:
+    if status.get('is_failed'):
+        # Unlike a transient stall, this means the client has already given up
+        # on the item (e.g. SAB moved it to History as "Failed", or qBit
+        # reports 'error'/'missingFiles') -- nothing will change without a
+        # retry, so don't wait out the generic download timeout.
+        _retry_failed_download(
+            db,
+            dj,
+            library,
+            profile,
+            reason=f'Download failed in {client_type}',
+            failed_release_key=_release_selection_key_from_job(dj),
+        )
+        return
+
+    if status.get('is_stalled'):
         # Download clients can report transient stalled states even though the
         # item may later resume or the client may still be managing the queue.
         # Keep tracking the same job and rely on the normal timeout path for
@@ -3740,17 +3757,6 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             dj.id,
             client_type,
         )
-
-    elif status.get('is_stalled'):
-        _retry_failed_download(
-            db,
-            dj,
-            library,
-            profile,
-            reason=f'Download stalled in {client_type}',
-            failed_release_key=_release_selection_key_from_job(dj),
-        )
-        return
 
     if is_waiting:
         # Client-side queueing is intentional backpressure, not a bad release.

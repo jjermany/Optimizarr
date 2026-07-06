@@ -65,6 +65,42 @@ def test_send_via_smtp_builds_html_email(monkeypatch):
     assert 'Automated notification from Optimizarr.' in html_parts[0].get_content()
 
 
+def test_dispatch_email_event_skips_send_if_toggle_disabled_after_enqueue(monkeypatch):
+    DummySMTP.sent_messages.clear()
+    monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
+
+    db = SessionLocal()
+    try:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.smtp_host = 'smtp.example.com'
+        settings.from_email = 'optimizarr@example.com'
+        settings.to_emails_csv = 'ops@example.com'
+        settings.notify_on_job_complete = True
+        db.commit()
+    finally:
+        db.close()
+
+    event = notification_service.EmailEvent(
+        subject='Optimizarr job complete',
+        body='Status: Completed successfully.\n',
+        kind='job_complete',
+    )
+
+    # Simulate the toggle being turned off after the job's completion email
+    # was already enqueued but before the background worker sends it.
+    db = SessionLocal()
+    try:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_job_complete = False
+        db.commit()
+    finally:
+        db.close()
+
+    notification_service._dispatch_email_event(event)
+
+    assert DummySMTP.sent_messages == []
+
+
 def test_format_notification_html_renders_text_branding():
     html = notification_service._format_notification_html(
         subject='Optimizarr notification test',
@@ -108,7 +144,7 @@ def test_format_duration_formats_human_readable_runtime():
 
 def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
     queued = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)
@@ -132,7 +168,7 @@ def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
 
 def test_enqueue_job_failed_sends_individual_when_batch_digest_disabled(monkeypatch):
     queued = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)
@@ -155,7 +191,7 @@ def test_enqueue_job_failed_sends_individual_when_batch_digest_disabled(monkeypa
 
 def test_enqueue_job_complete_is_suppressed_when_batch_digest_enabled(monkeypatch):
     queued = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)
@@ -187,7 +223,7 @@ def test_enqueue_job_complete_is_suppressed_when_batch_digest_enabled(monkeypatc
 
 def test_enqueue_job_complete_marks_encode_and_includes_runtime(monkeypatch):
     queued = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)
@@ -220,7 +256,7 @@ def test_enqueue_job_complete_marks_encode_and_includes_runtime(monkeypatch):
 
 def test_enqueue_download_job_complete_marks_download_type(monkeypatch):
     queued = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body: queued.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)

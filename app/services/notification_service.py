@@ -64,6 +64,7 @@ def format_duration(seconds: int | None) -> str | None:
 class EmailEvent:
     subject: str
     body: str
+    kind: str | None = None
 
 
 @dataclass(slots=True)
@@ -84,6 +85,14 @@ _email_queue: Queue[EmailEvent] = Queue()
 _worker_thread: Thread | None = None
 _batch_lock = Lock()
 _batches: list[BatchTracker] = []
+_NOTIFY_FLAG_BY_KIND: dict[str, str] = {
+    'job_complete': 'notify_on_job_complete',
+    'job_failed': 'notify_on_job_failed',
+    'job_interrupted': 'notify_on_job_interrupted',
+    'low_disk_pause': 'notify_on_low_disk_pause',
+    'recovery_ran': 'notify_on_recovery_ran',
+    'batch_complete': 'notify_on_batch_complete',
+}
 _FAILURE_REASON_HINTS: dict[str, str] = {
     'qsv_encode_failed': 'Intel Quick Sync Video (QSV) failed to initialize or encode on this host.',
     'av1_encode_failed': 'The AV1 encoder failed during transcode.',
@@ -263,6 +272,21 @@ def _send_via_smtp(event: EmailEvent, settings: NotificationSettings) -> None:
         smtp.send_message(message)
 
 
+def _dispatch_email_event(event: EmailEvent) -> None:
+    db = SessionLocal()
+    try:
+        settings = get_or_create_notification_settings(db)
+        flag_name = _NOTIFY_FLAG_BY_KIND.get(event.kind)
+        if flag_name and not getattr(settings, flag_name):
+            logger.debug('Skipping queued email; %s disabled after enqueue', flag_name)
+            return
+        _send_via_smtp(event, settings)
+    except Exception:
+        logger.exception('Failed to send email notification')
+    finally:
+        db.close()
+
+
 def _send_worker() -> None:
     while not _stop_event.is_set():
         try:
@@ -270,14 +294,9 @@ def _send_worker() -> None:
         except Empty:
             continue
 
-        db = SessionLocal()
         try:
-            settings = get_or_create_notification_settings(db)
-            _send_via_smtp(event, settings)
-        except Exception:
-            logger.exception('Failed to send email notification')
+            _dispatch_email_event(event)
         finally:
-            db.close()
             _email_queue.task_done()
 
 
@@ -300,8 +319,8 @@ def stop_notification_worker() -> None:
     _worker_thread = None
 
 
-def enqueue_email(subject: str, body: str) -> None:
-    _email_queue.put(EmailEvent(subject=subject, body=body))
+def enqueue_email(subject: str, body: str, kind: str | None = None) -> None:
+    _email_queue.put(EmailEvent(subject=subject, body=body, kind=kind))
 
 
 def enqueue_test_email() -> None:
@@ -349,7 +368,7 @@ def enqueue_job_complete(job: Job) -> None:
         f'Encode Time: {duration_label or "n/a"}\n'
         f'Status: Completed successfully.\n'
     )
-    enqueue_email(subject='Optimizarr job complete', body=body)
+    enqueue_email(subject='Optimizarr job complete', body=body, kind='job_complete')
 
 
 def enqueue_download_job_complete(download_job: DownloadJob) -> None:
@@ -372,7 +391,7 @@ def enqueue_download_job_complete(download_job: DownloadJob) -> None:
         f'File: {file_name}\n'
         f'Status: Download imported successfully.\n'
     )
-    enqueue_email(subject='Optimizarr job complete', body=body)
+    enqueue_email(subject='Optimizarr job complete', body=body, kind='job_complete')
 
 
 def enqueue_job_failed(job: Job) -> None:
@@ -406,7 +425,7 @@ def enqueue_job_failed(job: Job) -> None:
         reason=job.error_message or 'optimization_failed',
         suggested_action='Review the file and encoder settings, then retry the job.',
     )
-    enqueue_email(subject='Optimizarr job failed', body=body)
+    enqueue_email(subject='Optimizarr job failed', body=body, kind='job_failed')
 
 
 def enqueue_download_job_failed(download_job: DownloadJob) -> None:
@@ -430,7 +449,7 @@ def enqueue_download_job_failed(download_job: DownloadJob) -> None:
         reason=download_job.error_message or 'download_failed',
         suggested_action='Review the download/import logs and retry the job.',
     )
-    enqueue_email(subject='Optimizarr job failed', body=body)
+    enqueue_email(subject='Optimizarr job failed', body=body, kind='job_failed')
 
 
 def enqueue_job_interrupted(*, job_id: int, reason: str = 'Interrupted by application restart') -> None:
@@ -459,7 +478,7 @@ def enqueue_job_interrupted(*, job_id: int, reason: str = 'Interrupted by applic
         reason=reason,
         suggested_action='Run recovery and requeue interrupted jobs if needed.',
     )
-    enqueue_email(subject='Optimizarr job interrupted', body=body)
+    enqueue_email(subject='Optimizarr job interrupted', body=body, kind='job_interrupted')
 
 
 def enqueue_low_disk_space_alert(*, min_free_gb: int, free_gb: float, library_name: str | None, file_name: str | None) -> None:
@@ -477,7 +496,7 @@ def enqueue_low_disk_space_alert(*, min_free_gb: int, free_gb: float, library_na
         reason=f'Queue paused for low disk space ({free_gb:.2f} GB free, minimum {min_free_gb} GB).',
         suggested_action='Free disk space in cache/workspace and resume the queue.',
     )
-    enqueue_email(subject='Optimizarr queue paused: low cache space', body=body)
+    enqueue_email(subject='Optimizarr queue paused: low cache space', body=body, kind='low_disk_pause')
 
 
 def enqueue_recovery_ran(*, trigger: str, recovered_jobs: int, requeued_jobs: int, cleaned_workspaces: int) -> None:
@@ -498,7 +517,7 @@ def enqueue_recovery_ran(*, trigger: str, recovered_jobs: int, requeued_jobs: in
         ),
         suggested_action='Review interrupted jobs and queue status in the dashboard.',
     )
-    enqueue_email(subject='Optimizarr recovery completed', body=body)
+    enqueue_email(subject='Optimizarr recovery completed', body=body, kind='recovery_ran')
 
 
 def register_scan_batch(job_ids: list[int], library_name: str | None = None) -> None:
@@ -640,4 +659,4 @@ def handle_job_terminal_state(job_id: int, status: str) -> None:
         f'Status: {status_line}\n'
         'Suggested action: Review failed or skipped items and retry any jobs that need another pass.\n'
     )
-    enqueue_email(subject='Optimizarr batch complete', body=body)
+    enqueue_email(subject='Optimizarr batch complete', body=body, kind='batch_complete')

@@ -258,6 +258,11 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
         is_moving = state in _QBT_MOVING_STATES and not is_complete
         is_waiting = state in _QBT_WAITING_STATES and not is_complete
         is_stalled = state in ('stalledDL', 'missingFiles', 'error', 'stoppedDL')
+        # 'error'/'missingFiles' are terminal -- qBit will not recover these on
+        # its own, unlike a transient 'stalledDL' or a user-initiated
+        # 'stoppedDL' pause, so they should be retried right away rather than
+        # waiting out the generic download timeout.
+        is_failed = state in ('error', 'missingFiles')
         # content_path is the actual file/folder; fall back to save_path (directory)
         save_path = info.get('content_path') or info.get('save_path')
         return {
@@ -268,6 +273,7 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
             'is_moving': is_moving,
             'is_waiting': is_waiting,
             'is_stalled': is_stalled,
+            'is_failed': is_failed,
             'qbt_state': state,
             'save_path': save_path,
             'not_found': False,
@@ -542,6 +548,11 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     'is_moving': is_moving,
                     'is_waiting': is_waiting,
                     'is_stalled': status == 'Failed',
+                    # A history entry means SAB has already given up on this
+                    # NZO -- unlike an in-queue "Stalled" slot, nothing further
+                    # will happen without a retry, so this is a terminal
+                    # failure rather than a transient stall.
+                    'is_failed': status == 'Failed',
                     'sab_status': status,
                     'save_path': save_path,
                     'not_found': False,

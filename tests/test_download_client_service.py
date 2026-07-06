@@ -114,6 +114,66 @@ def test_get_qbt_status_marks_queued_download_as_waiting(monkeypatch):
     assert status['not_found'] is False
 
 
+def test_get_qbt_status_marks_error_state_as_failed(monkeypatch):
+    monkeypatch.setattr(download_client_service, '_qbt_session', lambda _s: object())
+    monkeypatch.setattr(
+        download_client_service,
+        '_qbt_torrent_info',
+        lambda _client, _hash: {
+            'state': 'error',
+            'progress': 0.1,
+            'eta': -1,
+            'dlspeed': 0,
+            'content_path': '/downloads/incomplete/Errored.Movie.2025.1080p',
+        },
+    )
+
+    status = download_client_service.get_qbt_status(SimpleNamespace(), 'abc123')
+
+    assert status['is_stalled'] is True
+    assert status['is_failed'] is True
+    assert status['is_complete'] is False
+
+
+def test_get_qbt_status_marks_missing_files_as_failed(monkeypatch):
+    monkeypatch.setattr(download_client_service, '_qbt_session', lambda _s: object())
+    monkeypatch.setattr(
+        download_client_service,
+        '_qbt_torrent_info',
+        lambda _client, _hash: {
+            'state': 'missingFiles',
+            'progress': 0.4,
+            'eta': -1,
+            'dlspeed': 0,
+            'content_path': '/downloads/incomplete/Missing.Files.Movie.2025.1080p',
+        },
+    )
+
+    status = download_client_service.get_qbt_status(SimpleNamespace(), 'abc123')
+
+    assert status['is_failed'] is True
+
+
+def test_get_qbt_status_stalled_download_is_not_marked_failed(monkeypatch):
+    monkeypatch.setattr(download_client_service, '_qbt_session', lambda _s: object())
+    monkeypatch.setattr(
+        download_client_service,
+        '_qbt_torrent_info',
+        lambda _client, _hash: {
+            'state': 'stalledDL',
+            'progress': 0.2,
+            'eta': -1,
+            'dlspeed': 0,
+            'content_path': '/downloads/incomplete/Stalled.Movie.2025.1080p',
+        },
+    )
+
+    status = download_client_service.get_qbt_status(SimpleNamespace(), 'abc123')
+
+    assert status['is_stalled'] is True
+    assert status['is_failed'] is False
+
+
 def test_qbt_session_accepts_204_login_success(monkeypatch):
     posts = []
 
@@ -350,4 +410,53 @@ def test_get_sab_status_does_not_apply_global_speed_to_later_queue_slot(monkeypa
     assert status['eta_seconds'] is None
     assert status['download_speed_bps'] == 0
     assert status['is_complete'] is False
+
+
+def test_get_sab_status_history_failed_entry_marks_is_failed(monkeypatch):
+    history_payload = {
+        'history': {
+            'slots': [
+                {
+                    'nzo_id': 'NZO-HIST-FAILED',
+                    'status': 'Failed',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: {'queue': {'slots': []}} if params.get('mode') == 'queue' else history_payload,
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-HIST-FAILED')
+
+    assert status['is_failed'] is True
+    assert status['is_stalled'] is True
+    assert status['is_complete'] is False
+    assert status['not_found'] is False
+
+
+def test_get_sab_status_history_completed_entry_is_not_marked_failed(monkeypatch):
+    history_payload = {
+        'history': {
+            'slots': [
+                {
+                    'nzo_id': 'NZO-HIST-DONE',
+                    'status': 'Completed',
+                    'storage': '/downloads/complete/Finished.Movie.2025.1080p',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: {'queue': {'slots': []}} if params.get('mode') == 'queue' else history_payload,
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-HIST-DONE')
+
+    assert status['is_complete'] is True
+    assert status['is_failed'] is False
     assert status['not_found'] is False
