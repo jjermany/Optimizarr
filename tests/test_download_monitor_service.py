@@ -2169,7 +2169,7 @@ def test_process_searching_jobs_retries_existing_searching_job(monkeypatch):
         assert calls == [dj.id]
 
 
-def test_process_searching_jobs_continues_when_existing_download_is_client_queued(monkeypatch):
+def test_process_searching_jobs_waits_when_existing_download_is_client_queued(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.commit()
@@ -2200,11 +2200,11 @@ def test_process_searching_jobs_continues_when_existing_download_is_client_queue
         db.refresh(pending)
 
         assert queued.status == DownloadJobStatus.queued.value
-        assert pending.status == DownloadJobStatus.searching.value
-        assert calls == [pending.id]
+        assert pending.status == DownloadJobStatus.pending.value
+        assert calls == []
 
 
-def test_process_searching_jobs_continues_when_different_download_is_active(monkeypatch):
+def test_process_searching_jobs_waits_when_different_download_is_active(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.commit()
@@ -2235,8 +2235,8 @@ def test_process_searching_jobs_continues_when_different_download_is_active(monk
         db.refresh(pending)
 
         assert active.status == DownloadJobStatus.downloading.value
-        assert pending.status == DownloadJobStatus.searching.value
-        assert calls == [pending.id]
+        assert pending.status == DownloadJobStatus.pending.value
+        assert calls == []
 
 
 def test_process_searching_jobs_removes_same_identity_pending_duplicate(monkeypatch):
@@ -2287,7 +2287,8 @@ def test_process_searching_jobs_removes_same_identity_pending_duplicate(monkeypa
         _process_searching_jobs(db)
 
         assert db.query(DownloadJob).filter(DownloadJob.id == duplicate_id).first() is None
-        assert calls == [next_item_id]
+        assert db.query(DownloadJob).filter(DownloadJob.id == next_item_id).one().status == DownloadJobStatus.pending.value
+        assert calls == []
         assert removed_events == [('download_job_removed', {'download_job_id': duplicate_id})]
 
 
@@ -3123,7 +3124,7 @@ def test_check_download_progress_marks_moving_and_preserves_nonzero_progress(mon
         assert dj.progress_percent == 88
 
 
-def test_check_download_progress_stalled_retries_search_before_fallback(monkeypatch):
+def test_check_download_progress_sab_stalled_stays_tracked_until_timeout(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -3172,12 +3173,11 @@ def test_check_download_progress_stalled_retries_search_before_fallback(monkeypa
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
 
-        assert dj.status == DownloadJobStatus.searching.value
-        assert dj.retry_count == 1
-        assert 'retrying 1/5' in (dj.error_message or '')
+        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.retry_count == 0
+        assert dj.download_hash == 'SAB_STALLED_RETRY'
         assert fallback_calls == []
-        failed_keys = json.loads(dj.failed_release_keys or '[]')
-        assert failed_keys
+        assert dj.failed_release_keys is None
 
 
 def test_check_download_progress_qbit_stalled_stays_tracked(monkeypatch):
@@ -3516,6 +3516,7 @@ def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatc
             status=DownloadJobStatus.downloading.value,
             retry_count=5,
             max_retries=5,
+            download_started_at=datetime.now(UTC) - timedelta(minutes=61),
         )
         db.add(dj)
         db.commit()
@@ -3568,6 +3569,7 @@ def test_check_download_progress_stalled_exhausted_usenet_retries_switches_to_to
             status=DownloadJobStatus.downloading.value,
             retry_count=5,
             max_retries=5,
+            download_started_at=datetime.now(UTC) - timedelta(minutes=61),
         )
         db.add(dj)
         db.commit()

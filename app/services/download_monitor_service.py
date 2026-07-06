@@ -2677,6 +2677,20 @@ def _select_next_pending_download_job(db: Session) -> DownloadJob | None:
     return eligible_jobs[0] if eligible_jobs else None
 
 
+def _has_active_client_download(db: Session) -> bool:
+    return (
+        db.query(DownloadJob)
+        .filter(DownloadJob.status.in_([
+            DownloadJobStatus.queued.value,
+            DownloadJobStatus.downloading.value,
+            DownloadJobStatus.moving.value,
+            DownloadJobStatus.stalled.value,
+            DownloadJobStatus.importing.value,
+        ]))
+        .count()
+    ) > 0
+
+
 def _extract_title_tokens(source_path: str) -> list[str]:
     stem = Path(source_path or '').stem.lower()
     stem = re.sub(r'[\._-]+', ' ', stem)
@@ -2927,6 +2941,9 @@ def _process_searching_jobs(db: Session) -> None:
     sab = download_client_service.get_or_create_sab_settings(db)
 
     if not prowlarr.enabled or (not qbt.enabled and not sab.enabled):
+        return
+    if _has_active_client_download(db):
+        _select_next_pending_download_job(db)
         return
 
     # Always process an existing searching job first so transient errors
@@ -3713,15 +3730,16 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             _fallback_to_encode(db, dj, library, profile)
         return
 
-    if status.get('is_stalled') and client_type == 'qbittorrent':
-        # qBittorrent can report new or metadata-resolving torrents as
-        # stalledDL temporarily even though they later resume and complete.
+    if status.get('is_stalled') and client_type in {'qbittorrent', 'sabnzbd'}:
+        # Download clients can report transient stalled states even though the
+        # item may later resume or the client may still be managing the queue.
         # Keep tracking the same job and rely on the normal timeout path for
         # genuinely long-lived stalls so the eventual completed item can still
         # be imported.
         logger.info(
-            'Download job %s: qBittorrent reported stalled state; continuing to monitor before retrying',
+            'Download job %s: %s reported stalled state; continuing to monitor before retrying',
             dj.id,
+            client_type,
         )
 
     elif status.get('is_stalled'):
