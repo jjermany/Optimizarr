@@ -66,7 +66,7 @@ describe('buildUnifiedQueueItems', () => {
     expect(items.map((item) => item.id)).toEqual([1, 50]);
   });
 
-  it('can optionally pin active downloads first before active encodes', () => {
+  it('can optionally pin active work first before waiting rows', () => {
     const items = buildUnifiedQueueItems({
       encodeItems,
       downloadItems,
@@ -75,10 +75,10 @@ describe('buildUnifiedQueueItems', () => {
       pinActiveFirst: true,
     });
 
-    expect(items.map((item) => item.id)).toEqual([10, 13, 16, 14, 9, 11]);
+    expect(items.map((item) => item.id)).toEqual([10, 14, 13, 16, 9, 11]);
   });
 
-  it('pins active download rows before active encode rows deterministically', () => {
+  it('pins active encode rows before pending download rows deterministically', () => {
     const items = buildUnifiedQueueItems({
       encodeItems: [
         { id: 5, status: 'running', source_path: '/media/Active.Encode.A.2020.mkv' },
@@ -93,8 +93,8 @@ describe('buildUnifiedQueueItems', () => {
     });
 
     expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
-      'download-5',
       'encode-5',
+      'download-5',
       'encode-2',
     ]);
   });
@@ -172,10 +172,27 @@ describe('buildUnifiedQueueItems', () => {
     expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
       'download-294',
       'download-287',
-      'download-288',
       'encode-10',
+      'download-288',
       'encode-11',
     ]);
+  });
+
+  it('pins active qBittorrent work ahead of queued SAB rows with client positions', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [],
+      downloadItems: [
+        { id: 596, status: 'queued', source_file_path: '/downloads/Mission.Impossible.1996.mkv', client_type: 'sabnzbd', client_queue_position: 1, created_at: '2026-03-01T09:00:00Z' },
+        { id: 604, status: 'queued', source_file_path: '/downloads/Highest.2.Lowest.2025.mkv', client_type: 'sabnzbd', client_queue_position: 2, created_at: '2026-03-01T10:00:00Z' },
+        { id: 544, status: 'downloading', source_file_path: '/downloads/The.Godfather.1972.mkv', client_type: 'qbittorrent', client_queue_position: null, created_at: '2026-03-01T11:00:00Z' },
+        { id: 602, status: 'moving', source_file_path: '/downloads/Mission.Impossible.Ghost.Protocol.2011.mkv', client_type: 'qbittorrent', client_queue_position: null, created_at: '2026-03-01T12:00:00Z' },
+      ],
+      sortOption: 'newest',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => item.id)).toEqual([544, 602, 596, 604]);
   });
 
   it('does not move a download row when status progresses through the client lifecycle', () => {

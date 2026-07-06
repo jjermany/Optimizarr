@@ -1,5 +1,9 @@
-const ENCODE_ACTIVE_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting', 'paused', 'paused_schedule']);
-const DOWNLOAD_ACTIVE_STATUSES = new Set(['pending', 'searching', 'queued', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing']);
+const ENCODE_WORKING_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting']);
+const ENCODE_WAITING_STATUSES = new Set(['queued', 'paused', 'paused_schedule']);
+const ENCODE_ACTIVE_STATUSES = new Set([...ENCODE_WORKING_STATUSES, ...ENCODE_WAITING_STATUSES]);
+const DOWNLOAD_WORKING_STATUSES = new Set(['searching', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing']);
+const DOWNLOAD_WAITING_STATUSES = new Set(['pending', 'queued', 'paused']);
+const DOWNLOAD_ACTIVE_STATUSES = new Set([...DOWNLOAD_WORKING_STATUSES, ...DOWNLOAD_WAITING_STATUSES]);
 const DOWNLOAD_WAITING_ENCODE_STATUSES = new Set(['waiting_encode']);
 
 function queueItemPath(item) {
@@ -76,19 +80,19 @@ function clientQueuePosition(item) {
 
 function encodeStatusRank(statusValue) {
   const status = String(statusValue || '').toLowerCase();
-  if (ENCODE_ACTIVE_STATUSES.has(status)) return 0;
-  if (status === 'paused') return 1;
+  if (ENCODE_WORKING_STATUSES.has(status)) return 0;
+  if (status === 'paused' || status === 'paused_schedule') return 1;
   if (status === 'queued') return 2;
   return 3;
 }
 
 function queuePinRank(item) {
   const status = String(item.status || '').toLowerCase();
-  // Treat the whole download lifecycle as one stable lane. Status refreshes like
-  // queued -> downloading -> importing should update the row, not move it.
-  if (item._itemType === 'download' && DOWNLOAD_ACTIVE_STATUSES.has(status)) return 0;
-  if (item._itemType === 'encode' && ENCODE_ACTIVE_STATUSES.has(status)) return 1;
-  if (item._itemType === 'download' && DOWNLOAD_WAITING_ENCODE_STATUSES.has(status)) return 2;
+  if (item._itemType === 'download' && DOWNLOAD_WORKING_STATUSES.has(status)) return 0;
+  if (item._itemType === 'encode' && ENCODE_WORKING_STATUSES.has(status)) return 1;
+  if (item._itemType === 'download' && DOWNLOAD_WAITING_STATUSES.has(status)) return 2;
+  if (item._itemType === 'download' && DOWNLOAD_WAITING_ENCODE_STATUSES.has(status)) return 3;
+  if (item._itemType === 'encode' && ENCODE_WAITING_STATUSES.has(status)) return 4;
   return 4;
 }
 
@@ -150,7 +154,7 @@ export function buildUnifiedQueueItems({
   const activeEncodePaths = new Set();
   const activeEncodeTitleYearKeys = new Set();
   for (const item of encodeItems) {
-    if (!ENCODE_ACTIVE_STATUSES.has(String(item.status || '').toLowerCase())) continue;
+    if (!ENCODE_WORKING_STATUSES.has(String(item.status || '').toLowerCase())) continue;
     const sourcePath = String(item.source_path || '').trim();
     if (sourcePath) activeEncodePaths.add(normalizedPath(sourcePath));
     const titleYearKey = titleYearKeyForPath(sourcePath, extractTitleYear);
@@ -194,7 +198,7 @@ export function buildUnifiedQueueItems({
     }
     if (!sourcePath || !dedupeSources.has(sourcePath)) return true;
     // Keep truly active encode rows visible even if a download row exists.
-    return ENCODE_ACTIVE_STATUSES.has(String(item.status || '').toLowerCase());
+    return ENCODE_WORKING_STATUSES.has(String(item.status || '').toLowerCase());
   });
   const dedupedDownloadItems = downloadItems.filter((item) => {
     if (!DOWNLOAD_WAITING_ENCODE_STATUSES.has(String(item.status || '').toLowerCase())) return true;
@@ -216,16 +220,16 @@ export function buildUnifiedQueueItems({
       const rightPinRank = queuePinRank(right);
       const pinRankDelta = leftPinRank - rightPinRank;
       if (pinRankDelta !== 0) return pinRankDelta;
-      // Download rows stay stable FIFO so status/progress refreshes do not
-      // reshuffle the visible queue while someone is managing it.
-      if ((leftPinRank === 1 || leftPinRank === 2) && leftPinRank === rightPinRank) {
+      // Download rows within the same work/wait bucket stay stable FIFO so
+      // status and progress refreshes do not reshuffle the visible queue.
+      if ([0, 2, 3].includes(leftPinRank) && leftPinRank === rightPinRank) {
         if (left._itemType === 'download' && right._itemType === 'download') {
           return comparePinnedDownloadItems(left, right);
         }
         return compareByCreatedAt(left, right, 'asc');
       }
-      if (leftPinRank === 0 && leftPinRank === rightPinRank) {
-        return comparePinnedDownloadItems(left, right);
+      if ([1, 4].includes(leftPinRank) && leftPinRank === rightPinRank) {
+        return compareByCreatedAt(left, right, 'asc');
       }
     }
 
