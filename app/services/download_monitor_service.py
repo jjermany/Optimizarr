@@ -1214,6 +1214,53 @@ def _publish_download_job(dj: DownloadJob, *, client_queue_position: int | None 
     broker.publish('download_job_update', download_job_to_dict(dj, client_queue_position=client_queue_position))
 
 
+def _sync_sab_download_job_state_from_client(db: Session, dj: DownloadJob, sab) -> bool:
+    """Refresh a newly linked SAB job from SAB's queue before the next poll tick."""
+    if not getattr(sab, 'enabled', False) or not dj.download_hash:
+        return False
+
+    status = download_client_service.get_sab_status(sab, dj.download_hash)
+    if status.get('not_found'):
+        return False
+
+    progress = status.get('progress_percent', 0)
+    try:
+        progress = int(float(progress))
+    except (TypeError, ValueError):
+        progress = 0
+    progress = max(0, min(100, progress))
+
+    eta_seconds = status.get('eta_seconds')
+    eta_seconds = int(eta_seconds) if isinstance(eta_seconds, (int, float)) and eta_seconds >= 0 else None
+    speed_bps = status.get('download_speed_bps')
+    speed_bps = int(speed_bps) if isinstance(speed_bps, (int, float)) and speed_bps >= 0 else None
+
+    if status.get('is_waiting'):
+        sab_status = str(status.get('sab_status') or '').strip().lower()
+        expected_status = DownloadJobStatus.paused.value if sab_status == 'paused' else DownloadJobStatus.queued.value
+        eta_seconds = None
+        speed_bps = 0
+    else:
+        is_moving = bool(status.get('is_moving')) and not bool(status.get('is_complete'))
+        expected_status = DownloadJobStatus.moving.value if is_moving else DownloadJobStatus.downloading.value
+
+    if (
+        dj.status != expected_status
+        or int(dj.progress_percent or 0) != progress
+        or dj.eta_seconds != eta_seconds
+        or dj.download_speed_bps != speed_bps
+    ):
+        dj.status = expected_status
+        dj.progress_percent = progress
+        dj.eta_seconds = eta_seconds
+        dj.download_speed_bps = speed_bps
+        db.commit()
+        db.refresh(dj)
+        _publish_download_job(dj, client_queue_position=status.get('client_queue_position'))
+        return True
+    return False
+
+
 def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
     """Remove waiting encode placeholders once the download import is complete.
 
@@ -3212,9 +3259,9 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
             db.commit()
             db.refresh(dj)
             _publish_download_job(dj)
-            if download_client_service.set_sab_category(sab, existing_nzo, category='optimizarr'):
+            if download_client_service.set_sab_category_and_priority(sab, existing_nzo, category='optimizarr'):
                 _categorized_sab_job_ids.add(dj.id)
-                download_client_service.set_sab_priority(sab, existing_nzo)
+            _sync_sab_download_job_state_from_client(db, dj, sab)
             return
 
     logger.info(
@@ -3293,6 +3340,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
 
         # Immediate best-effort recovery so progress/tagging can start without
         # waiting for a later poll cycle.
+        synced_from_sab = False
         if client_type == 'qbittorrent' and qbt.enabled:
             recovered = _recover_qbt_hash_for_job(dj, download_client_service.get_all_qbt_torrents(qbt))
             if recovered:
@@ -3310,12 +3358,13 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
                 db.commit()
                 db.refresh(dj)
                 logger.info('Download job %s: recovered SABnzbd NZO id immediately after grab: %s', dj.id, recovered)
-                if download_client_service.set_sab_category(sab, recovered, category='optimizarr'):
+                if download_client_service.set_sab_category_and_priority(sab, recovered, category='optimizarr'):
                     _categorized_sab_job_ids.add(dj.id)
-                    download_client_service.set_sab_priority(sab, recovered)
                 _reconcile_duplicate_sab_downloads(db, sab)
+                synced_from_sab = _sync_sab_download_job_state_from_client(db, dj, sab)
 
-        _publish_download_job(dj)
+        if not synced_from_sab:
+            _publish_download_job(dj)
         return
 
     # qBittorrent stores hashes in lowercase; normalise so lookups always match.
@@ -3340,10 +3389,10 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
             _tagged_job_ids.add(dj.id)
         _reconcile_duplicate_qbt_downloads(db, qbt)
     elif client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
-        if download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr'):
+        if download_client_service.set_sab_category_and_priority(sab, dj.download_hash, category='optimizarr'):
             _categorized_sab_job_ids.add(dj.id)
-            download_client_service.set_sab_priority(sab, dj.download_hash)
         _reconcile_duplicate_sab_downloads(db, sab)
+        _sync_sab_download_job_state_from_client(db, dj, sab)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3516,9 +3565,8 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
             db.commit()
             db.refresh(dj)
             logger.info('Download job %s: recovered SABnzbd NZO id %s', dj.id, recovered_nzo)
-            if download_client_service.set_sab_category(sab, recovered_nzo, category='optimizarr'):
+            if download_client_service.set_sab_category_and_priority(sab, recovered_nzo, category='optimizarr'):
                 _categorized_sab_job_ids.add(dj.id)
-                download_client_service.set_sab_priority(sab, recovered_nzo)
         else:
             if dj.release_name:
                 logger.debug(
@@ -3538,9 +3586,8 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
         if download_client_service.tag_qbt_torrent(qbt, dj.download_hash, max_attempts=3):
             _tagged_job_ids.add(dj.id)
     if dj.id not in _categorized_sab_job_ids and client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
-        if download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr'):
+        if download_client_service.set_sab_category_and_priority(sab, dj.download_hash, category='optimizarr'):
             _categorized_sab_job_ids.add(dj.id)
-            download_client_service.set_sab_priority(sab, dj.download_hash)
 
     if client_type == 'qbittorrent' and qbt.enabled and _qbt_hash_mismatches_tv_download_job(dj, qbt):
         logger.warning(
@@ -3664,9 +3711,8 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
                 _categorized_sab_job_ids.discard(dj.id)
                 db.commit()
                 db.refresh(dj)
-                if download_client_service.set_sab_category(sab, replacement_nzo, category='optimizarr'):
+                if download_client_service.set_sab_category_and_priority(sab, replacement_nzo, category='optimizarr'):
                     _categorized_sab_job_ids.add(dj.id)
-                    download_client_service.set_sab_priority(sab, replacement_nzo)
                 status = download_client_service.get_download_status(client_type, qbt, sab, replacement_nzo)
                 if status.get('not_found'):
                     status = {

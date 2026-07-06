@@ -231,6 +231,42 @@ def test_set_sab_priority_returns_false_without_nzo_id(monkeypatch):
     assert download_client_service.set_sab_priority(SimpleNamespace(), '') is False
 
 
+def test_set_sab_category_and_priority_pauses_and_restores_position(monkeypatch):
+    calls = []
+
+    def fake_sab_api(_settings, **params):
+        calls.append(params)
+        if params.get('mode') == 'queue' and params.get('name') is None:
+            return {
+                'queue': {
+                    'slots': [
+                        {'nzo_id': 'ACTIVE', 'filename': 'Active.Release', 'percentage': '40', 'status': 'Downloading'},
+                        {'nzo_id': 'NZO456', 'filename': 'Queued.Release', 'percentage': '0', 'status': 'Queued'},
+                    ]
+                }
+            }
+        if params.get('mode') == 'switch':
+            return {'result': {'position': params.get('value2'), 'priority': 0}}
+        return {'status': True}
+
+    monkeypatch.setattr(download_client_service, '_sab_api', fake_sab_api)
+
+    ok = download_client_service.set_sab_category_and_priority(SimpleNamespace(), 'NZO456', category='optimizarr')
+
+    assert ok is True
+    operations = [
+        (call.get('mode'), call.get('name'), call.get('value'), call.get('value2'))
+        for call in calls
+        if call.get('mode') != 'queue' or call.get('name') is not None
+    ]
+    assert operations == [
+        ('queue', 'priority', 'NZO456', -2),
+        ('change_cat', None, 'NZO456', 'optimizarr'),
+        ('queue', 'priority', 'NZO456', 0),
+        ('switch', None, 'NZO456', 1),
+    ]
+
+
 def test_get_sab_status_prefers_mbps_over_mb_size_field(monkeypatch):
     queue_payload = {
         'queue': {

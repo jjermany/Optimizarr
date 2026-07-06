@@ -837,6 +837,59 @@ def set_sab_priority(s: SabnzbdSettings, nzo_id: str, priority: int = _SAB_NORMA
     return False
 
 
+def set_sab_queue_position(s: SabnzbdSettings, nzo_id: str, position: int) -> bool:
+    """Move an NZO to a queue index. Returns True if SAB accepted the request."""
+    nzo = str(nzo_id or '').strip()
+    if not nzo:
+        return False
+    try:
+        target_position = max(0, int(position))
+    except (TypeError, ValueError):
+        return False
+
+    try:
+        payload = _sab_api(s, mode='switch', value=nzo, value2=target_position)
+        if _sab_call_succeeded(payload) or isinstance(payload.get('result') if isinstance(payload, dict) else None, dict):
+            logger.info('SABnzbd: moved NZO %s to queue position %s', nzo, target_position)
+            return True
+    except Exception as exc:
+        logger.warning('SABnzbd: failed moving NZO %s to queue position %s: %s', nzo, target_position, exc)
+    return False
+
+
+def set_sab_category_and_priority(
+    s: SabnzbdSettings,
+    nzo_id: str,
+    *,
+    category: str = 'optimizarr',
+    priority: int = _SAB_NORMAL_PRIORITY,
+) -> bool:
+    """Assign category/priority without letting a new SAB job briefly jump the queue."""
+    nzo = str(nzo_id or '').strip()
+    if not nzo:
+        return False
+
+    original_position: int | None = None
+    try:
+        for item in get_sab_queue_items(s):
+            if str(item.get('nzo_id') or '').strip() == nzo:
+                original_position = int(item.get('index'))
+                break
+    except Exception:
+        original_position = None
+
+    paused_for_update = set_sab_priority(s, nzo, -2)
+    category_ok = set_sab_category(s, nzo, category=category)
+    priority_ok = set_sab_priority(s, nzo, priority)
+
+    if original_position is not None and original_position > 0:
+        set_sab_queue_position(s, nzo, original_position)
+
+    if not paused_for_update:
+        logger.warning('SABnzbd: could not pause NZO %s before category/priority update', nzo)
+    return category_ok and priority_ok
+
+
 def delete_sab_history(s: SabnzbdSettings, nzo_id: str) -> None:
     """Remove a completed download from SABnzbd history (does not delete files)."""
     try:

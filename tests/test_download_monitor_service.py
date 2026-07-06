@@ -1721,7 +1721,7 @@ def test_process_downloading_jobs_fetches_sab_snapshot_once_for_many_jobs(monkey
             return queue_payload, history_payload
 
         monkeypatch.setattr(download_client_service, 'get_sab_queue_and_history_snapshot', fake_snapshot)
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
         monkeypatch.setattr(download_client_service, 'set_sab_priority', lambda *_args, **_kwargs: True)
 
         per_job_fetch_calls = []
@@ -3459,7 +3459,7 @@ def test_check_download_progress_sab_stalled_stays_tracked_until_timeout(monkeyp
             'save_path': None,
             'not_found': False,
         })
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
         monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
         monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
         monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
@@ -3573,7 +3573,7 @@ def test_check_download_progress_sab_history_failed_retries_immediately(monkeypa
             'save_path': None,
             'not_found': False,
         })
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
@@ -3734,7 +3734,7 @@ def test_check_download_progress_sab_queued_does_not_timeout_or_retry(monkeypatc
             'save_path': None,
             'not_found': False,
         })
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         fallback_calls = []
         monkeypatch.setattr(
@@ -3792,7 +3792,7 @@ def test_check_download_progress_sab_partial_paused_item_stays_paused(monkeypatc
             'save_path': None,
             'not_found': False,
         })
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
@@ -3854,7 +3854,7 @@ def test_check_download_progress_sab_queue_wide_pause_with_progress_stays_paused
             '_sab_api',
             lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
         )
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
@@ -3965,7 +3965,7 @@ def test_check_download_progress_sab_unlinks_mismatched_tv_episode_nzo(monkeypat
         ]
         status_calls = []
         monkeypatch.setattr(download_client_service, 'get_sab_queue_items', lambda _sab: queue_items)
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
         monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: status_calls.append(True) or {})
 
         _check_download_progress(db, dj, qbt, sab)
@@ -4060,7 +4060,7 @@ def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatc
             'save_path': None,
             'not_found': False,
         })
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
         # Force exhausted SAB flow to fallback-to-encode rather than switch to torrents.
         monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
 
@@ -4113,7 +4113,7 @@ def test_check_download_progress_stalled_exhausted_usenet_retries_switches_to_to
             'save_path': None,
             'not_found': False,
         })
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
         monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
 
         fallback_calls = []
@@ -4223,7 +4223,7 @@ def test_check_download_progress_sab_not_found_recovers_existing_nzo_by_release(
         retry_calls = []
         monkeypatch.setattr(download_client_service, 'get_download_status', fake_status)
         monkeypatch.setattr(download_client_service, 'find_sab_nzo_for_release', lambda _sab, _release: 'RECOVERED_NZO')
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
         monkeypatch.setattr(
             'app.services.download_monitor_service._retry_failed_download',
             lambda *_args, **_kwargs: retry_calls.append(True),
@@ -4274,7 +4274,7 @@ def test_check_download_progress_sab_not_found_waits_during_tracking_grace(monke
             'not_found': True,
         })
         monkeypatch.setattr(download_client_service, 'find_sab_nzo_for_release', lambda *_args: '')
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: False)
         monkeypatch.setattr(
             'app.services.download_monitor_service._retry_failed_download',
             lambda *_args, **_kwargs: retry_calls.append(True),
@@ -4323,7 +4323,7 @@ def test_check_download_progress_sab_not_found_retries_after_tracking_grace(monk
             'not_found': True,
         })
         monkeypatch.setattr(download_client_service, 'find_sab_nzo_for_release', lambda *_args: '')
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: False)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: False)
         monkeypatch.setattr(
             'app.services.download_monitor_service._retry_failed_download',
             lambda *_args, **_kwargs: retry_calls.append(True),
@@ -4377,15 +4377,31 @@ def test_do_search_defers_download_client_routing_to_prowlarr(monkeypatch):
         monkeypatch.setattr(prowlarr_service, 'grab', _fake_grab)
         monkeypatch.setattr(
             download_client_service,
-            'set_sab_category',
+            'set_sab_category_and_priority',
             lambda _sab, nzo_id, category='optimizarr': sab_category_calls.append({'nzo_id': nzo_id, 'category': category}) or True,
         )
+        monkeypatch.setattr(download_client_service, 'get_sab_status', lambda _sab, nzo_id: {
+            'progress_percent': 12,
+            'eta_seconds': None,
+            'download_speed_bps': 0,
+            'client_queue_position': 2,
+            'is_complete': False,
+            'is_moving': False,
+            'is_waiting': True,
+            'is_stalled': False,
+            'is_failed': False,
+            'sab_status': 'Queued',
+            'save_path': None,
+            'not_found': False,
+        })
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
 
         assert grab_calls and grab_calls[0]['download_client_id'] is None
         assert dj.client_type == 'sabnzbd'
+        assert dj.status == DownloadJobStatus.queued.value
+        assert dj.progress_percent == 12
         assert dj.indexer_id == 1
         assert dj.indexer_name == 'TestIndexer'
         assert sab_category_calls and sab_category_calls[0]['category'] == 'optimizarr'
@@ -4431,7 +4447,7 @@ def test_do_search_uses_movie_category_when_source_looks_like_movie(monkeypatch)
         monkeypatch.setattr(prowlarr_service, 'search', _fake_search)
         monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
         monkeypatch.setattr(prowlarr_service, 'grab', lambda *_args, **_kwargs: {'downloadId': 'NZO12345'})
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
 
@@ -4520,7 +4536,7 @@ def test_do_search_stops_after_first_pass_when_candidate_matches(monkeypatch):
         monkeypatch.setattr(prowlarr_service, 'search', _fake_search)
         monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
         monkeypatch.setattr(prowlarr_service, 'grab', lambda *_args, **_kwargs: {'downloadId': 'NZO12345'})
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
 
@@ -4586,7 +4602,7 @@ def test_do_search_uses_second_pass_with_profile_hints_when_first_pass_has_no_ma
             'grab',
             lambda *_args, **_kwargs: (grabbed.append(_args[1]) or {'downloadId': 'NZO12345'}),
         )
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
@@ -4645,7 +4661,7 @@ def test_do_search_uses_simple_movie_title_fallback_when_structured_movie_passes
         monkeypatch.setattr(prowlarr_service, 'search', _fake_search)
         monkeypatch.setattr(prowlarr_service, 'get_indexers', lambda *_args, **_kw: [{'id': 1, 'name': 'TestIndexer', 'priority': 1}])
         monkeypatch.setattr(prowlarr_service, 'grab', lambda *_args, **_kwargs: {'downloadId': 'NZO12345'})
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
@@ -4727,7 +4743,7 @@ def test_do_search_filters_imdb_movie_results_by_resolution_and_tone_map_before_
             'grab',
             lambda *_args, **_kwargs: (grabbed.append(_args[1]) or {'downloadId': 'NZO12345'}),
         )
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
@@ -4791,7 +4807,7 @@ def test_do_search_skips_previously_failed_release_keys(monkeypatch):
             'grab',
             lambda *_args, **_kwargs: (grabbed.append(_args[1]) or {'downloadId': 'NZO_OK'}),
         )
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
@@ -4979,15 +4995,10 @@ def test_do_search_reuses_existing_sab_job_instead_of_grabbing_duplicate(monkeyp
         category_calls = []
         monkeypatch.setattr(
             download_client_service,
-            'set_sab_category',
+            'set_sab_category_and_priority',
             lambda _sab, nzo_id, category='optimizarr': category_calls.append((nzo_id, category)) or True,
         )
-        priority_calls = []
-        monkeypatch.setattr(
-            download_client_service,
-            'set_sab_priority',
-            lambda _sab, nzo_id: priority_calls.append(nzo_id) or True,
-        )
+        monkeypatch.setattr(download_client_service, 'get_sab_status', lambda *_args: {'not_found': True})
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
@@ -4998,10 +5009,6 @@ def test_do_search_reuses_existing_sab_job_instead_of_grabbing_duplicate(monkeyp
         assert dj.release_name == 'Reattach.Existing.Sab.Job.2025.1080p.WEB-DL'
         assert dj.status == DownloadJobStatus.downloading.value
         assert category_calls == [('SABNZBD_NZO_existing', 'optimizarr')]
-        # Pinning priority immediately after categorizing prevents the
-        # 'optimizarr' category's own default priority (if configured to
-        # Force/High in SAB) from silently reordering the queue.
-        assert priority_calls == ['SABNZBD_NZO_existing']
 
 
 def test_do_search_rejects_unrelated_episode_title_for_single_word_movie(monkeypatch):
@@ -5054,7 +5061,7 @@ def test_do_search_rejects_unrelated_episode_title_for_single_word_movie(monkeyp
             'grab',
             lambda *_args, **_kwargs: (grabbed.append(_args[1]) or {'downloadId': 'NZO_WICKED_OK'}),
         )
-        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
