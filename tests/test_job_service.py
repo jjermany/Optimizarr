@@ -6,7 +6,7 @@ from app.models.job import Job
 from app.models.library import Library, LibraryProfile
 from app.models.settings import Settings
 from app.services import optimization_service
-from app.services.job_service import abort_job, cancel_job, cleanup_duplicate_optimized_outputs, cleanup_replaced_optimized_outputs, create_job, delete_job, job_exists_for_source, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
+from app.services.job_service import abort_job, cancel_job, cleanup_duplicate_optimized_outputs, cleanup_optimized_outputs, cleanup_replaced_optimized_outputs, create_job, delete_job, job_exists_for_source, pause_job, prune_job_history, refresh_queued_job_snapshots, resume_job, retry_job
 
 
 def test_create_job_stores_profile_snapshot():
@@ -261,6 +261,104 @@ def test_job_exists_for_source_does_not_block_upgrade_from_completed_history(tmp
         ) is False
 
 
+def test_cleanup_optimized_outputs_never_deletes_recorded_source_file(tmp_path):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.commit()
+
+        source_file = tmp_path / 'Movie Title (2024) 2160p HDR.mkv'
+        source_file.write_text('radarr-original')
+        job = Job(
+            input_path=str(source_file),
+            output_path=str(source_file),
+            status='complete',
+        )
+        db.add(job)
+        db.commit()
+
+        removed_files, affected_job_ids = cleanup_optimized_outputs(db)
+
+        assert removed_files == 0
+        assert affected_job_ids == []
+        assert source_file.exists()
+
+
+def test_cleanup_optimized_outputs_preserves_single_optimized_copy(tmp_path):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(tmp_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        source_file = tmp_path / 'Movie Title (2024) 2160p HDR.mkv'
+        optimized_file = tmp_path / 'Movie Title (2024)-1080p.mkv'
+        source_file.write_text('radarr-original')
+        optimized_file.write_text('optimized')
+        job = Job(
+            input_path=str(source_file),
+            output_path=str(optimized_file),
+            status='complete',
+            library_id=library.id,
+            completed_at=datetime.now(UTC),
+        )
+        db.add(job)
+        db.commit()
+
+        removed_files, affected_job_ids = cleanup_optimized_outputs(db)
+
+        assert removed_files == 0
+        assert affected_job_ids == []
+        assert source_file.exists()
+        assert optimized_file.exists()
+
+
+def test_cleanup_optimized_outputs_removes_only_extra_optimized_copy(tmp_path):
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(tmp_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        source_file = tmp_path / 'Movie Title (2024) 2160p HDR.mkv'
+        smaller_output = tmp_path / 'Movie Title (2024)-1080p-v2.mkv'
+        larger_output = tmp_path / 'Movie Title (2024)-1080p.mkv'
+        source_file.write_text('radarr-original')
+        smaller_output.write_text('small')
+        larger_output.write_text('larger optimized')
+        old_job = Job(
+            input_path=str(source_file),
+            output_path=str(smaller_output),
+            status='complete',
+            library_id=library.id,
+            completed_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        new_job = Job(
+            input_path=str(source_file),
+            output_path=str(larger_output),
+            status='complete',
+            library_id=library.id,
+            completed_at=datetime.now(UTC),
+        )
+        db.add_all([old_job, new_job])
+        db.commit()
+
+        removed_files, affected_job_ids = cleanup_optimized_outputs(db)
+
+        assert removed_files == 1
+        assert affected_job_ids == [old_job.id]
+        assert source_file.exists()
+        assert not smaller_output.exists()
+        assert larger_output.exists()
+
+
 def test_cleanup_replaced_optimized_outputs_removes_prior_movie_upgrade_artifact(tmp_path):
     with SessionLocal() as db:
         db.query(Job).delete()
@@ -414,6 +512,110 @@ def test_cleanup_replaced_optimized_outputs_removes_prior_download_upgrade_impor
         assert new_download.imported_file_path == str(new_import)
         assert not old_import.exists()
         assert new_import.exists()
+
+
+def test_cleanup_replaced_optimized_outputs_preserves_prior_4k_download_import(tmp_path):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(tmp_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+        db.add(LibraryProfile(library_id=library.id, target_resolution=1080, output_suffix='-1080p'))
+        db.commit()
+
+        old_import_4k = tmp_path / 'Example Movie (2026) WEBDL 2160p.mkv'
+        new_import_1080p = tmp_path / 'Example Movie (2026)-1080p.mkv'
+        old_import_4k.write_text('older-4k-import')
+        new_import_1080p.write_text('new optimized')
+
+        old_download = DownloadJob(
+            source_file_path=str(tmp_path / 'Example Movie (2026) Source 2160p.mkv'),
+            imported_file_path=str(old_import_4k),
+            status=DownloadJobStatus.complete.value,
+            library_id=library.id,
+            completed_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        new_download = DownloadJob(
+            source_file_path=str(tmp_path / 'Example Movie (2026) Source 2160p.mkv'),
+            imported_file_path=str(new_import_1080p),
+            status=DownloadJobStatus.complete.value,
+            library_id=library.id,
+            completed_at=datetime.now(UTC),
+        )
+        db.add_all([old_download, new_download])
+        db.commit()
+
+        removed_files, affected_job_ids, affected_download_job_ids = cleanup_replaced_optimized_outputs(
+            db,
+            library_id=library.id,
+            source_path=new_download.source_file_path,
+            keep_output_path=new_download.imported_file_path,
+            current_download_job_id=new_download.id,
+        )
+
+        assert removed_files == 0
+        assert affected_job_ids == []
+        assert affected_download_job_ids == []
+        assert old_import_4k.exists()
+        assert new_import_1080p.exists()
+
+
+def test_cleanup_replaced_optimized_outputs_preserves_optimized_when_new_import_is_4k(tmp_path):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(tmp_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+        db.add(LibraryProfile(library_id=library.id, target_resolution=1080, output_suffix='-1080p'))
+        db.commit()
+
+        existing_optimized = tmp_path / 'Example Movie (2026)-1080p.mkv'
+        new_import_4k = tmp_path / 'Example Movie (2026) Remux 2160p.mkv'
+        existing_optimized.write_text('existing optimized')
+        new_import_4k.write_text('new radarr source')
+
+        old_job = Job(
+            input_path=str(tmp_path / 'Example Movie (2026) Old 2160p.mkv'),
+            output_path=str(existing_optimized),
+            status='complete',
+            library_id=library.id,
+            completed_at=datetime.now(UTC) - timedelta(days=1),
+        )
+        new_download = DownloadJob(
+            source_file_path=str(tmp_path / 'Example Movie (2026) Old 2160p.mkv'),
+            imported_file_path=str(new_import_4k),
+            status=DownloadJobStatus.complete.value,
+            library_id=library.id,
+            completed_at=datetime.now(UTC),
+        )
+        db.add_all([old_job, new_download])
+        db.commit()
+
+        removed_files, affected_job_ids, affected_download_job_ids = cleanup_replaced_optimized_outputs(
+            db,
+            library_id=library.id,
+            source_path=new_download.source_file_path,
+            keep_output_path=new_download.imported_file_path,
+            current_download_job_id=new_download.id,
+        )
+
+        assert removed_files == 0
+        assert affected_job_ids == []
+        assert affected_download_job_ids == []
+        assert existing_optimized.exists()
+        assert new_import_4k.exists()
 
 
 def test_prune_job_history_removes_stale_terminal_jobs():

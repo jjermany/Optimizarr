@@ -1721,7 +1721,7 @@ def test_get_encoders_endpoint(monkeypatch):
         assert h264['available_encoders'] == ['h264_qsv', 'libx264']
 
 
-def test_cleanup_optimized_endpoint_deletes_recorded_outputs(tmp_path):
+def test_cleanup_optimized_endpoint_preserves_single_recorded_output(tmp_path):
     from app.core.database import SessionLocal
     from app.models.event_log import EventLog
     from app.models.job import Job
@@ -1746,24 +1746,24 @@ def test_cleanup_optimized_endpoint_deletes_recorded_outputs(tmp_path):
         cleanup_response = client.post('/cleanup/optimized')
         assert cleanup_response.status_code == 200
         payload = cleanup_response.json()
-        assert payload['deleted_files'] >= 1
-        assert job_id in payload['affected_job_ids']
+        assert payload['deleted_files'] == 0
+        assert job_id not in payload['affected_job_ids']
 
         with SessionLocal() as db:
             job = db.query(Job).filter(Job.id == job_id).first()
             assert job is not None
-            assert job.output_path is None
+            assert job.output_path == str(output_file)
 
         logs_response = client.get('/logs')
         assert logs_response.status_code == 200
         logs = logs_response.json()
         assert logs[0]['event_type'] == 'optimized_cleanup_summary'
-        assert logs[0]['details']['deleted_files'] >= 1
-        assert job_id in logs[0]['details']['affected_job_ids']
+        assert logs[0]['details']['deleted_files'] == 0
+        assert job_id not in logs[0]['details']['affected_job_ids']
         assert logs[1]['event_type'] == 'optimized_cleanup_started'
         assert logs[1]['message'] == 'Optimized output cleanup started'
 
-    assert not output_file.exists()
+    assert output_file.exists()
 
 
 def test_clear_logs_endpoint_deletes_event_logs():

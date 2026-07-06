@@ -501,13 +501,60 @@ def has_completed_job_for_identity(db: Session, source_path: str, library_id: in
     return False
 
 
+def _same_resolved_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left == right
+
+
+def _cleanup_profile_values(db: Session, library_id: int | None) -> tuple[int, str]:
+    if library_id is None:
+        return 1080, ''
+    profile = db.query(LibraryProfile).filter(LibraryProfile.library_id == library_id).first()
+    if profile is None:
+        return 1080, ''
+    return (
+        int(getattr(profile, 'target_resolution', 1080) or 1080),
+        str(getattr(profile, 'output_suffix', '') or ''),
+    )
+
+
+def _keep_path_is_cleanup_safe(
+    keep_path: Path,
+    *,
+    source_path: str,
+    current_job_id: int | None,
+    current_download_job_id: int | None,
+    target_resolution: int,
+    output_suffix: str,
+) -> bool:
+    if not keep_path.exists() or not keep_path.is_file():
+        return False
+    if _same_resolved_path(keep_path, Path(str(source_path or '').strip())):
+        return False
+    if current_job_id is not None:
+        return True
+    if current_download_job_id is not None:
+        return _is_optimized_cleanup_artifact(
+            keep_path,
+            kind='download',
+            target_resolution=target_resolution,
+            output_suffix=output_suffix,
+        )
+    return False
+
+
 def cleanup_optimized_outputs(db: Session) -> tuple[int, list[int]]:
     terminal_jobs = db.query(Job).filter(Job.status.in_(
         TERMINAL_STATUSES), Job.output_path.is_not(None)).all()
 
-    removed_files = 0
-    removed_job_ids: list[int] = []
+    artifact_groups: dict[tuple[int | None, str], list[dict]] = {}
     for job in terminal_jobs:
+        identity_key = media_identity_key(job.input_path)
+        if not identity_key:
+            continue
+
         output_path = str(job.output_path or '').strip()
         if not output_path:
             continue
@@ -515,12 +562,47 @@ def cleanup_optimized_outputs(db: Session) -> tuple[int, list[int]]:
         candidate = Path(output_path)
         if not candidate.exists() or not candidate.is_file():
             continue
+        if _same_resolved_path(candidate, Path(str(job.input_path or '').strip())):
+            continue
 
-        candidate.unlink(missing_ok=True)
-        if not candidate.exists():
-            removed_files += 1
-            removed_job_ids.append(job.id)
-            job.output_path = None
+        artifact_groups.setdefault((job.library_id, identity_key), []).append({
+            'path': candidate,
+            'completed_at': job.completed_at,
+            'record': job,
+        })
+
+    removed_files = 0
+    removed_job_ids: list[int] = []
+    for artifacts in artifact_groups.values():
+        unique_by_path = {str(artifact['path']): artifact for artifact in artifacts}
+        if len(unique_by_path) <= 1:
+            continue
+
+        def sort_key(artifact: dict) -> tuple:
+            try:
+                size = artifact['path'].stat().st_size
+            except OSError:
+                size = 0
+            return (
+                size,
+                artifact['completed_at'] is not None,
+                artifact['completed_at'],
+                str(artifact['path']),
+            )
+
+        sorted_artifacts = sorted(unique_by_path.values(), key=sort_key, reverse=True)
+        keep_path = str(sorted_artifacts[0]['path'])
+        for artifact in sorted_artifacts[1:]:
+            candidate = Path(artifact['path'])
+            if str(candidate) == keep_path:
+                continue
+
+            candidate.unlink(missing_ok=True)
+            if not candidate.exists():
+                job = artifact['record']
+                removed_files += 1
+                removed_job_ids.append(job.id)
+                job.output_path = None
 
     if removed_job_ids:
         db.commit()
@@ -548,7 +630,22 @@ def cleanup_replaced_optimized_outputs(
     if library_id is None or not identity_key:
         return 0, [], []
 
-    keep_path = Path(keep_output_path).resolve() if keep_output_path else None
+    target_resolution, output_suffix = _cleanup_profile_values(db, library_id)
+    if not keep_output_path:
+        return 0, [], []
+
+    keep_candidate = Path(keep_output_path)
+    keep_path = keep_candidate.resolve()
+    if not _keep_path_is_cleanup_safe(
+        keep_candidate,
+        source_path=source_path,
+        current_job_id=current_job_id,
+        current_download_job_id=current_download_job_id,
+        target_resolution=target_resolution,
+        output_suffix=output_suffix,
+    ):
+        return 0, [], []
+
     removed_files = 0
     affected_job_ids: list[int] = []
     affected_download_job_ids: list[int] = []
@@ -581,12 +678,7 @@ def cleanup_replaced_optimized_outputs(
             pass
 
         # Never delete a library source file masquerading as an output record.
-        input_path = Path(str(job.input_path or '').strip())
-        try:
-            is_recorded_source = output_path.resolve() == input_path.resolve()
-        except OSError:
-            is_recorded_source = output_path == input_path
-        if is_recorded_source:
+        if _same_resolved_path(output_path, Path(str(job.input_path or '').strip())):
             continue
         if not output_path.exists() or not output_path.is_file():
             job.output_path = None
@@ -627,15 +719,17 @@ def cleanup_replaced_optimized_outputs(
         except OSError:
             pass
 
-        source_file_path = Path(str(download_job.source_file_path or '').strip())
-        try:
-            is_recorded_source = imported_path.resolve() == source_file_path.resolve()
-        except OSError:
-            is_recorded_source = imported_path == source_file_path
-        if is_recorded_source:
+        if _same_resolved_path(imported_path, Path(str(download_job.source_file_path or '').strip())):
             continue
         if not imported_path.exists() or not imported_path.is_file():
             download_job.imported_file_path = None
+            continue
+        if not _is_optimized_cleanup_artifact(
+            imported_path,
+            kind='download',
+            target_resolution=target_resolution,
+            output_suffix=output_suffix,
+        ):
             continue
 
         imported_path.unlink(missing_ok=True)
@@ -793,12 +887,7 @@ def cleanup_duplicate_optimized_outputs(
             output_path = Path(str(job.output_path or '').strip())
             if not output_path.exists() or not output_path.is_file():
                 continue
-            input_path = Path(str(job.input_path or '').strip())
-            try:
-                is_recorded_source = output_path.resolve() == input_path.resolve()
-            except OSError:
-                is_recorded_source = output_path == input_path
-            if is_recorded_source:
+            if _same_resolved_path(output_path, Path(str(job.input_path or '').strip())):
                 continue
             identity_key = media_identity_key(job.input_path)
             if not identity_key:
@@ -824,12 +913,7 @@ def cleanup_duplicate_optimized_outputs(
                 str(download_job.imported_file_path or '').strip())
             if not imported_path.exists() or not imported_path.is_file():
                 continue
-            source_file_path = Path(str(download_job.source_file_path or '').strip())
-            try:
-                is_recorded_source = imported_path.resolve() == source_file_path.resolve()
-            except OSError:
-                is_recorded_source = imported_path == source_file_path
-            if is_recorded_source:
+            if _same_resolved_path(imported_path, Path(str(download_job.source_file_path or '').strip())):
                 continue
             # Use the original source path for identity, not the imported path,
             # so downloaded artifacts can be grouped with encoded ones from the

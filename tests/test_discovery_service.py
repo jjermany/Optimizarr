@@ -1,5 +1,7 @@
 from fastapi.testclient import TestClient
 
+import pytest
+
 from app.api import routes
 from app.core.database import SessionLocal
 from app.main import app
@@ -501,6 +503,102 @@ def test_run_watcher_recovery_reprocesses_indexed_file_when_profile_signature_ch
         assert summary['changed_files'] == 1
         assert summary['queued_jobs'] == 1
         assert probe_calls == [str(source_file)]
+
+
+def test_watcher_recovery_skips_radarr_upgrade_when_optimized_copy_exists(monkeypatch, tmp_path):
+    library_path = tmp_path / 'movies'
+    library_path.mkdir()
+
+    upgraded_source = library_path / 'Example Movie (2026) Remux 2160p.mkv'
+    existing_optimized = library_path / 'Example Movie (2026)-1080p.mkv'
+    upgraded_source.write_text('new 4k source')
+    existing_optimized.write_text('existing optimized')
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(DiscoveryFileIndex).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(
+            library_id=library.id,
+            download_enabled=False,
+            hdr_only=False,
+            target_resolution=1080,
+            output_suffix='-1080p',
+        )
+        db.add(profile)
+        db.commit()
+        db.refresh(profile)
+
+        monkeypatch.setattr(
+            discovery_service,
+            'probe_video_height',
+            lambda path: pytest.fail(f'watcher should not probe already optimized identity: {path}'),
+        )
+
+        summary = discovery_service.run_watcher_recovery(db, [library], reason='watcher')
+        queued_jobs = db.query(Job).all()
+
+        assert summary['changed_files'] == 2
+        assert summary['queued_jobs'] == 0
+        assert queued_jobs == []
+
+
+def test_queue_file_if_eligible_skips_radarr_upgrade_when_completed_optimized_job_exists(monkeypatch, tmp_path):
+    library_path = tmp_path / 'movies'
+    library_path.mkdir()
+
+    old_source = library_path / 'Example Movie (2026) WebDL 2160p.mkv'
+    upgraded_source = library_path / 'Example Movie (2026) Remux 2160p.mkv'
+    existing_optimized = library_path / 'Example Movie (2026)-1080p.mkv'
+    old_source.write_text('old source placeholder')
+    upgraded_source.write_text('new 4k source')
+    existing_optimized.write_text('existing optimized')
+
+    with SessionLocal() as db:
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = Library(name='Movies', path=str(library_path), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+
+        profile = LibraryProfile(
+            library_id=library.id,
+            download_enabled=False,
+            hdr_only=False,
+            target_resolution=1080,
+            output_suffix='-1080p',
+        )
+        db.add(profile)
+        db.add(Job(
+            input_path=str(old_source),
+            output_path=str(existing_optimized),
+            status='complete',
+            library_id=library.id,
+        ))
+        db.commit()
+        db.refresh(profile)
+
+        monkeypatch.setattr(
+            discovery_service,
+            'probe_video_height',
+            lambda path: pytest.fail(f'watcher should not probe completed optimized identity: {path}'),
+        )
+
+        job = discovery_service._queue_file_if_eligible(db, upgraded_source, library, profile)
+
+        assert job is None
 
 
 def test_scan_library_tracks_active_scan_state(monkeypatch, tmp_path):

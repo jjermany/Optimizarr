@@ -39,6 +39,30 @@ def test_optimize_video_skips_when_output_exists(tmp_path):
     assert metrics.skipped_reason == 'output_exists'
 
 
+def test_optimize_video_never_overwrites_source_path(monkeypatch, tmp_path):
+    input_path = tmp_path / 'movie.mkv'
+    input_path.write_text('source')
+
+    class UnsafeSettings:
+        bitrate_mbps = 8
+        workspace_root = DummySettings.workspace_root
+        profile_snapshot_json = (
+            '{"output_suffix":"-1080p","container":"mkv","output_conflict_policy":"overwrite",'
+            '"target_resolution":1080,"minimum_source_resolution":1080}'
+        )
+
+    monkeypatch.setattr(
+        optimization_service,
+        '_output_paths',
+        lambda input_path, _profile, workspace_path: (Path(input_path), workspace_path / 'output.partial.mkv'),
+    )
+    metrics = optimization_service.optimize_video(str(input_path), UnsafeSettings())
+
+    assert metrics.status == 'skipped'
+    assert metrics.skipped_reason == 'output_matches_source'
+    assert input_path.read_text() == 'source'
+
+
 def test_optimize_video_skips_low_height(monkeypatch, tmp_path):
     input_path = tmp_path / 'movie.mkv'
     input_path.write_text('placeholder')

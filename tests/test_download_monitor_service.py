@@ -4579,6 +4579,75 @@ def test_import_file_sab_removes_source_video_from_completed_directory(monkeypat
         assert removed_sab == [('SABNZBD_NZO_abc123', True)]
 
 
+def test_import_file_refuses_destination_matching_source(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        library.profile.output_suffix = ''
+        db.commit()
+
+        source = tmp_path / 'library' / 'The Gorge (2025).mkv'
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b'original-source')
+
+        completed_dir = tmp_path / 'complete' / 'usenet' / 'The.Gorge.2025.1080p.WEB-DL'
+        completed_dir.mkdir(parents=True)
+        completed_video = completed_dir / 'The.Gorge.2025.1080p.WEB-DL.mkv'
+        completed_video.write_bytes(b'downloaded-video')
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path=str(source),
+            release_name='The.Gorge.2025.1080p.WEB-DL',
+            download_hash='SABNZBD_NZO_unsafe',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        cleanup_calls = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_sab_job',
+            lambda _sab, nzo_id, delete_files=False: cleanup_calls.append((nzo_id, delete_files)) or True,
+        )
+        history_deletes = []
+        monkeypatch.setattr(
+            download_client_service,
+            'delete_sab_history',
+            lambda _sab, nzo_id: history_deletes.append(nzo_id),
+        )
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._download_import_destination',
+            lambda _source_path, _profile: source,
+        )
+        monkeypatch.setattr(notification_service, 'enqueue_download_job_failed', lambda *_args, **_kwargs: None)
+
+        _import_file(
+            db,
+            dj,
+            str(completed_dir),
+            library,
+            library.profile,
+            SimpleNamespace(enabled=False),
+            SimpleNamespace(enabled=True),
+        )
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.failed.value
+        assert dj.error_message == 'Import destination matches source path'
+        assert source.read_bytes() == b'original-source'
+        assert completed_video.exists()
+        assert cleanup_calls == []
+        assert history_deletes == ['SABNZBD_NZO_unsafe']
+
+
 def test_import_file_sab_falls_back_to_copy_when_rename_hits_cross_device(monkeypatch, tmp_path):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()

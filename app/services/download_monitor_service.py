@@ -3829,6 +3829,12 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
 
     # Apply output conflict policy
     policy = str(profile.output_conflict_policy.value if hasattr(profile.output_conflict_policy, 'value') else profile.output_conflict_policy).lower()
+    if _same_resolved_path(dest, Path(dj.source_file_path)):
+        logger.error('Download job %s: refusing import because destination matches source path: %r', dj.id, str(dest))
+        _cleanup_download_client(dj, qbt, sab, save_path=save_path, delete_files=False)
+        _mark_failed(db, dj, 'Import destination matches source path')
+        _stop_download_queue(f'Unsafe import destination for job {dj.id}')
+        return
     if dest.exists():
         if policy == 'overwrite':
             dest.unlink(missing_ok=True)
@@ -4043,6 +4049,13 @@ def _is_same_filesystem(file_path: Path, target_dir: Path) -> bool:
         return os.stat(file_path).st_dev == os.stat(target_dir).st_dev
     except OSError:
         return False
+
+
+def _same_resolved_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left == right
 
 
 def _normalize_release_key(value: str | None) -> str:

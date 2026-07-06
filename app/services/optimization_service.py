@@ -219,6 +219,13 @@ def _is_same_filesystem(source_path: Path, destination_dir: Path) -> bool:
         return False
 
 
+def _same_resolved_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left == right
+
+
 def _commit_output_file(partial_output_path: Path, final_output_path: Path, job_id: int | None) -> bool:
     final_output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1578,6 +1585,10 @@ def optimize_video(
 
     output_conflict_policy = str(profile.get('output_conflict_policy') or 'skip').lower()
     if final_output_path.exists():
+        if _same_resolved_path(final_output_path, Path(input_path)):
+            metrics.status = 'skipped'
+            metrics.skipped_reason = 'output_matches_source'
+            return metrics
         if output_conflict_policy == 'overwrite':
             final_output_path.unlink(missing_ok=True)
         elif output_conflict_policy == 'rename':
