@@ -462,6 +462,12 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
         # when the pause was applied.
         queue_paused = bool(queue_info.get('paused'))
         slots = queue_info.get('slots', [])
+        logger.warning(
+            'SAB_QUEUE_DEBUG target=%s queue_paused=%s slots=%s',
+            nzo_id,
+            queue_paused,
+            [(i, sl.get('nzo_id'), sl.get('status'), sl.get('percentage')) for i, sl in enumerate(slots)],
+        )
         for slot_index, slot in enumerate(slots):
             if slot.get('nzo_id') == nzo_id:
                 pct = slot.get('percentage', 0)
