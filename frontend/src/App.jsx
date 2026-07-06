@@ -73,6 +73,7 @@ import { isWithinWindow } from './scheduleWindow';
 
 const WS_PATH = '/ws';
 const FALLBACK_AFTER_MS = 5000;
+const REALTIME_BATCH_MS = 250;
 const FALLBACK_POLL_MS = 10000;
 const METRICS_POLL_MS = 10000;
 const QUEUE_RECONCILE_POLL_MS = 15000;
@@ -188,7 +189,6 @@ const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']
 const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'queued', 'paused', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode']);
 const TERMINAL_DL_STATUSES = new Set(['complete', 'failed', 'timed_out', 'fallback_queued']);
 const QUEUE_DEDUPE_DL_STATUSES = new Set([...ACTIVE_DL_STATUSES, 'complete', 'fallback_queued']);
-const ACTIVE_ENCODE_DEDUPE_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting', 'paused', 'paused_schedule']);
 const LOG_REFRESH_SYSTEM_EVENTS = new Set([
   'all_jobs_aborted',
   'cleanup_summary',
@@ -273,26 +273,6 @@ export function removeJobById(previousJobs, jobId) {
   return previousJobs.filter((job) => job.id !== jobId);
 }
 
-function libraryEncodeQueueCount(library, jobs) {
-  return jobs.filter((job) => isActiveLibraryEncodeQueueJob(library, job)).length;
-}
-
-function normalizeQueueIdentityTitle(titleValue) {
-  return String(titleValue || '')
-    .replace(/[^a-zA-Z0-9]+/g, ' ')
-    .trim()
-    .replace(/\s+/g, ' ')
-    .toLowerCase();
-}
-
-function queueIdentityKeyForPath(pathValue) {
-  const { title, year } = extractTitleYear(pathValue);
-  const normalizedTitle = normalizeQueueIdentityTitle(title);
-  const normalizedYear = String(year || '').trim();
-  if (!normalizedTitle) return '';
-  return `${normalizedTitle}::${normalizedYear}`;
-}
-
 function isLibraryEncodeJob(library, job) {
   // Prefer library_id match (accurate); fall back to path prefix for legacy data
   if (job.library_id != null) return job.library_id === library.id;
@@ -303,35 +283,6 @@ function isActiveLibraryEncodeQueueJob(library, job) {
   const status = job.status?.toLowerCase();
   if (!status || TERMINAL_STATUSES.has(status)) return false;
   return isLibraryEncodeJob(library, job);
-}
-
-function buildLibraryActiveEncodeIdentitySet(library, jobs) {
-  const sourcePaths = new Set();
-  const titleYearKeys = new Set();
-  for (const job of jobs) {
-    const status = String(job?.status ?? '').toLowerCase();
-    if (!ACTIVE_ENCODE_DEDUPE_STATUSES.has(status)) continue;
-    if (!isLibraryEncodeJob(library, job)) continue;
-    const sourcePath = String(job?.source_path ?? '').trim();
-    if (sourcePath) sourcePaths.add(sourcePath.toLowerCase());
-    const identityKey = queueIdentityKeyForPath(sourcePath);
-    if (identityKey) titleYearKeys.add(identityKey);
-  }
-  return { sourcePaths, titleYearKeys };
-}
-
-function libraryDownloadQueueCount(library, downloadJobs, activeEncodeIdentities = null) {
-  return downloadJobs.filter((job) => {
-    const status = String(job.status ?? '').toLowerCase();
-    if (!ACTIVE_DL_STATUSES.has(status)) return false;
-    if (job.library_id !== library.id) return false;
-    if (status !== 'waiting_encode' || !activeEncodeIdentities) return true;
-    const sourcePath = String(job.source_file_path ?? '').trim();
-    if (sourcePath && activeEncodeIdentities.sourcePaths.has(sourcePath.toLowerCase())) return false;
-    const identityKey = queueIdentityKeyForPath(sourcePath);
-    if (identityKey && activeEncodeIdentities.titleYearKeys.has(identityKey)) return false;
-    return true;
-  }).length;
 }
 
 export function libraryQueueCount(library, jobs, downloadJobs) {
@@ -1455,6 +1406,13 @@ export default function App() {
   const [pendingDownloadActions, setPendingDownloadActions] = useState({});
 
   const wsRef = useRef();
+  const jobsStateRef = useRef([]);
+  const pendingJobUpdatesRef = useRef([]);
+  const pendingDownloadUpdatesRef = useRef([]);
+  const realtimeFlushTimerRef = useRef();
+  const lastRealtimeJobStatusRef = useRef(new Map());
+  const lastRealtimeDownloadStatusRef = useRef(new Map());
+  const logsRefreshTimerRef = useRef();
   const downloadReconcileInFlightRef = useRef(false);
   const refreshAllRequestIdRef = useRef(0);
   const refreshAllInFlightCountRef = useRef(0);
@@ -1466,6 +1424,12 @@ export default function App() {
   const intentionallyClosedRef = useRef(false);
   const toastTimersRef = useRef({});
   const pinnedOperationTimerRef = useRef();
+
+  // Mirror of the jobs state for timer callbacks that need the latest list
+  // without re-subscribing (realtime batch flush).
+  useEffect(() => {
+    jobsStateRef.current = jobs;
+  }, [jobs]);
 
   // Build a lookup map: library id → library name
   const libraryById = useMemo(
@@ -1642,12 +1606,9 @@ export default function App() {
 
   const queueCount = unifiedAllQueueItems.length;
 
-  // All queue items in a single list: active jobs sort to the top, rest follow.
-  const paginatedQueueItems = useMemo(() => unifiedQueueItems, [unifiedQueueItems]);
-
   const totalJobPages = useMemo(
-    () => Math.max(1, Math.ceil(paginatedQueueItems.length / JOBS_PAGE_SIZE)),
-    [paginatedQueueItems.length],
+    () => Math.max(1, Math.ceil(unifiedQueueItems.length / JOBS_PAGE_SIZE)),
+    [unifiedQueueItems.length],
   );
 
   const totalHistoryPages = useMemo(
@@ -1657,8 +1618,8 @@ export default function App() {
 
   const pagedJobs = useMemo(() => {
     const start = (jobsPage - 1) * JOBS_PAGE_SIZE;
-    return paginatedQueueItems.slice(start, start + JOBS_PAGE_SIZE);
-  }, [paginatedQueueItems, jobsPage]);
+    return unifiedQueueItems.slice(start, start + JOBS_PAGE_SIZE);
+  }, [unifiedQueueItems, jobsPage]);
 
   const pagedHistoryItems = useMemo(() => {
     const start = (historyPage - 1) * HISTORY_PAGE_SIZE;
@@ -2016,8 +1977,9 @@ export default function App() {
   }
 
 
-  async function refreshLogs() {
-    setLoadingLogs(true);
+  async function refreshLogs(options = {}) {
+    const silent = options?.silent === true;
+    if (!silent) setLoadingLogs(true);
     try {
       const nextLogs = await fetchLogs();
       setLogs(nextLogs ?? []);
@@ -2026,9 +1988,9 @@ export default function App() {
         await refreshAuthStatus();
         return;
       }
-      pushToast(refreshError.message || 'Could not refresh logs.', 'error');
+      if (!silent) pushToast(refreshError.message || 'Could not refresh logs.', 'error');
     } finally {
-      setLoadingLogs(false);
+      if (!silent) setLoadingLogs(false);
     }
   }
 
@@ -2171,6 +2133,77 @@ export default function App() {
       return merged.jobs;
     });
     if (resetToFirstPage) setJobsPage(1);
+  }
+
+  // Realtime job/download events arrive one per row during bulk transitions
+  // (queue pause/resume, schedule enforcement, cancel-all). Buffer them and
+  // apply the whole batch in a single state update so the list re-sorts once
+  // instead of rows visibly dropping in one at a time.
+  function flushRealtimeUpdates() {
+    realtimeFlushTimerRef.current = undefined;
+    const jobUpdates = pendingJobUpdatesRef.current;
+    pendingJobUpdatesRef.current = [];
+    const downloadUpdates = pendingDownloadUpdatesRef.current;
+    pendingDownloadUpdatesRef.current = [];
+
+    if (jobUpdates.length > 0) {
+      const prevById = new Map(jobsStateRef.current.map((job) => [job.id, job]));
+      const resetToFirstPage = jobUpdates.some((jobUpdate) => {
+        if (!isActiveEncodeStatus(jobUpdate.status)) return false;
+        const previous = prevById.get(jobUpdate.id);
+        return !previous || !isActiveEncodeStatus(previous.status);
+      });
+      setJobs((prevJobs) => jobUpdates.reduce(
+        (acc, jobUpdate) => mergeJobsWithUpdate(acc, jobUpdate).jobs,
+        prevJobs,
+      ));
+      if (resetToFirstPage) setJobsPage(1);
+    }
+
+    if (downloadUpdates.length > 0) {
+      setDownloadJobs((prevDownloadJobs) => downloadUpdates.reduce(
+        (acc, downloadUpdate) => mergeDownloadJobsWithUpdate(acc, downloadUpdate),
+        prevDownloadJobs,
+      ));
+    }
+  }
+
+  function scheduleRealtimeFlush() {
+    if (realtimeFlushTimerRef.current) return;
+    realtimeFlushTimerRef.current = window.setTimeout(flushRealtimeUpdates, REALTIME_BATCH_MS);
+  }
+
+  function queueRealtimeJobUpdate(jobPayload) {
+    if (jobPayload?.id == null) return;
+    pendingJobUpdatesRef.current.push(jobPayload);
+    scheduleRealtimeFlush();
+    // Reconcile with a full snapshot only when a status actually changes;
+    // progress-only ticks are already merged locally.
+    const status = String(jobPayload.status ?? '').toLowerCase();
+    if (lastRealtimeJobStatusRef.current.get(jobPayload.id) !== status) {
+      lastRealtimeJobStatusRef.current.set(jobPayload.id, status);
+      scheduleQueueSnapshotRefresh();
+    }
+  }
+
+  function queueRealtimeDownloadUpdate(downloadPayload) {
+    if (downloadPayload?.id == null) return;
+    const next = normalizeDownloadJob(downloadPayload);
+    pendingDownloadUpdatesRef.current.push(next);
+    scheduleRealtimeFlush();
+    const status = String(next.status ?? '').toLowerCase();
+    if (lastRealtimeDownloadStatusRef.current.get(next.id) !== status) {
+      lastRealtimeDownloadStatusRef.current.set(next.id, status);
+      scheduleQueueSnapshotRefresh();
+    }
+  }
+
+  function scheduleLogsRefresh(delayMs = 600) {
+    if (logsRefreshTimerRef.current) window.clearTimeout(logsRefreshTimerRef.current);
+    logsRefreshTimerRef.current = window.setTimeout(() => {
+      logsRefreshTimerRef.current = undefined;
+      refreshLogs({ silent: true });
+    }, delayMs);
   }
 
   function wsUrlWithToken() {
@@ -2351,10 +2384,15 @@ export default function App() {
     return () => clearInterval(timer);
   }, [authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
+  // nowMs only feeds elapsed/ETA labels on active download rows in the queue
+  // view; skip the 1s re-render tick whenever none are on screen.
+  const hasActiveDownloadRows = activeDlQueueItems.length > 0;
   useEffect(() => {
+    if (activePage !== 'jobs' || jobsView !== 'queue' || !hasActiveDownloadRows) return undefined;
+    setNowMs(Date.now());
     const timer = setInterval(() => setNowMs(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [activePage, jobsView, hasActiveDownloadRows]);
 
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
@@ -2398,16 +2436,11 @@ export default function App() {
         websocket.onmessage = (event) => {
           const payload = JSON.parse(event.data);
           if (payload.type === 'job_update') {
-            mergeJobUpdate(payload.data);
-            scheduleQueueSnapshotRefresh();
+            queueRealtimeJobUpdate(payload.data);
             return;
           }
           if (payload.type === 'download_job_update') {
-            setDownloadJobs((prev) => {
-              const next = normalizeDownloadJob(payload.data);
-              return mergeDownloadJobsWithUpdate(prev, next);
-            });
-            scheduleQueueSnapshotRefresh();
+            queueRealtimeDownloadUpdate(payload.data);
             return;
           }
           if (payload.type === 'metrics_update') { setMetrics(payload.data); return; }
@@ -2440,14 +2473,16 @@ export default function App() {
               }
               return;
             }
-            if (LOG_REFRESH_SYSTEM_EVENTS.has(systemEvent)) refreshLogs();
+            if (LOG_REFRESH_SYSTEM_EVENTS.has(systemEvent)) scheduleLogsRefresh();
             if (systemEvent === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
             if (systemEvent === 'job_removed') {
+              pendingJobUpdatesRef.current = pendingJobUpdatesRef.current.filter((u) => u.id !== payload.data?.job_id);
               setJobs((prev) => removeJobById(prev, payload.data?.job_id));
               scheduleQueueSnapshotRefresh();
               return;
             }
             if (systemEvent === 'download_job_removed') {
+              pendingDownloadUpdatesRef.current = pendingDownloadUpdatesRef.current.filter((u) => u.id !== payload.data?.download_job_id);
               setDownloadJobs((prev) => prev.filter((dj) => dj.id !== payload.data?.download_job_id));
               scheduleQueueSnapshotRefresh();
               return;
@@ -2509,6 +2544,16 @@ export default function App() {
       if (queueSnapshotTimerRef.current) {
         window.clearTimeout(queueSnapshotTimerRef.current);
         queueSnapshotTimerRef.current = undefined;
+      }
+      if (realtimeFlushTimerRef.current) {
+        window.clearTimeout(realtimeFlushTimerRef.current);
+        realtimeFlushTimerRef.current = undefined;
+      }
+      pendingJobUpdatesRef.current = [];
+      pendingDownloadUpdatesRef.current = [];
+      if (logsRefreshTimerRef.current) {
+        window.clearTimeout(logsRefreshTimerRef.current);
+        logsRefreshTimerRef.current = undefined;
       }
       Object.values(toastTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
       toastTimersRef.current = {};

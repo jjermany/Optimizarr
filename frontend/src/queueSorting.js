@@ -128,10 +128,6 @@ export function compareQueueItemsBySortOption(left, right, sortOption, extractTi
   return compareByCreatedAt(left, right, 'asc');
 }
 
-export function isPinnedActiveQueueItem(item) {
-  return queuePinRank(item) < 2;
-}
-
 export function buildUnifiedQueueItems({
   encodeItems,
   downloadItems,

@@ -260,17 +260,6 @@ export function sendTestNotification() {
   return request('/notifications/test', { method: 'POST' });
 }
 
-export async function fetchWsToken() {
-  try {
-    return await request('/auth/ws-token');
-  } catch (error) {
-    if (error.status === 404) {
-      return null;
-    }
-    throw error;
-  }
-}
-
 export function runRecovery() {
   return request('/recovery/run', { method: 'POST' });
 }
@@ -362,10 +351,6 @@ export function fetchDirs(path) {
 
 export function removeAndResetDownloadJob(jobId) {
   return request(`/download-jobs/${jobId}/cancel`, { method: 'POST' });
-}
-
-export function cancelDownloadJob(jobId) {
-  return removeAndResetDownloadJob(jobId);
 }
 
 export function deleteDownloadJob(jobId) {

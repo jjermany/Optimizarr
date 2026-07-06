@@ -528,6 +528,7 @@ def _restart_paused_schedule_jobs(db: Session, settings: Settings, now: datetime
         .all()
     )
 
+    resumed_jobs: list[Job] = []
     for job, profile in paused_jobs:
         if not _library_is_in_schedule_window(now, profile):
             continue
@@ -542,7 +543,15 @@ def _restart_paused_schedule_jobs(db: Session, settings: Settings, now: datetime
         job.cancel_requested = False
         job.completed_at = None
         # resume_position_seconds and progress_percent are kept as-is.
-        db.commit()
+        resumed_jobs.append(job)
+
+    if not resumed_jobs:
+        return
+
+    # Commit the whole batch once, then publish, so clients receive the
+    # resume transition as one burst instead of a slow row-by-row cascade.
+    db.commit()
+    for job in resumed_jobs:
         _publish_job(job, throttle_progress=False)
         broker.publish_system_event(
             'schedule_policy_state_changed',
