@@ -106,6 +106,49 @@ def test_set_sab_category_uses_change_cat_first(monkeypatch):
     assert calls[0].get('value2') == 'optimizarr'
 
 
+def test_set_sab_priority_pins_normal_priority_by_default(monkeypatch):
+    calls = []
+
+    def fake_sab_api(_settings, **params):
+        calls.append(params)
+        return {'status': True}
+
+    monkeypatch.setattr(download_client_service, '_sab_api', fake_sab_api)
+
+    ok = download_client_service.set_sab_priority(SimpleNamespace(), 'NZO456')
+
+    assert ok is True
+    assert calls
+    assert calls[0].get('mode') == 'queue'
+    assert calls[0].get('name') == 'priority'
+    assert calls[0].get('value') == 'NZO456'
+    assert calls[0].get('value2') == 0
+
+
+def test_set_sab_priority_falls_back_when_first_attempt_fails(monkeypatch):
+    calls = []
+
+    def fake_sab_api(_settings, **params):
+        calls.append(params)
+        if params.get('mode') == 'queue':
+            return {'status': False, 'error': 'nope'}
+        return {'status': True}
+
+    monkeypatch.setattr(download_client_service, '_sab_api', fake_sab_api)
+
+    ok = download_client_service.set_sab_priority(SimpleNamespace(), 'NZO456')
+
+    assert ok is True
+    assert len(calls) == 2
+    assert calls[1].get('mode') == 'change_priority'
+
+
+def test_set_sab_priority_returns_false_without_nzo_id(monkeypatch):
+    monkeypatch.setattr(download_client_service, '_sab_api', lambda *_a, **_kw: {'status': True})
+
+    assert download_client_service.set_sab_priority(SimpleNamespace(), '') is False
+
+
 def test_get_sab_status_prefers_mbps_over_mb_size_field(monkeypatch):
     queue_payload = {
         'queue': {

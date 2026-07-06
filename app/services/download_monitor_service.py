@@ -3214,6 +3214,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
             _publish_download_job(dj)
             if download_client_service.set_sab_category(sab, existing_nzo, category='optimizarr'):
                 _categorized_sab_job_ids.add(dj.id)
+                download_client_service.set_sab_priority(sab, existing_nzo)
             return
 
     logger.info(
@@ -3311,6 +3312,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
                 logger.info('Download job %s: recovered SABnzbd NZO id immediately after grab: %s', dj.id, recovered)
                 if download_client_service.set_sab_category(sab, recovered, category='optimizarr'):
                     _categorized_sab_job_ids.add(dj.id)
+                    download_client_service.set_sab_priority(sab, recovered)
                 _reconcile_duplicate_sab_downloads(db, sab)
 
         _publish_download_job(dj)
@@ -3340,6 +3342,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     elif client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
         if download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr'):
             _categorized_sab_job_ids.add(dj.id)
+            download_client_service.set_sab_priority(sab, dj.download_hash)
         _reconcile_duplicate_sab_downloads(db, sab)
 
 
@@ -3505,6 +3508,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             logger.info('Download job %s: recovered SABnzbd NZO id %s', dj.id, recovered_nzo)
             if download_client_service.set_sab_category(sab, recovered_nzo, category='optimizarr'):
                 _categorized_sab_job_ids.add(dj.id)
+                download_client_service.set_sab_priority(sab, recovered_nzo)
         else:
             if dj.release_name:
                 logger.debug(
@@ -3526,6 +3530,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     if dj.id not in _categorized_sab_job_ids and client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
         if download_client_service.set_sab_category(sab, dj.download_hash, category='optimizarr'):
             _categorized_sab_job_ids.add(dj.id)
+            download_client_service.set_sab_priority(sab, dj.download_hash)
 
     if client_type == 'qbittorrent' and qbt.enabled and _qbt_hash_mismatches_tv_download_job(dj, qbt):
         logger.warning(
@@ -3648,6 +3653,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                 db.refresh(dj)
                 if download_client_service.set_sab_category(sab, replacement_nzo, category='optimizarr'):
                     _categorized_sab_job_ids.add(dj.id)
+                    download_client_service.set_sab_priority(sab, replacement_nzo)
                 status = download_client_service.get_download_status(client_type, qbt, sab, replacement_nzo)
                 if status.get('not_found'):
                     status = {
@@ -3763,6 +3769,10 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         # on the item (e.g. SAB moved it to History as "Failed", or qBit
         # reports 'error'/'missingFiles') -- nothing will change without a
         # retry, so don't wait out the generic download timeout.
+        # Clean up the abandoned client-side entry first so it doesn't sit
+        # there orphaned (and collide as a "duplicate" with whatever gets
+        # re-grabbed next for the same title).
+        _cleanup_download_client(dj, qbt, sab, delete_files=True)
         _retry_failed_download(
             db,
             dj,
@@ -3813,6 +3823,11 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         timeout_reference = timeout_reference.replace(tzinfo=timezone.utc)
     elapsed = datetime.now(timezone.utc) - timeout_reference
     if elapsed > timedelta(minutes=timeout_minutes):
+        # As above: remove the timed-out item from the client before giving up
+        # on it, so it doesn't keep occupying a queue slot (and potentially
+        # finish later as an untracked orphan/duplicate) after Optimizarr has
+        # already moved on to a different release.
+        _cleanup_download_client(dj, qbt, sab, delete_files=True)
         _retry_failed_download(
             db,
             dj,

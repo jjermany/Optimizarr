@@ -756,6 +756,38 @@ def set_sab_category(s: SabnzbdSettings, nzo_id: str, category: str = 'optimizar
     return False
 
 
+# SABnzbd priority values (see sabnzbd/constants.py): assigning a category
+# resets an NZO's priority to that category's configured default unless it is
+# pinned back explicitly. If the 'optimizarr' category has a non-Normal
+# default (e.g. Force/High, a common setup for automation categories), every
+# freshly-categorized job jumps the queue and bumps whatever was already
+# downloading -- which looks like SAB abandoning a partial download to start
+# another one. Pinning Normal priority right after categorizing prevents that.
+_SAB_NORMAL_PRIORITY = 0
+
+
+def set_sab_priority(s: SabnzbdSettings, nzo_id: str, priority: int = _SAB_NORMAL_PRIORITY) -> bool:
+    """Pin an NZO's queue priority so category assignment can't reorder the queue."""
+    nzo = str(nzo_id or '').strip()
+    if not nzo:
+        return False
+
+    attempts = (
+        {'mode': 'queue', 'name': 'priority', 'value': nzo, 'value2': priority},
+        {'mode': 'change_priority', 'value': nzo, 'value2': priority},
+    )
+    for params in attempts:
+        try:
+            payload = _sab_api(s, **params)
+            if _sab_call_succeeded(payload):
+                logger.info('SABnzbd: set priority=%r for NZO %s', priority, nzo)
+                return True
+        except Exception:
+            continue
+    logger.warning('SABnzbd: failed setting priority=%r for NZO %s', priority, nzo)
+    return False
+
+
 def delete_sab_history(s: SabnzbdSettings, nzo_id: str) -> None:
     """Remove a completed download from SABnzbd history (does not delete files)."""
     try:

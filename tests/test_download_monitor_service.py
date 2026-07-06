@@ -1531,6 +1531,123 @@ def test_check_download_progress_qbit_elapsed_timeout_retries_search(monkeypatch
         assert retry_calls == [True]
 
 
+def test_check_download_progress_sab_elapsed_timeout_removes_orphaned_client_job(monkeypatch):
+    """Timing out a SAB download must cancel the client-side NZO before retrying.
+
+    Otherwise the abandoned partial download keeps sitting in SABnzbd's queue,
+    finishes on its own later, and collides as a duplicate with whatever gets
+    re-grabbed for the same title.
+    """
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        profile = db.query(LibraryProfile).filter_by(library_id=library.id).first()
+        profile.download_timeout_minutes = 1
+        db.commit()
+
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Orphaned.Timeout.Item.mkv',
+            release_name='Orphaned.Timeout.Item.2025.1080p.WEB-DL',
+            download_hash='SAB_ORPHAN_NZO',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            progress_percent=17,
+            download_started_at=datetime.now(UTC) - timedelta(minutes=5),
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 17,
+            'eta_seconds': 1200,
+            'download_speed_bps': 1024,
+            'is_complete': False,
+            'is_stalled': False,
+            'save_path': None,
+            'not_found': False,
+        })
+
+        remove_calls = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_sab_job',
+            lambda _sab, nzo_id, **_kwargs: remove_calls.append(nzo_id) or True,
+        )
+
+        retry_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._retry_failed_download',
+            lambda *_args, **_kwargs: retry_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+
+        assert remove_calls == ['SAB_ORPHAN_NZO']
+        assert retry_calls == [True]
+
+
+def test_check_download_progress_sab_failed_removes_orphaned_client_job(monkeypatch):
+    """A client-reported failure must also clean up before retrying, same as a timeout."""
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Failed.In.Client.Item.mkv',
+            release_name='Failed.In.Client.Item.2025.1080p.WEB-DL',
+            download_hash='SAB_FAILED_NZO',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'is_complete': False,
+            'is_stalled': False,
+            'is_failed': True,
+            'save_path': None,
+            'not_found': False,
+        })
+
+        remove_calls = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_sab_job',
+            lambda _sab, nzo_id, **_kwargs: remove_calls.append(nzo_id) or True,
+        )
+
+        retry_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._retry_failed_download',
+            lambda *_args, **_kwargs: retry_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+
+        assert remove_calls == ['SAB_FAILED_NZO']
+        assert retry_calls == [True]
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Startup recovery: timed_out jobs that completed in qBit while offline
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4766,6 +4883,12 @@ def test_do_search_reuses_existing_sab_job_instead_of_grabbing_duplicate(monkeyp
             'set_sab_category',
             lambda _sab, nzo_id, category='optimizarr': category_calls.append((nzo_id, category)) or True,
         )
+        priority_calls = []
+        monkeypatch.setattr(
+            download_client_service,
+            'set_sab_priority',
+            lambda _sab, nzo_id: priority_calls.append(nzo_id) or True,
+        )
 
         _do_search(db, dj, prowlarr_stub, qbt, sab)
         db.refresh(dj)
@@ -4776,6 +4899,10 @@ def test_do_search_reuses_existing_sab_job_instead_of_grabbing_duplicate(monkeyp
         assert dj.release_name == 'Reattach.Existing.Sab.Job.2025.1080p.WEB-DL'
         assert dj.status == DownloadJobStatus.downloading.value
         assert category_calls == [('SABNZBD_NZO_existing', 'optimizarr')]
+        # Pinning priority immediately after categorizing prevents the
+        # 'optimizarr' category's own default priority (if configured to
+        # Force/High in SAB) from silently reordering the queue.
+        assert priority_calls == ['SABNZBD_NZO_existing']
 
 
 def test_do_search_rejects_unrelated_episode_title_for_single_word_movie(monkeypatch):
