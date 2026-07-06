@@ -4386,13 +4386,19 @@ export default function App() {
                             const clientLabel = formatDownloadClient(dj.client_type);
                             const indexerLabel = dj.indexer_name || (dj.indexer_id != null ? `Indexer #${dj.indexer_id}` : null);
                             const statusLabel = dj.status === 'searching' && retryLabel ? 'retrying' : dj.status.replace(/_/g, ' ');
+                            const downloadMetaParts = [
+                              clientLabel,
+                              indexerLabel,
+                              showElapsed ? `Elapsed: ${elapsedLabel}` : null,
+                              dj.status === 'queued' ? 'Waiting in client queue' : null,
+                            ].filter(Boolean);
                             return (
                               <tr key={`dl-${dj.id}`} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
-                                <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{dj.id}</td>
-                                <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
-                                <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
-                                <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
-                                <td className="px-4 py-3 text-sm">
+                                <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 xl:table-cell">{dj.id}</td>
+                                <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
+                                <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
+                                <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{libName}</td>
+                                <td className="px-4 py-2.5 align-top text-sm">
                                   <div className="flex items-center gap-1.5">
                                     {dj.status === 'searching' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />}
                                     {dj.status === 'moving' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-400" />}
@@ -4402,23 +4408,18 @@ export default function App() {
                                   {showEta && <p className="mt-0.5 text-xs text-slate-400">ETA: {etaLabel}</p>}
                                   {speedLabel && <p className="mt-0.5 text-xs text-slate-400">Speed: {speedLabel}</p>}
                                   {retryLabel && <p className="mt-0.5 text-xs text-amber-300">{retryLabel}</p>}
-                                  {clientLabel && <p className="mt-0.5 text-xs text-slate-500">Client: {clientLabel}</p>}
-                                  {indexerLabel && <p className="mt-0.5 text-xs text-slate-500">Indexer: {indexerLabel}</p>}
-                                  {showElapsed && (
-                                    <p className="mt-0.5 text-xs text-slate-500" title={elapsedSeconds == null ? 'Missing created_at timestamp' : `${elapsedSeconds}s elapsed`}>
-                                      Elapsed: {elapsedLabel}
+                                  {downloadMetaParts.length > 0 && (
+                                    <p className="mt-0.5 text-xs text-slate-500" title={elapsedSeconds == null ? undefined : `${elapsedSeconds}s elapsed`}>
+                                      {downloadMetaParts.join(' · ')}
                                     </p>
-                                  )}
-                                  {dj.status === 'queued' && (
-                                    <p className="mt-0.5 text-xs text-slate-500">Elapsed: waiting</p>
                                   )}
                                   {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
                                 </td>
-                                <td className="hidden max-w-[180px] truncate px-4 py-3 text-xs text-slate-400 xl:table-cell" title={dj.search_query}>
+                                <td className="hidden max-w-[180px] truncate px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell" title={dj.search_query}>
                                   {dj.status === 'searching' && !dj.search_query ? <span className="italic text-slate-500">Building query…</span> : (dj.search_query ?? '—')}
                                 </td>
-                                <td className="hidden px-4 py-3 text-xs text-slate-600 xl:table-cell">—</td>
-                                <td className="px-4 py-3">
+                                <td className="hidden px-4 py-2.5 align-top text-xs text-slate-600 xl:table-cell">—</td>
+                                <td className="px-4 py-2.5 align-top">
                                   {['downloading', 'moving'].includes(dj.status) ? (
                                     <div>
                                       <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-700 md:w-32">
@@ -4428,7 +4429,7 @@ export default function App() {
                                     </div>
                                   ) : <span className="text-xs text-slate-600">—</span>}
                                 </td>
-                                <td className="px-4 py-3">
+                                <td className="px-4 py-2.5 align-top">
                                   <div className="flex flex-wrap gap-1.5">
                                     {['searching', 'queued', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
                                       <Btn size="sm" variant="danger" disabled={Boolean(downloadActionPending)} onClick={() => handleCancelDownloadJob(dj.id)}>
@@ -4471,10 +4472,10 @@ export default function App() {
                           const jobStatusLabel = queueWaitingForRoute ? 'awaiting download route' : job.status;
                           return (
                             <tr key={job.id} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
-                              <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{job.id}</td>
-                              <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={job.source_path}>{title}</td>
-                              <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
-                              <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
+                              <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 xl:table-cell">{job.id}</td>
+                              <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={job.source_path}>{title}</td>
+                              <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
+                              <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{libName}</td>
                               <td className="px-4 py-3 text-sm capitalize">
                                 <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${queueWaitingForRoute ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : job.status === 'running' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : job.status === 'failed' ? 'border-red-500/40 bg-red-950/30 text-red-300' : job.status === 'paused' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{jobStatusLabel}</span>
                                 {queueWaitingForRoute && (
@@ -4517,12 +4518,12 @@ export default function App() {
                                   </p>
                                 )}
                               </td>
-                              <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
+                              <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">
                                 <span>{formatResolution(job.source_resolution)}</span>
                                 <span className="mx-1.5 text-slate-600">·</span>
                                 <span>{formatHdrIndicator(job.source_is_hdr)}</span>
                               </td>
-                              <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
+                              <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">
                                 {job.encoder_used ? (
                                   <>
                                     <span className={job.hwaccel_used ? 'font-medium text-cyan-400' : ''}>{job.encoder_used}</span>
@@ -4534,7 +4535,7 @@ export default function App() {
                                   <span className="text-slate-600">—</span>
                                 )}
                               </td>
-                              <td className="px-4 py-3">
+                              <td className="px-4 py-2.5 align-top">
                                 <div className="h-1.5 w-24 rounded-full bg-slate-700 md:w-32">
                                   <div
                                     className="h-full rounded-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-500"
@@ -4547,7 +4548,7 @@ export default function App() {
                                   {isRunning && eta && <span>{eta}</span>}
                                 </div>
                               </td>
-                              <td className="px-4 py-3">
+                              <td className="px-4 py-2.5 align-top">
                                 <div className="flex flex-wrap gap-1.5">
                                   {job.status === 'running' && <Btn size="sm" variant="warning" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('pause', job.id)}>{jobActionPending === 'pause' ? 'Working…' : 'Pause Encode'}</Btn>}
                                   {job.status === 'paused' && progress > 0 && <Btn size="sm" variant="success" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('start', job.id)}>{jobActionPending === 'start' ? 'Working…' : 'Resume Now'}</Btn>}
@@ -4725,20 +4726,20 @@ export default function App() {
                             const completedDate = formatHistoryCompletedAt(dj.completed_at);
                             return (
                               <tr key={`hist-download-${dj.id}`} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
-                                <td className="px-4 py-3 text-sm"><HistoryTypeBadge type="download" /></td>
-                                <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{dj.id}</td>
-                                <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
-                                <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
-                                <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
-                                <td className="px-4 py-3 text-sm">
+                                <td className="px-4 py-2.5 align-top text-sm"><HistoryTypeBadge type="download" /></td>
+                                <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 xl:table-cell">{dj.id}</td>
+                                <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
+                                <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
+                                <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{libName}</td>
+                                <td className="px-4 py-2.5 align-top text-sm">
                                   <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${dj.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'failed' || dj.status === 'timed_out' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
                                   {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
                                 </td>
-                                <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">{clientLabel ? `Client: ${clientLabel}` : '—'}</td>
-                                <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">—</td>
-                                <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">—</td>
-                                <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">{completedDate}</td>
-                                <td className="whitespace-nowrap px-4 py-3">
+                                <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">{clientLabel ? `Client: ${clientLabel}` : '—'}</td>
+                                <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">—</td>
+                                <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">—</td>
+                                <td className="whitespace-nowrap px-4 py-2.5 align-top text-xs text-slate-400">{completedDate}</td>
+                                <td className="whitespace-nowrap px-4 py-2.5 align-top">
                                   <div className="flex flex-wrap gap-1.5">
                                     {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
                                       <Btn size="sm" variant="primary" disabled={Boolean(downloadActionPending)} onClick={() => handleRetryDownloadJob(dj.id)}>
@@ -4765,18 +4766,18 @@ export default function App() {
                           const encodeDuration = formatElapsed(job.encode_duration_seconds);
                           return (
                             <tr key={`hist-encode-${job.id}`} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
-                              <td className="px-4 py-3 text-sm"><HistoryTypeBadge type="encode" /></td>
-                              <td className="hidden px-4 py-3 text-xs text-slate-500 xl:table-cell">{job.id}</td>
-                              <td className="max-w-[180px] truncate px-4 py-3 text-sm text-slate-200" title={job.source_path}>{title}</td>
-                              <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
-                              <td className="hidden px-4 py-3 text-sm text-slate-400 lg:table-cell">{libName}</td>
+                              <td className="px-4 py-2.5 align-top text-sm"><HistoryTypeBadge type="encode" /></td>
+                              <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 xl:table-cell">{job.id}</td>
+                              <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={job.source_path}>{title}</td>
+                              <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
+                              <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{libName}</td>
                               <td className="px-4 py-3 text-sm capitalize">
                                 <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${job.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : job.status === 'failed' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{job.status}</span>
                                 {job.status === 'failed' && job.error_message && (
                                   <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
                                 )}
                               </td>
-                              <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
+                              <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">
                                 <div className="space-y-1">
                                   <div className="flex items-center gap-2">
                                     {fallbackInfo && <FallbackIndicator />}
@@ -4786,7 +4787,7 @@ export default function App() {
                                   </div>
                                 </div>
                               </td>
-                              <td className="hidden px-4 py-3 text-xs text-slate-400 xl:table-cell">
+                              <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">
                                 {job.encoder_used ? (
                                   <>
                                     <span className={job.hwaccel_used ? 'font-medium text-cyan-400' : ''}>{job.encoder_used}</span>
@@ -4798,9 +4799,9 @@ export default function App() {
                                   <span className="text-slate-600">—</span>
                                 )}
                               </td>
-                              <td className="hidden whitespace-nowrap px-4 py-3 text-xs text-slate-400 xl:table-cell">{encodeDuration}</td>
-                              <td className="whitespace-nowrap px-4 py-3 text-xs text-slate-400">{completedDate}</td>
-                              <td className="whitespace-nowrap px-4 py-3">
+                              <td className="hidden whitespace-nowrap px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">{encodeDuration}</td>
+                              <td className="whitespace-nowrap px-4 py-2.5 align-top text-xs text-slate-400">{completedDate}</td>
+                              <td className="whitespace-nowrap px-4 py-2.5 align-top">
                                 <div className="flex flex-wrap gap-1.5">
                                     {['failed', 'cancelled'].includes(job.status) && (
                                       <Btn size="sm" variant="primary" disabled={Boolean(jobActionPending)} onClick={() => handleJobAction('retry', job.id)}>

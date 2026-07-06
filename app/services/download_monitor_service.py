@@ -1139,7 +1139,7 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
     return dj
 
 
-def download_job_to_dict(dj: DownloadJob) -> dict:
+def download_job_to_dict(dj: DownloadJob, *, client_queue_position: int | None = None) -> dict:
     def _iso_utc(value: datetime | None) -> str | None:
         if value is None:
             return None
@@ -1165,6 +1165,7 @@ def download_job_to_dict(dj: DownloadJob) -> dict:
         'progress_percent': dj.progress_percent,
         'eta_seconds': dj.eta_seconds,
         'download_speed_bps': dj.download_speed_bps,
+        'client_queue_position': client_queue_position,
         'downloaded_file_path': dj.downloaded_file_path,
         'imported_file_path': dj.imported_file_path,
         'error_message': dj.error_message,
@@ -1175,8 +1176,8 @@ def download_job_to_dict(dj: DownloadJob) -> dict:
     }
 
 
-def _publish_download_job(dj: DownloadJob) -> None:
-    broker.publish('download_job_update', download_job_to_dict(dj))
+def _publish_download_job(dj: DownloadJob, *, client_queue_position: int | None = None) -> None:
+    broker.publish('download_job_update', download_job_to_dict(dj, client_queue_position=client_queue_position))
 
 
 def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
@@ -3692,7 +3693,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         dj.download_speed_bps = speed_bps
         db.commit()
         db.refresh(dj)
-        _publish_download_job(dj)
+        _publish_download_job(dj, client_queue_position=status.get('client_queue_position'))
 
     # Always check for completion BEFORE applying the timeout.  A download that
     # finished just as the deadline elapsed should be imported, not discarded.
@@ -3702,7 +3703,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             dj.download_speed_bps = 0
             db.commit()
             db.refresh(dj)
-            _publish_download_job(dj)
+            _publish_download_job(dj, client_queue_position=status.get('client_queue_position'))
         save_path = status.get('save_path')
         if save_path:
             logger.info('Download job %s complete; save_path=%r', dj.id, save_path)

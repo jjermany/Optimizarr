@@ -66,7 +66,7 @@ describe('buildUnifiedQueueItems', () => {
     expect(items.map((item) => item.id)).toEqual([1, 50]);
   });
 
-  it('can optionally pin active items first and prefer active encodes', () => {
+  it('can optionally pin active downloads first before active encodes', () => {
     const items = buildUnifiedQueueItems({
       encodeItems,
       downloadItems,
@@ -75,10 +75,10 @@ describe('buildUnifiedQueueItems', () => {
       pinActiveFirst: true,
     });
 
-    expect(items.map((item) => item.id)).toEqual([14, 10, 13, 16, 9, 11]);
+    expect(items.map((item) => item.id)).toEqual([10, 13, 16, 14, 9, 11]);
   });
 
-  it('pins active encode rows before non-active rows deterministically', () => {
+  it('pins active download rows before active encode rows deterministically', () => {
     const items = buildUnifiedQueueItems({
       encodeItems: [
         { id: 5, status: 'running', source_path: '/media/Active.Encode.A.2020.mkv' },
@@ -93,8 +93,8 @@ describe('buildUnifiedQueueItems', () => {
     });
 
     expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
-      'encode-5',
       'download-5',
+      'encode-5',
       'encode-2',
     ]);
   });
@@ -116,8 +116,8 @@ describe('buildUnifiedQueueItems', () => {
     });
 
     expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
-      'encode-20',
       'download-31',
+      'encode-20',
       'download-30',
       'download-32',
       'encode-19',
@@ -146,6 +146,31 @@ describe('buildUnifiedQueueItems', () => {
       'download-40',
       'download-41',
       'encode-19',
+    ]);
+  });
+
+  it('orders active SAB downloads by client queue position when available', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [
+        { id: 10, status: 'running', source_path: '/media/Encode.Active.2026.mkv', created_at: '2026-03-01T07:00:00Z' },
+        { id: 11, status: 'queued', source_path: '/media/Encode.Queued.2026.mkv', created_at: '2026-03-01T08:00:00Z' },
+      ],
+      downloadItems: [
+        { id: 287, status: 'downloading', source_file_path: '/downloads/Fantastic.Four.2025.mkv', client_type: 'sabnzbd', client_queue_position: 1, created_at: '2026-03-01T11:00:00Z' },
+        { id: 294, status: 'downloading', source_file_path: '/downloads/Louis.Theroux.2026.mkv', client_type: 'sabnzbd', client_queue_position: 0, created_at: '2026-03-01T12:00:00Z' },
+        { id: 288, status: 'queued', source_file_path: '/downloads/Paddington.in.Peru.2024.mkv', client_type: 'sabnzbd', client_queue_position: 2, created_at: '2026-03-01T09:00:00Z' },
+      ],
+      sortOption: 'newest',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
+      'download-294',
+      'download-287',
+      'download-288',
+      'encode-10',
+      'encode-11',
     ]);
   });
 

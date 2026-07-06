@@ -24,6 +24,7 @@ def test_get_sab_status_parses_timeleft_eta_and_speed(monkeypatch):
     assert status['progress_percent'] == 55
     assert status['eta_seconds'] == 190
     assert status['download_speed_bps'] == 1024 * 1024
+    assert status['client_queue_position'] == 0
     assert status['is_complete'] is False
     assert status['not_found'] is False
 
@@ -232,6 +233,7 @@ def test_get_sab_status_does_not_apply_global_speed_to_later_queue_slot(monkeypa
     status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-WAITING')
 
     assert status['is_waiting'] is True
+    assert status['client_queue_position'] == 1
     assert status['eta_seconds'] is None
     assert status['download_speed_bps'] == 0
     assert status['is_complete'] is False

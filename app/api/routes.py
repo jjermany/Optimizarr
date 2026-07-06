@@ -999,6 +999,7 @@ class DownloadJobResponse(BaseModel):
     progress_percent: int
     eta_seconds: int | None = None
     download_speed_bps: int | None = None
+    client_queue_position: int | None = None
     downloaded_file_path: str | None = None
     imported_file_path: str | None = None
     error_message: str | None = None
@@ -1008,7 +1009,7 @@ class DownloadJobResponse(BaseModel):
     completed_at: str | None = None
 
     @classmethod
-    def from_orm(cls, dj: DownloadJob):
+    def from_orm(cls, dj: DownloadJob, *, client_queue_position: int | None = None):
         from datetime import timezone
         return cls(
             id=dj.id,
@@ -1028,6 +1029,7 @@ class DownloadJobResponse(BaseModel):
             progress_percent=dj.progress_percent,
             eta_seconds=dj.eta_seconds,
             download_speed_bps=dj.download_speed_bps,
+            client_queue_position=client_queue_position,
             downloaded_file_path=dj.downloaded_file_path,
             imported_file_path=dj.imported_file_path,
             error_message=dj.error_message,
@@ -1036,6 +1038,26 @@ class DownloadJobResponse(BaseModel):
             download_started_at=dj.download_started_at.replace(tzinfo=timezone.utc).isoformat() if dj.download_started_at else None,
             completed_at=dj.completed_at.replace(tzinfo=timezone.utc).isoformat() if dj.completed_at else None,
         )
+
+
+def _sab_queue_positions_by_nzo(db: Session) -> dict[str, int]:
+    sab = download_client_service.get_or_create_sab_settings(db)
+    if not sab.enabled:
+        return {}
+    try:
+        return {
+            str(item.get('nzo_id') or '').strip(): int(item.get('index'))
+            for item in download_client_service.get_sab_queue_items(sab)
+            if str(item.get('nzo_id') or '').strip() and item.get('index') is not None
+        }
+    except Exception:
+        return {}
+
+
+def _download_job_client_queue_position(dj: DownloadJob, sab_positions: dict[str, int]) -> int | None:
+    if dj.client_type != 'sabnzbd' or not dj.download_hash:
+        return None
+    return sab_positions.get(str(dj.download_hash).strip())
 
 
 class LibraryBaseRequest(BaseModel):
@@ -2418,7 +2440,14 @@ def test_sab_connection(_: None = Depends(require_ui_auth), db: Session = Depend
 @router.get('/download-jobs', response_model=list[DownloadJobResponse])
 def list_download_jobs(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> list[DownloadJobResponse]:
     jobs = db.query(DownloadJob).order_by(DownloadJob.created_at.desc()).all()
-    return [DownloadJobResponse.from_orm(dj) for dj in jobs]
+    sab_positions = _sab_queue_positions_by_nzo(db)
+    return [
+        DownloadJobResponse.from_orm(
+            dj,
+            client_queue_position=_download_job_client_queue_position(dj, sab_positions),
+        )
+        for dj in jobs
+    ]
 
 
 @router.get('/download-jobs/{job_id}', response_model=DownloadJobResponse)
@@ -2426,7 +2455,11 @@ def get_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sessio
     dj = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
     if not dj:
         raise HTTPException(status_code=404, detail='Download job not found')
-    return DownloadJobResponse.from_orm(dj)
+    sab_positions = _sab_queue_positions_by_nzo(db)
+    return DownloadJobResponse.from_orm(
+        dj,
+        client_queue_position=_download_job_client_queue_position(dj, sab_positions),
+    )
 
 
 @router.post('/download-jobs/{job_id}/cancel', response_model=DownloadJobResponse)

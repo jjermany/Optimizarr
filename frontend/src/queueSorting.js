@@ -67,6 +67,13 @@ function compareByCreatedAt(left, right, direction = 'asc') {
   return compareById(left, right, direction);
 }
 
+function clientQueuePosition(item) {
+  const rawPosition = item.client_queue_position;
+  if (rawPosition === null || rawPosition === undefined || rawPosition === '') return null;
+  const position = Number(rawPosition);
+  return Number.isFinite(position) && position >= 0 ? position : null;
+}
+
 function encodeStatusRank(statusValue) {
   const status = String(statusValue || '').toLowerCase();
   if (ENCODE_ACTIVE_STATUSES.has(status)) return 0;
@@ -77,12 +84,27 @@ function encodeStatusRank(statusValue) {
 
 function queuePinRank(item) {
   const status = String(item.status || '').toLowerCase();
-  if (item._itemType === 'encode' && ENCODE_ACTIVE_STATUSES.has(status)) return 0;
   // Treat the whole download lifecycle as one stable lane. Status refreshes like
   // queued -> downloading -> importing should update the row, not move it.
-  if (item._itemType === 'download' && DOWNLOAD_ACTIVE_STATUSES.has(status)) return 1;
+  if (item._itemType === 'download' && DOWNLOAD_ACTIVE_STATUSES.has(status)) return 0;
+  if (item._itemType === 'encode' && ENCODE_ACTIVE_STATUSES.has(status)) return 1;
   if (item._itemType === 'download' && DOWNLOAD_WAITING_ENCODE_STATUSES.has(status)) return 2;
   return 4;
+}
+
+function comparePinnedDownloadItems(left, right) {
+  const leftPosition = clientQueuePosition(left);
+  const rightPosition = clientQueuePosition(right);
+  if (leftPosition !== null && rightPosition !== null && leftPosition !== rightPosition) {
+    return leftPosition - rightPosition;
+  }
+  if (leftPosition !== null && rightPosition === null) return -1;
+  if (rightPosition !== null && leftPosition === null) return 1;
+
+  const leftTs = Date.parse(left.created_at || '') || 0;
+  const rightTs = Date.parse(right.created_at || '') || 0;
+  if (leftTs !== rightTs) return leftTs - rightTs;
+  return compareById(left, right, 'asc');
 }
 
 export function compareQueueItemsBySortOption(left, right, sortOption, extractTitleYear) {
@@ -201,10 +223,13 @@ export function buildUnifiedQueueItems({
       // Download rows stay stable FIFO so status/progress refreshes do not
       // reshuffle the visible queue while someone is managing it.
       if ((leftPinRank === 1 || leftPinRank === 2) && leftPinRank === rightPinRank) {
-        const leftTs = Date.parse(left.created_at || '') || 0;
-        const rightTs = Date.parse(right.created_at || '') || 0;
-        if (leftTs !== rightTs) return leftTs - rightTs;
-        return left.id - right.id;
+        if (left._itemType === 'download' && right._itemType === 'download') {
+          return comparePinnedDownloadItems(left, right);
+        }
+        return compareByCreatedAt(left, right, 'asc');
+      }
+      if (leftPinRank === 0 && leftPinRank === rightPinRank) {
+        return comparePinnedDownloadItems(left, right);
       }
     }
 
