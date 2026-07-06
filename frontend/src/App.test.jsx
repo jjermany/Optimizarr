@@ -14,6 +14,7 @@ import {
   libraryQueueCount,
   mergeDownloadJobsWithUpdate,
   mergeJobsWithUpdate,
+  normalizeDownloadJob,
   removeJobById,
   shouldShowDownloadElapsed,
 } from './App';
@@ -123,6 +124,56 @@ describe('mergeDownloadJobsWithUpdate', () => {
 
     expect(merged[0].status).toBe('moving');
     expect(merged[0].progress_percent).toBe(88);
+  });
+
+  it('preserves SAB queue position when websocket update omits it', () => {
+    const previousJobs = [
+      { id: 9, status: 'queued', client_type: 'sabnzbd', client_queue_position: 3, progress_percent: 8 },
+    ];
+
+    const merged = mergeDownloadJobsWithUpdate(previousJobs, {
+      id: 9,
+      status: 'downloading',
+      client_type: 'sabnzbd',
+      client_queue_position: null,
+      progress_percent: 8,
+    });
+
+    expect(merged[0].client_queue_position).toBe(3);
+    expect(merged[0].status).toBe('queued');
+  });
+});
+
+describe('normalizeDownloadJob', () => {
+  it('keeps partial SAB backlog rows queued when queue position is behind the head', () => {
+    const normalized = normalizeDownloadJob({
+      id: 9,
+      status: 'queued',
+      client_type: 'sabnzbd',
+      client_queue_position: 3,
+      progress_percent: 8,
+      eta_seconds: null,
+      download_speed_bps: null,
+    });
+
+    expect(normalized.status).toBe('queued');
+    expect(normalized.download_speed_bps).toBeNull();
+  });
+
+  it('normalizes legacy SAB downloading rows behind the head to queued', () => {
+    const normalized = normalizeDownloadJob({
+      id: 9,
+      status: 'downloading',
+      client_type: 'sabnzbd',
+      client_queue_position: 3,
+      progress_percent: 8,
+      eta_seconds: 120,
+      download_speed_bps: 1234,
+    });
+
+    expect(normalized.status).toBe('queued');
+    expect(normalized.eta_seconds).toBeNull();
+    expect(normalized.download_speed_bps).toBe(0);
   });
 });
 

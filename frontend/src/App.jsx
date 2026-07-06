@@ -243,7 +243,7 @@ export function mergeDownloadJobsWithUpdate(previousJobs, nextDownloadJob) {
   const nextStatus = String(nextDownloadJob?.status ?? '').toLowerCase();
   const existingIndex = previousJobs.findIndex((job) => job.id === nextDownloadJob?.id);
   if (existingIndex === -1) {
-    return [...previousJobs, nextDownloadJob];
+    return [...previousJobs, normalizeDownloadJob(nextDownloadJob)];
   }
 
   const previousJob = previousJobs[existingIndex];
@@ -255,8 +255,17 @@ export function mergeDownloadJobsWithUpdate(previousJobs, nextDownloadJob) {
     return previousJobs;
   }
 
+  const mergedJob = { ...previousJob, ...nextDownloadJob };
+  if (
+    String(previousJob?.client_type ?? '').toLowerCase() === 'sabnzbd'
+    && previousJob?.client_queue_position != null
+    && nextDownloadJob?.client_queue_position == null
+  ) {
+    mergedJob.client_queue_position = previousJob.client_queue_position;
+  }
+
   const updated = [...previousJobs];
-  updated[existingIndex] = { ...previousJob, ...nextDownloadJob };
+  updated[existingIndex] = normalizeDownloadJob(mergedJob);
   return updated;
 }
 
@@ -718,7 +727,7 @@ function formatElapsed(seconds) {
   return `${s}s`;
 }
 
-function normalizeDownloadJob(job) {
+export function normalizeDownloadJob(job) {
   if (!job || typeof job !== 'object') return job;
   const normalized = { ...job };
   normalized.status = String(job.status ?? '').toLowerCase();
@@ -733,8 +742,20 @@ function normalizeDownloadJob(job) {
   const progress = Number(job.progress_percent);
   const speed = Number(job.download_speed_bps);
   const hasEta = job.eta_seconds != null && Number(job.eta_seconds) >= 0;
+  const queuePosition = Number(normalized.client_queue_position);
+  const isSabQueuedBehindHead = (
+    String(normalized.client_type ?? '').toLowerCase() === 'sabnzbd'
+    && Number.isFinite(queuePosition)
+    && queuePosition > 0
+  );
+  if (isSabQueuedBehindHead && normalized.status === 'downloading') {
+    normalized.status = 'queued';
+    normalized.eta_seconds = null;
+    normalized.download_speed_bps = 0;
+  }
   if (
     normalized.status === 'queued'
+    && !isSabQueuedBehindHead
     && (
       (Number.isFinite(speed) && speed > 0)
       || hasEta
