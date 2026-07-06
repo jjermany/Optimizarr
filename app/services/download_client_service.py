@@ -448,7 +448,14 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
     try:
         # Check active queue first
         queue_data = _sab_api(s, mode='queue')
-        slots = queue_data.get('queue', {}).get('slots', [])
+        queue_info = queue_data.get('queue', {})
+        # SABnzbd's top-level queue.paused flag reflects an engine-wide pause
+        # (the user paused the whole queue). This is a separate signal from
+        # each slot's own `status` text, which is not guaranteed to be
+        # rewritten to "Paused" for a slot that was actively transferring
+        # when the pause was applied.
+        queue_paused = bool(queue_info.get('paused'))
+        slots = queue_info.get('slots', [])
         for slot_index, slot in enumerate(slots):
             if slot.get('nzo_id') == nzo_id:
                 pct = slot.get('percentage', 0)
@@ -460,13 +467,22 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                 status_text = str(status or '').strip().lower()
                 is_stalled = status_text in {'stalled', 'failed'}
                 is_moving = _sab_is_moving_status(status)
-                is_waiting = _sab_is_waiting_status(status) or slot_index > 0
+                # A queue-wide pause freezes every slot except ones actively
+                # post-processing (moving) or already errored (stalled/
+                # failed) -- SAB keeps those running even while the download
+                # queue itself is paused.
+                is_queue_wide_paused = queue_paused and not is_moving and not is_stalled
+                is_waiting = is_queue_wide_paused or _sab_is_waiting_status(status) or slot_index > 0
+                # Normalize the reported status so downstream consumers see
+                # "Paused" even when SAB left this slot's own status text
+                # unchanged (e.g. still "Downloading") while the queue is
+                # globally paused.
+                effective_status = 'Paused' if is_queue_wide_paused else status
                 eta_seconds = None if is_waiting else _parse_sab_eta_seconds(slot.get('timeleft'))
                 if eta_seconds is None and not is_waiting and slot_index == 0:
-                    eta_seconds = _parse_sab_eta_seconds(queue_data.get('queue', {}).get('timeleft'))
+                    eta_seconds = _parse_sab_eta_seconds(queue_info.get('timeleft'))
                 speed_bps: int | None = None
                 # Prefer explicit speed metrics. "mb" is a size field, not speed.
-                queue_info = queue_data.get('queue', {})
                 speed_sources: list[tuple[object, str]] = []
                 if not is_waiting and slot.get('mbps') is not None:
                     speed_sources.append((slot.get('mbps'), 'mbps'))
@@ -503,7 +519,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     'is_moving': is_moving,
                     'is_waiting': is_waiting,
                     'is_stalled': is_stalled,
-                    'sab_status': status,
+                    'sab_status': effective_status,
                     'save_path': None,
                     'not_found': False,
                 }

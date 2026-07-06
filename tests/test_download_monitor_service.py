@@ -3444,6 +3444,68 @@ def test_check_download_progress_sab_partial_paused_item_stays_paused(monkeypatc
         assert dj.download_started_at.replace(tzinfo=UTC) > old_started_at
 
 
+def test_check_download_progress_sab_queue_wide_pause_with_progress_stays_paused(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        old_started_at = datetime.now(UTC) - timedelta(minutes=5)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Sab.Queue.Wide.Paused.mkv',
+            release_name='Sab.Queue.Wide.Paused.2025.1080p.WEB-DL',
+            download_hash='SAB_QPAUSE_NZO',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            max_retries=5,
+            progress_percent=24,
+            download_started_at=old_started_at,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        queue_payload = {
+            'queue': {
+                'paused': True,
+                'kbpersec': '0',
+                'slots': [
+                    {
+                        'nzo_id': 'SAB_QPAUSE_NZO',
+                        'percentage': '24',
+                        'status': 'Downloading',
+                        'timeleft': '0:12:00',
+                    }
+                ],
+            }
+        }
+
+        # Deliberately mock _sab_api (not get_download_status) so the real
+        # get_sab_status() queue-wide-pause detection is exercised end-to-end.
+        monkeypatch.setattr(
+            download_client_service,
+            '_sab_api',
+            lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+        )
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.paused.value
+        assert dj.progress_percent == 24
+        assert dj.eta_seconds is None
+        assert dj.download_speed_bps == 0
+        assert dj.download_started_at.replace(tzinfo=UTC) > old_started_at
+
+
 def test_check_download_progress_sab_unlinks_mismatched_tv_episode_nzo(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()

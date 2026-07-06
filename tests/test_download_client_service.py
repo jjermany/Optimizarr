@@ -202,6 +202,119 @@ def test_get_sab_status_marks_queued_status_as_waiting(monkeypatch):
     assert status['not_found'] is False
 
 
+def test_get_sab_status_marks_queue_wide_pause_as_paused_for_active_slot(monkeypatch):
+    queue_payload = {
+        'queue': {
+            'paused': True,
+            'kbpersec': '0',
+            'slots': [
+                {
+                    'nzo_id': 'NZO-QPAUSE',
+                    'percentage': '24',
+                    'status': 'Downloading',
+                    'timeleft': '0:12:00',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-QPAUSE')
+
+    assert status['is_waiting'] is True
+    assert str(status['sab_status']).strip().lower() == 'paused'
+    assert status['progress_percent'] == 24
+    assert status['eta_seconds'] is None
+    assert status['download_speed_bps'] == 0
+    assert status['is_stalled'] is False
+    assert status['is_moving'] is False
+    assert status['not_found'] is False
+
+
+def test_get_sab_status_queue_wide_pause_does_not_override_moving_slot(monkeypatch):
+    queue_payload = {
+        'queue': {
+            'paused': True,
+            'slots': [
+                {
+                    'nzo_id': 'NZO-QPAUSE-MOVE',
+                    'percentage': '100',
+                    'status': 'Moving',
+                    'timeleft': '0',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-QPAUSE-MOVE')
+
+    assert status['is_moving'] is True
+    assert status['sab_status'] == 'Moving'
+    assert status['is_waiting'] is False
+
+
+def test_get_sab_status_queue_wide_pause_does_not_override_stalled_slot(monkeypatch):
+    queue_payload = {
+        'queue': {
+            'paused': True,
+            'slots': [
+                {
+                    'nzo_id': 'NZO-QPAUSE-STALL',
+                    'percentage': '10',
+                    'status': 'Stalled',
+                    'timeleft': '0',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-QPAUSE-STALL')
+
+    assert status['is_stalled'] is True
+    assert status['sab_status'] == 'Stalled'
+
+
+def test_get_sab_status_no_queue_wide_pause_leaves_active_slot_downloading(monkeypatch):
+    queue_payload = {
+        'queue': {
+            'paused': False,
+            'kbpersec': '512',
+            'slots': [
+                {
+                    'nzo_id': 'NZO-ACTIVE-OK',
+                    'percentage': '24',
+                    'status': 'Downloading',
+                    'timeleft': '0:12:00',
+                }
+            ],
+        }
+    }
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-ACTIVE-OK')
+
+    assert status['is_waiting'] is False
+    assert status['sab_status'] == 'Downloading'
+    assert status['eta_seconds'] == 720
+
+
 def test_get_sab_status_does_not_apply_global_speed_to_later_queue_slot(monkeypatch):
     queue_payload = {
         'queue': {
