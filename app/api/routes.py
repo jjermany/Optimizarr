@@ -1011,6 +1011,21 @@ class DownloadJobResponse(BaseModel):
     @classmethod
     def from_orm(cls, dj: DownloadJob, *, client_queue_position: int | None = None):
         from datetime import timezone
+        response_status = dj.status
+        response_eta_seconds = dj.eta_seconds
+        response_download_speed_bps = dj.download_speed_bps
+        if (
+            dj.client_type == 'sabnzbd'
+            and client_queue_position is not None
+            and client_queue_position > 0
+            and dj.status == DownloadJobStatus.downloading.value
+        ):
+            # Legacy SAB rows may have partial progress from an earlier brief
+            # transfer. Queue position is the stronger live signal: any SAB
+            # item behind the head slot is queued, not actively downloading.
+            response_status = DownloadJobStatus.queued.value
+            response_eta_seconds = None
+            response_download_speed_bps = 0
         return cls(
             id=dj.id,
             library_id=dj.library_id,
@@ -1025,10 +1040,10 @@ class DownloadJobResponse(BaseModel):
             max_retries=dj.max_retries,
             download_hash=dj.download_hash,
             client_type=dj.client_type,
-            status=dj.status,
+            status=response_status,
             progress_percent=dj.progress_percent,
-            eta_seconds=dj.eta_seconds,
-            download_speed_bps=dj.download_speed_bps,
+            eta_seconds=response_eta_seconds,
+            download_speed_bps=response_download_speed_bps,
             client_queue_position=client_queue_position,
             downloaded_file_path=dj.downloaded_file_path,
             imported_file_path=dj.imported_file_path,

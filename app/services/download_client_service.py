@@ -475,6 +475,7 @@ def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict 
     None to check only the queue, matching get_sab_status()'s lazy fetch of
     history only when the NZO isn't found in the queue.
     """
+    target_nzo_id = str(nzo_id or '').strip()
     queue_info = queue_data.get('queue', {})
     # SABnzbd's top-level queue.paused flag reflects an engine-wide pause
     # (the user paused the whole queue). This is a separate signal from
@@ -484,7 +485,7 @@ def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict 
     queue_paused = bool(queue_info.get('paused'))
     slots = queue_info.get('slots', [])
     for slot_index, slot in enumerate(slots):
-        if slot.get('nzo_id') == nzo_id:
+        if str(slot.get('nzo_id') or '').strip() == target_nzo_id:
             pct = slot.get('percentage', 0)
             try:
                 pct = int(float(pct))
@@ -579,7 +580,7 @@ def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict 
 
     if history_data is not None:
         for slot in history_data.get('history', {}).get('slots', []):
-            if slot.get('nzo_id') == nzo_id:
+            if str(slot.get('nzo_id') or '').strip() == target_nzo_id:
                 status = slot.get('status', '')
                 is_complete = status == 'Completed'
                 is_moving = _sab_is_moving_status(status) and not is_complete
@@ -647,6 +648,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
             'sab_status': None,
             'save_path': None,
             'not_found': False,
+            'status_unavailable': True,
         }
 
 
@@ -942,6 +944,7 @@ def get_download_status(client_type: str, qbt: QBittorrentSettings | None, sab: 
         'qbt_state': None,
         'save_path': None,
         'not_found': False,
+        'status_unavailable': True,
     }
 
 

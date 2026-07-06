@@ -836,6 +836,61 @@ def test_cancel_download_job_resets_job_to_pending():
         assert db_job.error_message is None
 
 
+def test_list_download_jobs_reports_partial_sab_backlog_item_as_queued(monkeypatch):
+    from app.models.download_job import DownloadJob, DownloadJobStatus
+    from app.models.library import Library, LibraryProfile
+    from app.models.sabnzbd_settings import SabnzbdSettings
+
+    monkeypatch.setattr(
+        routes.download_client_service,
+        'get_sab_queue_items',
+        lambda _sab: [
+            {'nzo_id': 'SAB_ACTIVE', 'name': 'Active.Release', 'percentage': 50.0, 'status': 'Downloading', 'index': 0},
+            {'nzo_id': 'SAB_QUEUED_PARTIAL', 'name': 'Queued.Partial.Release', 'percentage': 8.0, 'status': 'Queued', 'index': 3},
+        ],
+    )
+
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            db.query(DownloadJob).delete()
+            db.query(LibraryProfile).delete()
+            db.query(Library).delete()
+            db.query(SabnzbdSettings).delete()
+            db.commit()
+
+            sab = SabnzbdSettings(id=1, enabled=True, host='http://sab', port=8080, api_key='key')
+            library = Library(name='Download Library', path='/media/downloads', enabled=True)
+            db.add_all([sab, library])
+            db.commit()
+            db.refresh(library)
+
+            profile = LibraryProfile(library_id=library.id)
+            db.add(profile)
+            db.commit()
+
+            dj = DownloadJob(
+                library_id=library.id,
+                source_file_path='/media/queued-partial.mkv',
+                status=DownloadJobStatus.downloading.value,
+                download_hash='SAB_QUEUED_PARTIAL',
+                client_type='sabnzbd',
+                progress_percent=8,
+                eta_seconds=None,
+                download_speed_bps=None,
+            )
+            db.add(dj)
+            db.commit()
+
+        response = client.get('/download-jobs')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload[0]['status'] == DownloadJobStatus.queued.value
+    assert payload[0]['progress_percent'] == 8
+    assert payload[0]['client_queue_position'] == 3
+    assert payload[0]['download_speed_bps'] == 0
+
+
 def test_cancel_download_job_removes_active_qbit_torrent_when_enabled(monkeypatch):
     from app.core.database import SessionLocal
     from app.models.download_job import DownloadJob, DownloadJobStatus

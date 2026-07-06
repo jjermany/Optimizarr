@@ -3752,6 +3752,58 @@ def test_check_download_progress_sab_queued_does_not_timeout_or_retry(monkeypatc
         assert fallback_calls == []
 
 
+def test_check_download_progress_sab_status_unavailable_preserves_current_state(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        old_started_at = datetime.now(UTC) - timedelta(minutes=5)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Sab.Status.Unavailable.mkv',
+            release_name='Sab.Status.Unavailable.2025.1080p.WEB-DL',
+            download_hash='SAB_STATUS_UNAVAILABLE',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.queued.value,
+            retry_count=0,
+            max_retries=5,
+            progress_percent=8,
+            eta_seconds=None,
+            download_speed_bps=0,
+            download_started_at=old_started_at,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'download_speed_bps': None,
+            'is_complete': False,
+            'is_moving': False,
+            'is_waiting': False,
+            'is_stalled': False,
+            'is_failed': False,
+            'sab_status': None,
+            'save_path': None,
+            'not_found': False,
+            'status_unavailable': True,
+        })
+
+        _check_download_progress(db, dj, SimpleNamespace(enabled=False), SimpleNamespace(enabled=True))
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.queued.value
+        assert dj.progress_percent == 8
+        assert dj.download_speed_bps == 0
+        assert dj.download_started_at.replace(tzinfo=UTC) == old_started_at
+
+
 def test_check_download_progress_sab_partial_paused_item_stays_paused(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()

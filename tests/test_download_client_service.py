@@ -81,6 +81,26 @@ def test_get_sab_status_from_snapshot_reports_not_found_when_absent_from_both():
     assert status['not_found'] is True
 
 
+def test_get_sab_status_from_snapshot_matches_normalized_nzo_id():
+    queue_payload = {
+        'queue': {
+            'slots': [
+                {
+                    'nzo_id': 12345,
+                    'percentage': '0',
+                    'status': 'Queued',
+                }
+            ],
+        }
+    }
+
+    status = download_client_service.get_sab_status_from_snapshot('12345', queue_payload, {'history': {'slots': []}})
+
+    assert status['not_found'] is False
+    assert status['is_waiting'] is True
+    assert status['sab_status'] == 'Queued'
+
+
 def test_get_sab_queue_and_history_snapshot_fetches_both_once(monkeypatch):
     calls = []
 
@@ -109,6 +129,19 @@ def test_get_sab_queue_and_history_snapshot_returns_none_pair_on_failure(monkeyp
 
     assert queue_data is None
     assert history_data is None
+
+
+def test_get_sab_status_failure_reports_status_unavailable(monkeypatch):
+    def failing_sab_api(_settings, **_params):
+        raise RuntimeError('connection refused')
+
+    monkeypatch.setattr(download_client_service, '_sab_api', failing_sab_api)
+
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-OFFLINE')
+
+    assert status['status_unavailable'] is True
+    assert status['not_found'] is False
+    assert status['is_waiting'] is False
 
 
 def test_get_sab_status_head_slot_without_real_speed_is_waiting(monkeypatch):

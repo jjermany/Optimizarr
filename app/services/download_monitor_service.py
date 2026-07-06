@@ -1220,6 +1220,8 @@ def _sync_sab_download_job_state_from_client(db: Session, dj: DownloadJob, sab) 
         return False
 
     status = download_client_service.get_sab_status(sab, dj.download_hash)
+    if status.get('status_unavailable'):
+        return False
     if status.get('not_found'):
         return False
 
@@ -3586,8 +3588,10 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
         if download_client_service.tag_qbt_torrent(qbt, dj.download_hash, max_attempts=3):
             _tagged_job_ids.add(dj.id)
     if dj.id not in _categorized_sab_job_ids and client_type == 'sabnzbd' and sab.enabled and dj.download_hash:
-        if download_client_service.set_sab_category_and_priority(sab, dj.download_hash, category='optimizarr'):
-            _categorized_sab_job_ids.add(dj.id)
+        # New/recovered SAB jobs are categorized at the moment they are linked.
+        # After a process restart this in-memory set is empty, but reapplying
+        # category/priority to every existing SAB row can perturb SAB's queue.
+        _categorized_sab_job_ids.add(dj.id)
 
     if client_type == 'qbittorrent' and qbt.enabled and _qbt_hash_mismatches_tv_download_job(dj, qbt):
         logger.warning(
@@ -3627,6 +3631,19 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
         status = download_client_service.get_sab_status_from_snapshot(dj.download_hash or '', sab_snapshot[0], sab_snapshot[1])
     else:
         status = download_client_service.get_download_status(client_type, qbt, sab, dj.download_hash or '')
+
+    if status.get('status_unavailable'):
+        logger.warning(
+            'Download job %s: %s status unavailable; keeping current state=%s progress=%s',
+            dj.id,
+            client_type,
+            dj.status,
+            dj.progress_percent,
+        )
+        return
+
+    if client_type == 'sabnzbd' and dj.download_hash and not status.get('not_found'):
+        _categorized_sab_job_ids.add(dj.id)
 
     # qBittorrent can occasionally return a stale hash from the grab response.
     # If the lookup appears missing (0% and not complete), try re-matching by
