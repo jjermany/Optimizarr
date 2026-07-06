@@ -2169,13 +2169,14 @@ def test_process_searching_jobs_retries_existing_searching_job(monkeypatch):
         assert calls == [dj.id]
 
 
-def test_process_searching_jobs_waits_when_existing_download_is_client_queued(monkeypatch):
+def test_process_searching_jobs_continues_when_existing_download_is_client_queued(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.commit()
 
         queued = DownloadJob(
             source_file_path='/media/Already.Handed.Off.2026.mkv',
+            client_type='qbittorrent',
             status=DownloadJobStatus.queued.value,
         )
         pending = DownloadJob(
@@ -2200,17 +2201,18 @@ def test_process_searching_jobs_waits_when_existing_download_is_client_queued(mo
         db.refresh(pending)
 
         assert queued.status == DownloadJobStatus.queued.value
-        assert pending.status == DownloadJobStatus.pending.value
-        assert calls == []
+        assert pending.status == DownloadJobStatus.searching.value
+        assert calls == [pending.id]
 
 
-def test_process_searching_jobs_waits_when_different_download_is_active(monkeypatch):
+def test_process_searching_jobs_continues_when_different_download_is_active(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.commit()
 
         active = DownloadJob(
             source_file_path='/media/Already.Active.2026.mkv',
+            client_type='qbittorrent',
             status=DownloadJobStatus.downloading.value,
         )
         pending = DownloadJob(
@@ -2235,8 +2237,45 @@ def test_process_searching_jobs_waits_when_different_download_is_active(monkeypa
         db.refresh(pending)
 
         assert active.status == DownloadJobStatus.downloading.value
-        assert pending.status == DownloadJobStatus.pending.value
-        assert calls == []
+        assert pending.status == DownloadJobStatus.searching.value
+        assert calls == [pending.id]
+
+
+def test_process_searching_jobs_continues_when_sab_download_is_active(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        active = DownloadJob(
+            source_file_path='/media/Already.Active.Sab.2026.mkv',
+            client_type='sabnzbd',
+            download_hash='SAB_ACTIVE',
+            status=DownloadJobStatus.downloading.value,
+        )
+        pending = DownloadJob(
+            source_file_path='/media/Next.Sab.Item.2026.mkv',
+            status=DownloadJobStatus.pending.value,
+        )
+        db.add_all([active, pending])
+        db.commit()
+        db.refresh(pending)
+
+        monkeypatch.setattr('app.services.download_monitor_service.prowlarr_service.get_or_create_prowlarr_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr('app.services.download_monitor_service.download_client_service.get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr('app.services.download_monitor_service._startup_grace_until', None)
+        monkeypatch.setattr('app.workers.queue.is_queue_paused', lambda: False)
+
+        calls = []
+        monkeypatch.setattr('app.services.download_monitor_service._do_search', lambda _db, job, *_args: calls.append(job.id))
+
+        _process_searching_jobs(db)
+        db.refresh(active)
+        db.refresh(pending)
+
+        assert active.status == DownloadJobStatus.downloading.value
+        assert pending.status == DownloadJobStatus.searching.value
+        assert calls == [pending.id]
 
 
 def test_process_searching_jobs_removes_same_identity_pending_duplicate(monkeypatch):
@@ -2253,6 +2292,7 @@ def test_process_searching_jobs_removes_same_identity_pending_duplicate(monkeypa
         blocker = DownloadJob(
             library_id=library.id,
             source_file_path='/media/movies/Anora (2024)/Anora.2024.1080p.WEB-DL.H264.mkv',
+            client_type='qbittorrent',
             status=DownloadJobStatus.queued.value,
         )
         duplicate = DownloadJob(
@@ -2287,8 +2327,8 @@ def test_process_searching_jobs_removes_same_identity_pending_duplicate(monkeypa
         _process_searching_jobs(db)
 
         assert db.query(DownloadJob).filter(DownloadJob.id == duplicate_id).first() is None
-        assert db.query(DownloadJob).filter(DownloadJob.id == next_item_id).one().status == DownloadJobStatus.pending.value
-        assert calls == []
+        assert db.query(DownloadJob).filter(DownloadJob.id == next_item_id).one().status == DownloadJobStatus.searching.value
+        assert calls == [next_item_id]
         assert removed_events == [('download_job_removed', {'download_job_id': duplicate_id})]
 
 
@@ -3352,7 +3392,7 @@ def test_check_download_progress_sab_queued_does_not_timeout_or_retry(monkeypatc
         assert fallback_calls == []
 
 
-def test_check_download_progress_sab_progress_overrides_waiting_status(monkeypatch):
+def test_check_download_progress_sab_partial_queued_item_stays_queued(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -3397,11 +3437,11 @@ def test_check_download_progress_sab_progress_overrides_waiting_status(monkeypat
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
 
-        assert dj.status == DownloadJobStatus.downloading.value
+        assert dj.status == DownloadJobStatus.queued.value
         assert dj.progress_percent == 37
-        assert dj.eta_seconds == 300
-        assert dj.download_speed_bps == 123456
-        assert dj.download_started_at.replace(tzinfo=UTC) == old_started_at
+        assert dj.eta_seconds is None
+        assert dj.download_speed_bps == 0
+        assert dj.download_started_at.replace(tzinfo=UTC) > old_started_at
 
 
 def test_check_download_progress_sab_unlinks_mismatched_tv_episode_nzo(monkeypatch):

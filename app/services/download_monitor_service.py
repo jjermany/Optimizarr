@@ -2677,20 +2677,6 @@ def _select_next_pending_download_job(db: Session) -> DownloadJob | None:
     return eligible_jobs[0] if eligible_jobs else None
 
 
-def _has_active_client_download(db: Session) -> bool:
-    return (
-        db.query(DownloadJob)
-        .filter(DownloadJob.status.in_([
-            DownloadJobStatus.queued.value,
-            DownloadJobStatus.downloading.value,
-            DownloadJobStatus.moving.value,
-            DownloadJobStatus.stalled.value,
-            DownloadJobStatus.importing.value,
-        ]))
-        .count()
-    ) > 0
-
-
 def _extract_title_tokens(source_path: str) -> list[str]:
     stem = Path(source_path or '').stem.lower()
     stem = re.sub(r'[\._-]+', ' ', stem)
@@ -2941,9 +2927,6 @@ def _process_searching_jobs(db: Session) -> None:
     sab = download_client_service.get_or_create_sab_settings(db)
 
     if not prowlarr.enabled or (not qbt.enabled and not sab.enabled):
-        return
-    if _has_active_client_download(db):
-        _select_next_pending_download_job(db)
         return
 
     # Always process an existing searching job first so transient errors
@@ -3687,10 +3670,13 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
     speed_bps = status.get('download_speed_bps')
     speed_bps = int(speed_bps) if isinstance(speed_bps, (int, float)) and speed_bps >= 0 else None
 
-    # Some clients, especially SABnzbd around slot changes/recovery, can report
-    # a waiting/queued status while bytes are already moving. Treat nonzero
-    # progress as active so the app does not show a downloading item as queued.
-    is_waiting = bool(status.get('is_waiting')) and client_type in {'qbittorrent', 'sabnzbd'} and progress <= 0
+    # SAB queue position is authoritative even when an item has partial bytes
+    # from an earlier start. qBit can report waiting while bytes are moving, so
+    # only suppress qBit waiting when progress is nonzero.
+    if client_type == 'sabnzbd':
+        is_waiting = bool(status.get('is_waiting'))
+    else:
+        is_waiting = bool(status.get('is_waiting')) and client_type == 'qbittorrent' and progress <= 0
     if is_waiting:
         expected_status = DownloadJobStatus.queued.value
         eta_seconds = None
