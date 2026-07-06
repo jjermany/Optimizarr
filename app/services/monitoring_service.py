@@ -21,6 +21,7 @@ ACTIVE_ENCODE_STATUSES = {'starting', 'running', 'preflight'}
 ACTIVE_DOWNLOAD_STATUSES = {
     DownloadJobStatus.searching.value,
     DownloadJobStatus.queued.value,
+    DownloadJobStatus.paused.value,
     DownloadJobStatus.downloading.value,
     DownloadJobStatus.moving.value,
     DownloadJobStatus.importing.value,

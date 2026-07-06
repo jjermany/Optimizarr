@@ -778,6 +778,7 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         DownloadJobStatus.pending.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.queued.value,
+        DownloadJobStatus.paused.value,
         DownloadJobStatus.downloading.value,
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,

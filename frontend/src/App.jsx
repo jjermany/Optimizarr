@@ -185,7 +185,7 @@ const QUEUED_STATUSES = new Set(['pending', 'queued', 'created']);
 const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']);
 
 // Download-job status buckets
-const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'queued', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode']);
+const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'queued', 'paused', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode']);
 const TERMINAL_DL_STATUSES = new Set(['complete', 'failed', 'timed_out', 'fallback_queued']);
 const QUEUE_DEDUPE_DL_STATUSES = new Set([...ACTIVE_DL_STATUSES, 'complete', 'fallback_queued']);
 const ACTIVE_ENCODE_DEDUPE_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting', 'paused', 'paused_schedule']);
@@ -4205,7 +4205,7 @@ export default function App() {
                             </div>
                             <div className="flex items-start justify-between gap-2">
                               <p className="min-w-0 truncate text-sm font-semibold leading-5 text-slate-100" title={dj.source_file_path}>{title || 'Unknown Title'}</p>
-                              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'importing' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : dj.status === 'searching' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : dj.status === 'queued' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'downloading' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : dj.status === 'moving' ? 'border-indigo-500/40 bg-indigo-950/30 text-indigo-300' : dj.status === 'stalled' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'waiting_encode' ? 'border-fuchsia-500/40 bg-fuchsia-950/30 text-fuchsia-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>
+                              <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] font-medium capitalize ${dj.status === 'importing' ? 'border-violet-500/40 bg-violet-950/30 text-violet-300' : dj.status === 'searching' ? 'border-sky-500/40 bg-sky-950/30 text-sky-300' : ['queued', 'paused'].includes(dj.status) ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'downloading' ? 'border-cyan-500/40 bg-cyan-950/30 text-cyan-300' : dj.status === 'moving' ? 'border-indigo-500/40 bg-indigo-950/30 text-indigo-300' : dj.status === 'stalled' ? 'border-amber-500/40 bg-amber-950/30 text-amber-300' : dj.status === 'waiting_encode' ? 'border-fuchsia-500/40 bg-fuchsia-950/30 text-fuchsia-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>
                                 {statusLabel}
                               </span>
                             </div>
@@ -4216,13 +4216,14 @@ export default function App() {
                             <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
                               {showEta && <span>ETA: {etaLabel}</span>}
                               {dj.status === 'queued' && <span>Elapsed: waiting</span>}
+                              {dj.status === 'paused' && <span>Elapsed: paused</span>}
                               {showElapsed && <span>Elapsed: {elapsedLabel}</span>}
                               {speedLabel && <span>Speed: {speedLabel}</span>}
                               {retryLabel && <span>{retryLabel}</span>}
                               {clientLabel && <span>Client: {clientLabel}</span>}
                               {indexerLabel && <span>Indexer: {indexerLabel}</span>}
                             </div>
-                            {['downloading', 'moving'].includes(dj.status) && (
+                            {['paused', 'downloading', 'moving'].includes(dj.status) && (
                               <div className="mt-2">
                                 <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-700">
                                   <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
@@ -4232,7 +4233,7 @@ export default function App() {
                             )}
                             {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
                             <MobileActionMenu>
-                              {['searching', 'queued', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
+                              {['searching', 'queued', 'paused', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
                                 <Btn size="sm" variant="danger" disabled={Boolean(downloadActionPending)} onClick={() => handleCancelDownloadJob(dj.id)}>
                                   {downloadActionPending === 'remove_reset' ? 'Working…' : 'Reset Search'}
                                 </Btn>
@@ -4259,7 +4260,7 @@ export default function App() {
                       const title = getDisplayTitle(job.source_path);
                       const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
                       const activeDj = downloadJobBySource[job.source_path];
-                      const djIsActive = activeDj && ['searching', 'queued', 'downloading', 'moving', 'importing'].includes(activeDj.status);
+                      const djIsActive = activeDj && ['searching', 'queued', 'paused', 'downloading', 'moving', 'importing'].includes(activeDj.status);
                       const jobLibProfile = libraryProfiles[job.library_id];
                       const jobDownloadEnabled = !!jobLibProfile?.download_enabled;
                       const queueWaitingForRoute = jobDownloadEnabled
@@ -4294,6 +4295,7 @@ export default function App() {
                           {queueWaitingForRoute && <p className="mt-2.5 text-xs text-sky-400">Auto-routing: download first, encode fallback.</p>}
                           {djIsActive && activeDj.status === 'searching' && <p className="mt-2.5 text-xs text-sky-400">Searching…</p>}
                           {djIsActive && activeDj.status === 'queued' && <p className="mt-2.5 text-xs text-amber-300">Queued in client</p>}
+                          {djIsActive && activeDj.status === 'paused' && <p className="mt-2.5 text-xs text-amber-300">Paused in client</p>}
                           {djIsActive && activeDj.status === 'downloading' && (
                             <p className="mt-2.5 text-xs text-violet-400">
                               Downloading {activeDj.progress_percent}%
@@ -4367,7 +4369,7 @@ export default function App() {
                             const libName = dj.library_id != null ? (libraryById[dj.library_id]?.name ?? '—') : '—';
                             const downloadActionPending = pendingDownloadActions[dj.id];
                             const statusColor =
-                              dj.status === 'queued' ? 'text-amber-400' :
+                              ['queued', 'paused'].includes(dj.status) ? 'text-amber-400' :
                               dj.status === 'downloading' ? 'text-cyan-400' :
                               dj.status === 'moving' ? 'text-indigo-400' :
                               dj.status === 'importing' ? 'text-violet-400' :
@@ -4391,6 +4393,7 @@ export default function App() {
                               indexerLabel,
                               showElapsed ? `Elapsed: ${elapsedLabel}` : null,
                               dj.status === 'queued' ? 'Waiting in client queue' : null,
+                              dj.status === 'paused' ? 'Paused in client' : null,
                             ].filter(Boolean);
                             return (
                               <tr key={`dl-${dj.id}`} className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
@@ -4420,7 +4423,7 @@ export default function App() {
                                 </td>
                                 <td className="hidden px-4 py-2.5 align-top text-xs text-slate-600 xl:table-cell">—</td>
                                 <td className="px-4 py-2.5 align-top">
-                                  {['downloading', 'moving'].includes(dj.status) ? (
+                                  {['paused', 'downloading', 'moving'].includes(dj.status) ? (
                                     <div>
                                       <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-700 md:w-32">
                                         <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
@@ -4431,7 +4434,7 @@ export default function App() {
                                 </td>
                                 <td className="px-4 py-2.5 align-top">
                                   <div className="flex flex-wrap gap-1.5">
-                                    {['searching', 'queued', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
+                                    {['searching', 'queued', 'paused', 'downloading', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
                                       <Btn size="sm" variant="danger" disabled={Boolean(downloadActionPending)} onClick={() => handleCancelDownloadJob(dj.id)}>
                                         {downloadActionPending === 'remove_reset' ? 'Working…' : 'Reset Search'}
                                       </Btn>
@@ -4460,7 +4463,7 @@ export default function App() {
                           const title = getDisplayTitle(job.source_path);
                           const libName = job.library_id != null ? (libraryById[job.library_id]?.name ?? '—') : '—';
                           const activeDj = downloadJobBySource[job.source_path];
-                          const djIsActive = activeDj && ['searching', 'queued', 'downloading', 'moving', 'importing'].includes(activeDj.status);
+                          const djIsActive = activeDj && ['searching', 'queued', 'paused', 'downloading', 'moving', 'importing'].includes(activeDj.status);
                           const jobLibProfile = libraryProfiles[job.library_id];
                           const jobDownloadEnabled = !!jobLibProfile?.download_enabled;
                           const queueWaitingForRoute = jobDownloadEnabled
@@ -4494,6 +4497,12 @@ export default function App() {
                                   <p className="mt-0.5 flex items-center gap-1 text-xs text-amber-300">
                                     <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-300" />
                                     Queued in client
+                                  </p>
+                                )}
+                                {djIsActive && activeDj.status === 'paused' && (
+                                  <p className="mt-0.5 flex items-center gap-1 text-xs text-amber-300">
+                                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-amber-300" />
+                                    Paused in client
                                   </p>
                                 )}
                                 {djIsActive && activeDj.status === 'downloading' && (

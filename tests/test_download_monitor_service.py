@@ -3392,7 +3392,7 @@ def test_check_download_progress_sab_queued_does_not_timeout_or_retry(monkeypatc
         assert fallback_calls == []
 
 
-def test_check_download_progress_sab_partial_queued_item_stays_queued(monkeypatch):
+def test_check_download_progress_sab_partial_paused_item_stays_paused(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -3403,8 +3403,8 @@ def test_check_download_progress_sab_partial_queued_item_stays_queued(monkeypatc
         old_started_at = datetime.now(UTC) - timedelta(minutes=5)
         dj = DownloadJob(
             library_id=library.id,
-            source_file_path='/media/Sab.Client.Active.But.Queued.mkv',
-            release_name='Sab.Client.Active.But.Queued.2025.1080p.WEB-DL',
+            source_file_path='/media/Sab.Client.Active.But.Paused.mkv',
+            release_name='Sab.Client.Active.But.Paused.2025.1080p.WEB-DL',
             download_hash='SAB_ACTIVE_NZO',
             client_type='sabnzbd',
             status=DownloadJobStatus.queued.value,
@@ -3428,7 +3428,7 @@ def test_check_download_progress_sab_partial_queued_item_stays_queued(monkeypatc
             'is_moving': False,
             'is_waiting': True,
             'is_stalled': False,
-            'sab_status': 'Queued',
+            'sab_status': 'Paused',
             'save_path': None,
             'not_found': False,
         })
@@ -3437,7 +3437,7 @@ def test_check_download_progress_sab_partial_queued_item_stays_queued(monkeypatc
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
 
-        assert dj.status == DownloadJobStatus.queued.value
+        assert dj.status == DownloadJobStatus.paused.value
         assert dj.progress_percent == 37
         assert dj.eta_seconds is None
         assert dj.download_speed_bps == 0
