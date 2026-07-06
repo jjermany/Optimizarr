@@ -9,6 +9,7 @@ DEFAULT_LOG_DIR = '/config/logs'
 DEFAULT_LOG_LEVEL = 'INFO'
 DEFAULT_LOG_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
 DEFAULT_LOG_BACKUP_COUNT = 10
+HTTP_CLIENT_LOGGERS = ('httpx', 'httpcore')
 QUIET_POLL_ACCESS_PATHS = frozenset({
     '/api/download-jobs',
     '/api/jobs',
@@ -97,6 +98,12 @@ def _configure_uvicorn_access_logging() -> None:
         access_logger.addFilter(PollingAccessLogFilter())
 
 
+def _configure_http_client_logging() -> None:
+    level = logging.WARNING if _parse_bool_env('OPTIMIZARR_SUPPRESS_HTTPX_INFO_LOGS', True) else logging.NOTSET
+    for logger_name in HTTP_CLIENT_LOGGERS:
+        logging.getLogger(logger_name).setLevel(level)
+
+
 def configure_logging() -> None:
     log_dir = Path(os.getenv('OPTIMIZARR_LOG_DIR', DEFAULT_LOG_DIR))
     log_file = log_dir / 'optimizarr.log'
@@ -106,6 +113,7 @@ def configure_logging() -> None:
 
     log_dir.mkdir(parents=True, exist_ok=True)
     _configure_uvicorn_access_logging()
+    _configure_http_client_logging()
 
     level = getattr(logging, log_level_name, logging.INFO)
 

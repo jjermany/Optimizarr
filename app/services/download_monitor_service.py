@@ -3905,7 +3905,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
         # Keep tracking the same job and rely on the normal timeout path for
         # genuinely long-lived stalls so the eventual completed item can still
         # be imported.
-        logger.info(
+        logger.debug(
             'Download job %s: %s reported stalled state; continuing to monitor before retrying',
             dj.id,
             client_type,
@@ -3919,7 +3919,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
         db.commit()
         db.refresh(dj)
         state_label = status.get('qbt_state') or status.get('sab_status') or 'queued'
-        logger.info(
+        logger.debug(
             'Download job %s: %s state=%s; %s in client without consuming retry timeout',
             dj.id,
             client_type,
