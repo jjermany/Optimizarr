@@ -195,6 +195,21 @@ describe('buildUnifiedQueueItems', () => {
     expect(items.map((item) => item.id)).toEqual([544, 602, 596, 604]);
   });
 
+  it('pins checking downloads with active work above queued client rows', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [],
+      downloadItems: [
+        { id: 7, status: 'queued', source_file_path: '/downloads/Queued.SAB.2025.mkv', client_type: 'sabnzbd', client_queue_position: 0, created_at: '2026-03-01T09:00:00Z' },
+        { id: 8, status: 'checking', source_file_path: '/downloads/Checking.QBit.2024.mkv', client_type: 'qbittorrent', created_at: '2026-03-01T10:00:00Z' },
+      ],
+      sortOption: 'newest',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => item.id)).toEqual([8, 7]);
+  });
+
   it('does not move a download row when status progresses through the client lifecycle', () => {
     const before = buildUnifiedQueueItems({
       encodeItems: [],

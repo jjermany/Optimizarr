@@ -1,7 +1,7 @@
 const ENCODE_WORKING_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting']);
 const ENCODE_WAITING_STATUSES = new Set(['queued', 'paused', 'paused_schedule']);
 const ENCODE_ACTIVE_STATUSES = new Set([...ENCODE_WORKING_STATUSES, ...ENCODE_WAITING_STATUSES]);
-const DOWNLOAD_WORKING_STATUSES = new Set(['searching', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing']);
+const DOWNLOAD_WORKING_STATUSES = new Set(['checking', 'searching', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing']);
 const DOWNLOAD_WAITING_STATUSES = new Set(['pending', 'queued', 'paused']);
 const DOWNLOAD_ACTIVE_STATUSES = new Set([...DOWNLOAD_WORKING_STATUSES, ...DOWNLOAD_WAITING_STATUSES]);
 const DOWNLOAD_WAITING_ENCODE_STATUSES = new Set(['waiting_encode']);

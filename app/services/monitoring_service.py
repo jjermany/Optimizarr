@@ -19,6 +19,7 @@ from app.models.job import Job
 TERMINAL_STATUSES = {'complete', 'failed', 'skipped', 'cancelled'}
 ACTIVE_ENCODE_STATUSES = {'starting', 'running', 'preflight'}
 ACTIVE_DOWNLOAD_STATUSES = {
+    DownloadJobStatus.checking.value,
     DownloadJobStatus.searching.value,
     DownloadJobStatus.queued.value,
     DownloadJobStatus.paused.value,

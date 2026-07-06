@@ -1784,6 +1784,7 @@ def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = Fa
 
     active_blocker_statuses = {
         DownloadJobStatus.pending.value,
+        DownloadJobStatus.checking.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,
@@ -2098,6 +2099,7 @@ def clear_queue_endpoint(_: None = Depends(require_ui_auth), db: Session = Depen
 
     active_download_statuses = {
         DownloadJobStatus.pending.value,
+        DownloadJobStatus.checking.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,

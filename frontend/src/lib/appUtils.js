@@ -119,7 +119,7 @@ export const QUEUED_STATUSES = new Set(['pending', 'queued', 'created']);
 export const TERMINAL_STATUSES = new Set(['complete', 'failed', 'skipped', 'cancelled']);
 
 // Download-job status buckets
-export const ACTIVE_DL_STATUSES = new Set(['pending', 'searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing', 'waiting_encode']);
+export const ACTIVE_DL_STATUSES = new Set(['pending', 'checking', 'searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing', 'waiting_encode']);
 export const TERMINAL_DL_STATUSES = new Set(['complete', 'failed', 'timed_out', 'fallback_queued']);
 export const QUEUE_DEDUPE_DL_STATUSES = new Set([...ACTIVE_DL_STATUSES, 'complete', 'fallback_queued']);
 export const LOG_REFRESH_SYSTEM_EVENTS = new Set([
@@ -242,7 +242,7 @@ export function libraryQueueCount(library, jobs, downloadJobs) {
 }
 
 export function shouldShowDownloadElapsed(status) {
-  return ['searching', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing'].includes(String(status ?? '').toLowerCase());
+  return ['checking', 'searching', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing'].includes(String(status ?? '').toLowerCase());
 }
 
 export function jobSortRank(job) {

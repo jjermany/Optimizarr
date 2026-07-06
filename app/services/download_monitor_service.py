@@ -71,6 +71,7 @@ _QBT_STALE_STATES = {'stalledDL', 'missingFiles', 'error', 'stoppedDL'}
 # client items to keep during reconciliation. Shared by all three lookups
 # below so a future status addition only needs to be made once.
 _CLIENT_TRACKED_DOWNLOAD_STATUSES = {
+    DownloadJobStatus.checking.value,
     DownloadJobStatus.queued.value,
     DownloadJobStatus.paused.value,
     DownloadJobStatus.downloading.value,
@@ -211,6 +212,7 @@ def _monitor_loop() -> None:
             has_downloading = (
                 db.query(DownloadJob)
                 .filter(DownloadJob.status.in_([
+                    DownloadJobStatus.checking.value,
                     DownloadJobStatus.queued.value,
                     DownloadJobStatus.paused.value,
                     DownloadJobStatus.downloading.value,
@@ -271,6 +273,7 @@ def can_attempt_download(db: Session) -> bool:
 def download_job_exists_for_source(db: Session, source_path: str, library_id: int | None = None) -> bool:
     active_statuses = {
         DownloadJobStatus.pending.value,
+        DownloadJobStatus.checking.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,
@@ -324,6 +327,7 @@ def download_job_exists_for_source(db: Session, source_path: str, library_id: in
 
 
 _IDENTITY_BLOCKING_DOWNLOAD_STATUSES = {
+    DownloadJobStatus.checking.value,
     DownloadJobStatus.searching.value,
     DownloadJobStatus.queued.value,
     DownloadJobStatus.paused.value,
@@ -698,6 +702,7 @@ def _cleanup_stale_qbt_torrents(db: Session, qbt, *, force: bool = False) -> int
 
 def _active_download_identity_keys(db: Session) -> set[str]:
     active_statuses = {
+        DownloadJobStatus.checking.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,
@@ -738,6 +743,7 @@ def _tracked_qbt_hashes_by_identity(db: Session) -> dict[str, set[str]]:
 
 def _active_download_jobs_for_identity(db: Session, identity_key: str) -> list[DownloadJob]:
     active_statuses = {
+        DownloadJobStatus.checking.value,
         DownloadJobStatus.searching.value,
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,
@@ -1064,6 +1070,7 @@ def _qbt_hash_mismatches_tv_download_job(dj: DownloadJob, qbt) -> bool:
 
 _ACTIVE_DOWNLOAD_STATUSES = (
     DownloadJobStatus.pending.value,
+    DownloadJobStatus.checking.value,
     DownloadJobStatus.searching.value,
     DownloadJobStatus.queued.value,
     DownloadJobStatus.paused.value,
@@ -1128,6 +1135,7 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
             DownloadJob.library_id == library.id,
             DownloadJob.status.in_({
                 DownloadJobStatus.pending.value,
+                DownloadJobStatus.checking.value,
                 DownloadJobStatus.searching.value,
                 DownloadJobStatus.queued.value,
                 DownloadJobStatus.paused.value,
@@ -3440,6 +3448,7 @@ def _process_downloading_jobs(db: Session) -> None:
     jobs = (
         db.query(DownloadJob)
         .filter(DownloadJob.status.in_([
+            DownloadJobStatus.checking.value,
             DownloadJobStatus.queued.value,
             DownloadJobStatus.paused.value,
             DownloadJobStatus.downloading.value,
@@ -4553,6 +4562,22 @@ def _arm_startup_grace_if_needed(db: Session) -> None:
         )
 
 
+def _mark_startup_download_jobs_checking(db: Session, jobs: list[DownloadJob]) -> None:
+    changed: list[DownloadJob] = []
+    for dj in jobs:
+        if dj.status == DownloadJobStatus.checking.value:
+            continue
+        dj.status = DownloadJobStatus.checking.value
+        dj.error_message = 'Checking download client queue after startup'
+        changed.append(dj)
+    if not changed:
+        return
+    db.commit()
+    for dj in changed:
+        db.refresh(dj)
+        _publish_download_job(dj)
+
+
 def run_download_startup_recovery(db: Session) -> dict:
     """Reconcile in-flight download jobs against the download client on startup.
 
@@ -4581,6 +4606,7 @@ def run_download_startup_recovery(db: Session) -> dict:
         .filter(
             DownloadJob.status.in_([
                 DownloadJobStatus.queued.value,
+                DownloadJobStatus.checking.value,
                 DownloadJobStatus.paused.value,
                 DownloadJobStatus.downloading.value,
                 DownloadJobStatus.repairing.value,
@@ -4600,6 +4626,7 @@ def run_download_startup_recovery(db: Session) -> dict:
         DownloadJobStatus.downloading.value,  # already covered by in_flight_jobs loop
         DownloadJobStatus.repairing.value,
         DownloadJobStatus.unpacking.value,
+        DownloadJobStatus.checking.value,
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,
         DownloadJobStatus.moving.value,
@@ -4637,6 +4664,9 @@ def run_download_startup_recovery(db: Session) -> dict:
 
     imported = 0
     reset_count = 0
+
+    original_status_by_id = {dj.id: dj.status for dj in in_flight_jobs}
+    _mark_startup_download_jobs_checking(db, in_flight_jobs)
 
     # Build a hash → torrent_info map covering all qBit torrents (tagged and
     # untagged) so that timed_out/stalled jobs whose tag was never applied can
@@ -4725,6 +4755,8 @@ def run_download_startup_recovery(db: Session) -> dict:
                             'keeping status=downloading for runtime recovery',
                             dj.id,
                         )
+                        dj.status = DownloadJobStatus.downloading.value
+                        dj.error_message = None
                         dj.download_started_at = datetime.now(timezone.utc)
                         db.commit()
                         continue
@@ -4767,6 +4799,18 @@ def run_download_startup_recovery(db: Session) -> dict:
                 # timing out because created_at (or an old download_started_at)
                 # is already past the threshold.
                 logger.info('Download job %s: still in progress (state=%s), resuming monitoring', dj.id, state)
+                flags = download_client_service.qbt_state_flags(state)
+                if flags.get('is_paused'):
+                    dj.status = DownloadJobStatus.paused.value
+                elif flags.get('is_waiting'):
+                    dj.status = DownloadJobStatus.queued.value
+                elif flags.get('is_moving'):
+                    dj.status = DownloadJobStatus.moving.value
+                elif flags.get('is_stalled'):
+                    dj.status = DownloadJobStatus.stalled.value
+                else:
+                    dj.status = DownloadJobStatus.downloading.value
+                dj.error_message = None
                 dj.download_started_at = datetime.now(timezone.utc)
                 db.commit()
 
@@ -4778,6 +4822,22 @@ def run_download_startup_recovery(db: Session) -> dict:
                 continue
 
             status = download_client_service.get_sab_status(sab, dj.download_hash)
+            if status.get('status_unavailable'):
+                logger.warning(
+                    'Download job %s: SABnzbd status unavailable during startup; keeping job for runtime recovery',
+                    dj.id,
+                )
+                previous_status = original_status_by_id.get(dj.id)
+                dj.status = (
+                    previous_status
+                    if previous_status and previous_status != DownloadJobStatus.checking.value
+                    else DownloadJobStatus.downloading.value
+                )
+                dj.error_message = None
+                db.commit()
+                db.refresh(dj)
+                _publish_download_job(dj)
+                continue
             if status.get('is_complete') and status.get('save_path'):
                 sab_release = str(dj.release_name or Path(status['save_path']).name)
                 if not _release_title_matches_profile(sab_release, profile):
@@ -4791,12 +4851,46 @@ def run_download_startup_recovery(db: Session) -> dict:
                 logger.info('Download job %s: SABnzbd completed while offline, importing now', dj.id)
                 _import_file(db, dj, status['save_path'], library, profile, qbt, sab)
                 imported += 1
-            elif status.get('progress_percent', 0) == 0 and not status.get('is_complete'):
-                # Not found in SABnzbd at all
+            elif status.get('not_found'):
                 logger.warning('Download job %s: NZO %r not found in SABnzbd; resetting to searching',
                                dj.id, dj.download_hash)
                 _reset_download_job_to_searching(db, dj)
                 reset_count += 1
+            else:
+                progress = status.get('progress_percent', 0)
+                try:
+                    progress = int(float(progress))
+                except (TypeError, ValueError):
+                    progress = 0
+                progress = max(0, min(100, progress))
+
+                eta_seconds = status.get('eta_seconds')
+                eta_seconds = int(eta_seconds) if isinstance(eta_seconds, (int, float)) and eta_seconds >= 0 else None
+                speed_bps = status.get('download_speed_bps')
+                speed_bps = int(speed_bps) if isinstance(speed_bps, (int, float)) and speed_bps >= 0 else None
+
+                if status.get('is_waiting'):
+                    sab_status = str(status.get('sab_status') or '').strip().lower()
+                    dj.status = DownloadJobStatus.paused.value if sab_status == 'paused' else DownloadJobStatus.queued.value
+                    eta_seconds = None
+                    speed_bps = 0
+                elif bool(status.get('is_moving')):
+                    dj.status = DownloadJobStatus.moving.value
+                elif bool(status.get('is_repairing')):
+                    dj.status = DownloadJobStatus.repairing.value
+                elif bool(status.get('is_unpacking')):
+                    dj.status = DownloadJobStatus.unpacking.value
+                else:
+                    dj.status = DownloadJobStatus.downloading.value
+
+                dj.progress_percent = progress
+                dj.eta_seconds = eta_seconds
+                dj.download_speed_bps = speed_bps
+                dj.error_message = None
+                dj.download_started_at = datetime.now(timezone.utc)
+                db.commit()
+                db.refresh(dj)
+                _publish_download_job(dj, client_queue_position=status.get('client_queue_position'))
 
         else:
             logger.warning('Download job %s: unknown client_type %r; resetting to searching',
@@ -4941,6 +5035,7 @@ def run_scan_recovery(db: Session) -> dict:
     try:
         _skip_statuses = {
             DownloadJobStatus.pending.value,
+            DownloadJobStatus.checking.value,
             DownloadJobStatus.queued.value,
             DownloadJobStatus.paused.value,
             DownloadJobStatus.downloading.value,

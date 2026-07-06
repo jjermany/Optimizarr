@@ -1893,6 +1893,59 @@ def test_startup_recovery_keeps_hashless_qbit_job_downloading_when_unmatched(mon
         assert dj.status == DownloadJobStatus.downloading.value
 
 
+def test_startup_recovery_keeps_existing_sab_queue_item_without_retrying(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Highest 2 Lowest (2025).mkv',
+            release_name='Highest.2.Lowest.2025.1080p.WEB-DL',
+            download_hash='SAB_NZO_QUEUED',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=4,
+            max_retries=5,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=True))
+        monkeypatch.setattr(download_client_service, 'get_sab_completed_history_items', lambda _s: [])
+        monkeypatch.setattr(download_client_service, 'get_sab_status', lambda _s, _nzo: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'download_speed_bps': 0,
+            'client_queue_position': 2,
+            'is_complete': False,
+            'is_moving': False,
+            'is_repairing': False,
+            'is_unpacking': False,
+            'is_waiting': True,
+            'is_stalled': False,
+            'is_failed': False,
+            'sab_status': 'Queued',
+            'save_path': None,
+            'not_found': False,
+        })
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(dj)
+
+        assert summary['reset_to_searching'] == 0
+        assert dj.status == DownloadJobStatus.queued.value
+        assert dj.download_hash == 'SAB_NZO_QUEUED'
+        assert dj.client_type == 'sabnzbd'
+        assert dj.retry_count == 4
+        assert dj.error_message is None
+
+
 def test_startup_recovery_removes_waiting_encode_placeholder_for_completed_download(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()

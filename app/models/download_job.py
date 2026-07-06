@@ -13,6 +13,7 @@ def _utcnow() -> datetime:
 
 class DownloadJobStatus(str, Enum):
     pending = 'pending'           # waiting in queue for its turn
+    checking = 'checking'         # startup/recovery is reconciling with the client
     searching = 'searching'
     queued = 'queued'             # accepted by client, waiting for client-side queue slot
     paused = 'paused'             # paused in the download client
