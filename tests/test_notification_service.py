@@ -101,6 +101,57 @@ def test_dispatch_email_event_skips_send_if_toggle_disabled_after_enqueue(monkey
     assert DummySMTP.sent_messages == []
 
 
+def test_dispatch_email_event_skips_send_for_unknown_kind(monkeypatch):
+    DummySMTP.sent_messages.clear()
+    monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
+
+    db = SessionLocal()
+    try:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.smtp_host = 'smtp.example.com'
+        settings.from_email = 'optimizarr@example.com'
+        settings.to_emails_csv = 'ops@example.com'
+        db.commit()
+    finally:
+        db.close()
+
+    # A kind that isn't in _NOTIFY_FLAG_BY_KIND (e.g. a typo, or a new
+    # enqueue_* call site that forgot to register its flag) must fail closed
+    # instead of silently bypassing every notification preference toggle.
+    event = notification_service.EmailEvent(
+        subject='Optimizarr unknown event',
+        body='Status: n/a\n',
+        kind='not_a_real_kind',
+    )
+
+    notification_service._dispatch_email_event(event)
+
+    assert DummySMTP.sent_messages == []
+
+
+def test_dispatch_email_event_sends_test_email_regardless_of_kind(monkeypatch):
+    DummySMTP.sent_messages.clear()
+    monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
+
+    db = SessionLocal()
+    try:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.smtp_host = 'smtp.example.com'
+        settings.from_email = 'optimizarr@example.com'
+        settings.to_emails_csv = 'ops@example.com'
+        db.commit()
+    finally:
+        db.close()
+
+    # kind=None is the explicit bypass used by enqueue_test_email(); it must
+    # keep sending regardless of any notification toggle.
+    event = notification_service.EmailEvent(subject='Optimizarr notification test', body='test\n', kind=None)
+
+    notification_service._dispatch_email_event(event)
+
+    assert len(DummySMTP.sent_messages) == 1
+
+
 def test_format_notification_html_renders_text_branding():
     html = notification_service._format_notification_html(
         subject='Optimizarr notification test',

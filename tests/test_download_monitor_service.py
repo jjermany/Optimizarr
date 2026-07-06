@@ -29,6 +29,8 @@ from app.services.download_monitor_service import (
     _qbt_strike_state,
     _reconcile_duplicate_qbt_downloads,
     _reconcile_duplicate_sab_downloads,
+    _tracked_qbt_hashes_by_identity,
+    _tracked_sab_nzos_by_identity,
     _release_matches_source_title,
     _release_title_matches_profile,
     _select_best_release,
@@ -2332,6 +2334,49 @@ def test_process_searching_jobs_removes_same_identity_pending_duplicate(monkeypa
         assert removed_events == [('download_job_removed', {'download_job_id': duplicate_id})]
 
 
+def test_tracked_sab_nzos_by_identity_includes_paused_jobs():
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        dj = DownloadJob(
+            source_file_path='/media/movies/Paused Duplicate (2026)/Paused.Duplicate.2026.2160p.HDR.mkv',
+            release_name='Paused.Duplicate.2026.1080p.WEB-DL.DDP5.1-GROUP',
+            download_hash='SAB_PAUSED_TRACKED',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.paused.value,
+        )
+        db.add(dj)
+        db.commit()
+
+        # A DownloadJob that's paused (e.g. because the whole SAB queue is
+        # paused) must still count as "tracked" for reconciliation purposes --
+        # otherwise the duplicate-download reconciler loses its tiebreak
+        # signal and can remove the real, tracked, paused download instead of
+        # an actual duplicate.
+        tracked = _tracked_sab_nzos_by_identity(db)
+        assert any('SAB_PAUSED_TRACKED' in nzo_ids for nzo_ids in tracked.values())
+
+
+def test_tracked_qbt_hashes_by_identity_includes_paused_jobs():
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        dj = DownloadJob(
+            source_file_path='/media/movies/Qbt Paused Duplicate (2026)/Qbt.Paused.Duplicate.2026.2160p.HDR.mkv',
+            release_name='Qbt.Paused.Duplicate.2026.1080p.WEB-DL.DDP5.1-GROUP',
+            download_hash='ffffffffffffffffffffffffffffffffffffffff',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.paused.value,
+        )
+        db.add(dj)
+        db.commit()
+
+        tracked = _tracked_qbt_hashes_by_identity(db)
+        assert any('ffffffffffffffffffffffffffffffffffffffff' in hashes for hashes in tracked.values())
+
+
 def test_reconcile_duplicate_qbt_downloads_removes_incomplete_alternatives(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
@@ -3603,6 +3648,71 @@ def test_check_download_progress_sab_queue_wide_pause_with_progress_stays_paused
         assert dj.eta_seconds is None
         assert dj.download_speed_bps == 0
         assert dj.download_started_at.replace(tzinfo=UTC) > old_started_at
+
+
+def test_check_download_progress_qbt_paused_stays_paused(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        old_started_at = datetime.now(UTC) - timedelta(minutes=5)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Qbt.User.Paused.mkv',
+            release_name='Qbt.User.Paused.2025.1080p.WEB-DL',
+            download_hash='dddddddddddddddddddddddddddddddddddddddd',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            max_retries=5,
+            progress_percent=45,
+            download_started_at=old_started_at,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=False)
+
+        # A user paused this torrent mid-download (qBittorrent state
+        # 'stoppedDL'/'pausedDL') -- it must be surfaced as paused and must
+        # NOT be treated like a stall that eventually times out and retries.
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 45,
+            'eta_seconds': None,
+            'download_speed_bps': 0,
+            'is_complete': False,
+            'is_moving': False,
+            'is_waiting': False,
+            'is_paused': True,
+            'is_stalled': False,
+            'is_failed': False,
+            'qbt_state': 'stoppedDL',
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'tag_qbt_torrent', lambda *_args, **_kwargs: True)
+
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(db, dj, qbt, sab)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.paused.value
+        assert dj.progress_percent == 45
+        assert dj.eta_seconds is None
+        assert dj.download_speed_bps == 0
+        assert dj.download_started_at.replace(tzinfo=UTC) > old_started_at
+        assert dj.retry_count == 0
+        assert fallback_calls == []
 
 
 def test_check_download_progress_sab_unlinks_mismatched_tv_episode_nzo(monkeypatch):

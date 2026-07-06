@@ -32,6 +32,10 @@ _QBT_MOVING_STATES = {'moving'}
 _QBT_WAITING_STATES = {
     'queuedDL',
 }
+# 'pausedDL' (qBittorrent < 5.0) / 'stoppedDL' (5.0+, Web API v2.11.0+: renamed
+# from pausedDL) both mean the user paused an in-progress download -- distinct
+# from a transient stall the client might recover from on its own.
+_QBT_PAUSED_STATES = {'pausedDL', 'stoppedDL'}
 
 MEDIA_SUFFIXES = {'.mkv', '.mp4'}
 
@@ -218,6 +222,28 @@ def get_all_qbt_torrents(s: QBittorrentSettings) -> list[dict]:
         return []
 
 
+def qbt_state_flags(state: str) -> dict:
+    """Classify a qBittorrent torrent 'state' string into status flags.
+
+    Shared by get_qbt_status() and download_monitor_service's replacement-
+    torrent recovery paths so the state->flag mapping only lives in one place.
+    """
+    is_complete = state in _QBT_COMPLETE_STATES
+    return {
+        'is_complete': is_complete,
+        'is_moving': state in _QBT_MOVING_STATES and not is_complete,
+        'is_waiting': state in _QBT_WAITING_STATES and not is_complete,
+        'is_paused': state in _QBT_PAUSED_STATES,
+        # 'error'/'missingFiles' are terminal -- qBit will not recover these on
+        # its own, unlike a transient 'stalledDL', so they should be retried
+        # right away rather than waiting out the generic download timeout. A
+        # user-initiated pause ('pausedDL'/'stoppedDL') is reported via
+        # is_paused above, not is_stalled.
+        'is_stalled': state in ('stalledDL', 'missingFiles', 'error'),
+        'is_failed': state in ('error', 'missingFiles'),
+    }
+
+
 def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
     """Returns progress, eta, speed, completion, and save_path for a torrent."""
     try:
@@ -231,7 +257,9 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
                 'is_complete': False,
                 'is_moving': False,
                 'is_waiting': False,
+                'is_paused': False,
                 'is_stalled': False,
+                'is_failed': False,
                 'qbt_state': None,
                 'save_path': None,
                 'not_found': True,
@@ -254,26 +282,13 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
             download_speed_bps = None
         if download_speed_bps is not None and download_speed_bps < 0:
             download_speed_bps = None
-        is_complete = state in _QBT_COMPLETE_STATES
-        is_moving = state in _QBT_MOVING_STATES and not is_complete
-        is_waiting = state in _QBT_WAITING_STATES and not is_complete
-        is_stalled = state in ('stalledDL', 'missingFiles', 'error', 'stoppedDL')
-        # 'error'/'missingFiles' are terminal -- qBit will not recover these on
-        # its own, unlike a transient 'stalledDL' or a user-initiated
-        # 'stoppedDL' pause, so they should be retried right away rather than
-        # waiting out the generic download timeout.
-        is_failed = state in ('error', 'missingFiles')
         # content_path is the actual file/folder; fall back to save_path (directory)
         save_path = info.get('content_path') or info.get('save_path')
         return {
             'progress_percent': progress,
             'eta_seconds': eta_seconds,
             'download_speed_bps': download_speed_bps,
-            'is_complete': is_complete,
-            'is_moving': is_moving,
-            'is_waiting': is_waiting,
-            'is_stalled': is_stalled,
-            'is_failed': is_failed,
+            **qbt_state_flags(state),
             'qbt_state': state,
             'save_path': save_path,
             'not_found': False,
@@ -287,7 +302,9 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
             'is_complete': False,
             'is_moving': False,
             'is_waiting': False,
+            'is_paused': False,
             'is_stalled': False,
+            'is_failed': False,
             'qbt_state': None,
             'save_path': None,
             'not_found': False,
@@ -514,11 +531,16 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                 # queue itself is paused.
                 is_queue_wide_paused = queue_paused and not is_moving and not is_stalled
                 has_active_speed = bool(speed_bps)
+                # A slot already reporting its own "Stalled"/"Failed" status
+                # text is a stronger, more specific signal than the lack of
+                # throughput below -- treating it as merely "waiting its turn"
+                # would park the stall/retry timeout clock forever, so a
+                # stalled/failed slot must never be reclassified as waiting.
                 is_waiting = (
                     is_queue_wide_paused
                     or _sab_is_waiting_status(status)
                     or slot_index > 0
-                    or (slot_index == 0 and not is_moving and not has_active_speed)
+                    or (slot_index == 0 and not is_moving and not is_stalled and not has_active_speed)
                 )
                 # Normalize the reported status so downstream consumers see
                 # "Paused" even when SAB left this slot's own status text
@@ -539,6 +561,13 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     'is_moving': is_moving,
                     'is_waiting': is_waiting,
                     'is_stalled': is_stalled,
+                    # Unlike a transient stall, SAB reporting "Failed" text
+                    # already in the live queue means nothing further will
+                    # happen without a retry -- mirrors the history branch and
+                    # qBittorrent's error/missingFiles handling below so this
+                    # in-queue case also gets the immediate-retry treatment
+                    # instead of waiting out the generic download timeout.
+                    'is_failed': status_text == 'failed',
                     'sab_status': effective_status,
                     'save_path': None,
                     'not_found': False,
@@ -581,6 +610,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
             'is_moving': False,
             'is_waiting': False,
             'is_stalled': False,
+            'is_failed': False,
             'sab_status': None,
             'save_path': None,
             'not_found': True,
@@ -596,6 +626,7 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
             'is_moving': False,
             'is_waiting': False,
             'is_stalled': False,
+            'is_failed': False,
             'sab_status': None,
             'save_path': None,
             'not_found': False,

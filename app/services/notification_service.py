@@ -276,10 +276,19 @@ def _dispatch_email_event(event: EmailEvent) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_notification_settings(db)
-        flag_name = _NOTIFY_FLAG_BY_KIND.get(event.kind)
-        if flag_name and not getattr(settings, flag_name):
-            logger.debug('Skipping queued email; %s disabled after enqueue', flag_name)
-            return
+        # event.kind is None only for the explicit test-email bypass, which is
+        # meant to ignore notification preferences entirely. Any other kind
+        # must resolve to a known flag -- an unrecognized kind (e.g. a typo or
+        # a new enqueue_* call site that forgot to update _NOTIFY_FLAG_BY_KIND)
+        # must fail closed instead of silently sending past the user's opt-out.
+        if event.kind is not None:
+            flag_name = _NOTIFY_FLAG_BY_KIND.get(event.kind)
+            if flag_name is None:
+                logger.warning('Unknown notification kind %r; skipping email to avoid bypassing preferences', event.kind)
+                return
+            if not getattr(settings, flag_name):
+                logger.debug('Skipping queued email; %s disabled after enqueue', flag_name)
+                return
         _send_via_smtp(event, settings)
     except Exception:
         logger.exception('Failed to send email notification')

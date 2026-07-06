@@ -233,6 +233,49 @@ def test_get_qbt_status_stalled_download_is_not_marked_failed(monkeypatch):
     assert status['is_failed'] is False
 
 
+def test_get_qbt_status_stopped_state_marks_is_paused_not_stalled(monkeypatch):
+    monkeypatch.setattr(download_client_service, '_qbt_session', lambda _s: object())
+    monkeypatch.setattr(
+        download_client_service,
+        '_qbt_torrent_info',
+        lambda _client, _hash: {
+            'state': 'stoppedDL',
+            'progress': 0.45,
+            'eta': -1,
+            'dlspeed': 0,
+            'content_path': '/downloads/incomplete/User.Paused.Movie.2025.1080p',
+        },
+    )
+
+    status = download_client_service.get_qbt_status(SimpleNamespace(), 'abc123')
+
+    # A user-initiated pause is distinct from a transient stall -- it must not
+    # be retried/timed-out like a genuine stall, and must be surfaced as paused.
+    assert status['is_paused'] is True
+    assert status['is_stalled'] is False
+    assert status['is_failed'] is False
+
+
+def test_get_qbt_status_paused_dl_legacy_state_marks_is_paused(monkeypatch):
+    monkeypatch.setattr(download_client_service, '_qbt_session', lambda _s: object())
+    monkeypatch.setattr(
+        download_client_service,
+        '_qbt_torrent_info',
+        lambda _client, _hash: {
+            'state': 'pausedDL',
+            'progress': 0.1,
+            'eta': -1,
+            'dlspeed': 0,
+            'content_path': '/downloads/incomplete/Legacy.Paused.Movie.2025.1080p',
+        },
+    )
+
+    status = download_client_service.get_qbt_status(SimpleNamespace(), 'abc123')
+
+    assert status['is_paused'] is True
+    assert status['is_stalled'] is False
+
+
 def test_qbt_session_accepts_204_login_success(monkeypatch):
     posts = []
 
@@ -405,6 +448,39 @@ def test_get_sab_status_queue_wide_pause_does_not_override_stalled_slot(monkeypa
 
     assert status['is_stalled'] is True
     assert status['sab_status'] == 'Stalled'
+    # A slot already reporting "Stalled" must never also be reclassified as
+    # "waiting" just because it has no throughput -- that would park the
+    # stall/retry timeout clock forever and the download would never time out.
+    assert status['is_waiting'] is False
+
+
+def test_get_sab_status_queue_failed_slot_marks_is_failed(monkeypatch):
+    queue_payload = {
+        'queue': {
+            'slots': [
+                {
+                    'nzo_id': 'NZO-QUEUE-FAILED',
+                    'percentage': '10',
+                    'status': 'Failed',
+                    'timeleft': '0',
+                }
+            ],
+        }
+    }
+
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **params: queue_payload if params.get('mode') == 'queue' else {'history': {'slots': []}},
+    )
+    status = download_client_service.get_sab_status(SimpleNamespace(), 'NZO-QUEUE-FAILED')
+
+    # An in-queue slot reporting "Failed" (not yet moved to history) must be
+    # marked is_failed too, so it gets the same immediate-retry treatment as
+    # a history "Failed" entry instead of waiting out the full stall timeout.
+    assert status['is_stalled'] is True
+    assert status['is_failed'] is True
+    assert status['is_waiting'] is False
 
 
 def test_get_sab_status_no_queue_wide_pause_leaves_active_slot_downloading(monkeypatch):

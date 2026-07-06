@@ -37,6 +37,11 @@ _stop_event = threading.Event()
 # Signalled whenever a new DownloadJob is created so the loop wakes immediately
 _wake_event = threading.Event()
 _thread: threading.Thread | None = None
+# Runs Prowlarr searches on their own thread, separate from the downloading-job
+# progress poller below -- a slow/broad Prowlarr search can legitimately take
+# up to _SEARCH_TIMEOUT seconds per pass, and must not stall the 1-second
+# progress polling that active downloads rely on for timely status updates.
+_search_thread: threading.Thread | None = None
 # Set while a post-scan recovery run is in progress; blocks new Prowlarr searches
 _scan_recovery_event = threading.Event()
 
@@ -60,6 +65,19 @@ _QBT_SLOW_MAX_STRIKES = 3
 _QBT_SLOW_MIN_SPEED_BPS = 0
 _QBT_METADATA_STATES = {'metaDL', 'forcedMetaDL'}
 _QBT_STALE_STATES = {'stalledDL', 'missingFiles', 'error', 'stoppedDL'}
+# Statuses that mean "a client-side download is actively being tracked for
+# this hash/nzo_id" -- used both to look up the DownloadJob backing a client
+# item (for strike-based retries) and to score which of several duplicate
+# client items to keep during reconciliation. Shared by all three lookups
+# below so a future status addition only needs to be made once.
+_CLIENT_TRACKED_DOWNLOAD_STATUSES = {
+    DownloadJobStatus.queued.value,
+    DownloadJobStatus.paused.value,
+    DownloadJobStatus.downloading.value,
+    DownloadJobStatus.moving.value,
+    DownloadJobStatus.stalled.value,
+    DownloadJobStatus.importing.value,
+}
 _qbt_strike_state: dict[str, dict[str, object]] = {}
 _last_qbt_strike_cleanup_monotonic = 0.0
 _UNWANTED_RELEASE_VARIANT_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -136,7 +154,7 @@ def register_job_complete_callback(fn: Callable[[], None]) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def start_download_monitor() -> threading.Thread:
-    global _thread
+    global _thread, _search_thread
     if _thread and _thread.is_alive():
         return _thread
 
@@ -144,6 +162,8 @@ def start_download_monitor() -> threading.Thread:
     _wake_event.clear()
     _thread = threading.Thread(target=_monitor_loop, name='download-monitor', daemon=True)
     _thread.start()
+    _search_thread = threading.Thread(target=_search_loop, name='download-monitor-search', daemon=True)
+    _search_thread.start()
     logger.info('Download monitor worker started')
     return _thread
 
@@ -151,6 +171,33 @@ def start_download_monitor() -> threading.Thread:
 def stop_download_monitor() -> None:
     _stop_event.set()
     _wake_event.set()  # unblock any pending wait immediately
+
+
+def _search_loop() -> None:
+    """Runs Prowlarr searches on their own thread so a slow/broad search pass
+    (which can legitimately take up to _SEARCH_TIMEOUT seconds) never delays
+    the downloading-job progress poll in _monitor_loop."""
+    while not _stop_event.is_set():
+        db = SessionLocal()
+        sleep_seconds = _POLL_IDLE_SECONDS
+        try:
+            has_searching = (
+                db.query(DownloadJob)
+                .filter(DownloadJob.status == DownloadJobStatus.searching.value)
+                .count()
+            ) > 0
+            _process_searching_jobs(db)
+            if has_searching:
+                sleep_seconds = _POLL_SEARCHING_SECONDS
+        except Exception:
+            logger.exception('Download monitor search iteration failed')
+        finally:
+            db.close()
+
+        _wake_event.wait(timeout=sleep_seconds)
+        _wake_event.clear()
+
+    logger.info('Download monitor search worker stopped')
 
 
 def _monitor_loop() -> None:
@@ -175,7 +222,6 @@ def _monitor_loop() -> None:
                 .count()
             ) > 0
 
-            _process_searching_jobs(db)
             _process_downloading_jobs(db)
 
             # Safety net: when the pipeline is otherwise idle, periodically
@@ -471,19 +517,12 @@ def _qbt_torrent_is_private(torrent: dict) -> bool:
 
 
 def _active_qbt_download_jobs_by_hash(db: Session) -> dict[str, DownloadJob]:
-    active_statuses = {
-        DownloadJobStatus.queued.value,
-        DownloadJobStatus.downloading.value,
-        DownloadJobStatus.moving.value,
-        DownloadJobStatus.stalled.value,
-        DownloadJobStatus.importing.value,
-    }
     rows = (
         db.query(DownloadJob)
         .filter(
             DownloadJob.client_type == 'qbittorrent',
             DownloadJob.download_hash.is_not(None),
-            DownloadJob.status.in_(active_statuses),
+            DownloadJob.status.in_(_CLIENT_TRACKED_DOWNLOAD_STATUSES),
         )
         .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
         .all()
@@ -674,13 +713,7 @@ def _tracked_qbt_hashes_by_identity(db: Session) -> dict[str, set[str]]:
         .filter(
             DownloadJob.client_type == 'qbittorrent',
             DownloadJob.download_hash.is_not(None),
-            DownloadJob.status.in_({
-                DownloadJobStatus.queued.value,
-                DownloadJobStatus.downloading.value,
-                DownloadJobStatus.moving.value,
-                DownloadJobStatus.stalled.value,
-                DownloadJobStatus.importing.value,
-            }),
+            DownloadJob.status.in_(_CLIENT_TRACKED_DOWNLOAD_STATUSES),
         )
         .all()
     )
@@ -765,13 +798,7 @@ def _tracked_sab_nzos_by_identity(db: Session) -> dict[str, set[str]]:
         .filter(
             DownloadJob.client_type == 'sabnzbd',
             DownloadJob.download_hash.is_not(None),
-            DownloadJob.status.in_({
-                DownloadJobStatus.queued.value,
-                DownloadJobStatus.downloading.value,
-                DownloadJobStatus.moving.value,
-                DownloadJobStatus.stalled.value,
-                DownloadJobStatus.importing.value,
-            }),
+            DownloadJob.status.in_(_CLIENT_TRACKED_DOWNLOAD_STATUSES),
         )
         .all()
     )
@@ -3568,11 +3595,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                 'progress_percent': int((replacement.get('progress', 0) or 0) * 100),
                 'eta_seconds': replacement.get('eta'),
                 'download_speed_bps': replacement.get('dlspeed'),
-                'is_complete': replacement.get('state', '') in download_client_service._QBT_COMPLETE_STATES,
-                'is_moving': replacement.get('state', '') in download_client_service._QBT_MOVING_STATES,
-                'is_waiting': replacement.get('state', '') in download_client_service._QBT_WAITING_STATES,
-                'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
-                'is_failed': replacement.get('state', '') in ('error', 'missingFiles'),
+                **download_client_service.qbt_state_flags(replacement.get('state', '')),
                 'qbt_state': replacement.get('state', ''),
                 'save_path': replacement.get('content_path') or replacement.get('save_path'),
                 'not_found': False,
@@ -3602,11 +3625,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
                     'progress_percent': int((replacement.get('progress', 0) or 0) * 100),
                     'eta_seconds': replacement.get('eta'),
                     'download_speed_bps': replacement.get('dlspeed'),
-                    'is_complete': replacement.get('state', '') in download_client_service._QBT_COMPLETE_STATES,
-                    'is_moving': replacement.get('state', '') in download_client_service._QBT_MOVING_STATES,
-                    'is_waiting': replacement.get('state', '') in download_client_service._QBT_WAITING_STATES,
-                    'is_stalled': replacement.get('state', '') in ('stalledDL', 'missingFiles', 'error', 'stoppedDL'),
-                    'is_failed': replacement.get('state', '') in ('error', 'missingFiles'),
+                    **download_client_service.qbt_state_flags(replacement.get('state', '')),
                     'qbt_state': replacement.get('state', ''),
                     'save_path': replacement.get('content_path') or replacement.get('save_path'),
                     'not_found': False,
@@ -3687,7 +3706,15 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         is_waiting = bool(status.get('is_waiting'))
     else:
         is_waiting = bool(status.get('is_waiting')) and client_type == 'qbittorrent' and progress <= 0
-    if is_waiting:
+    # qBittorrent reports a user-initiated pause via its own 'is_paused' flag
+    # (a torrent can be paused at any progress level, unlike the qBit
+    # is_waiting gate above which only applies at 0% progress).
+    is_paused = client_type == 'qbittorrent' and bool(status.get('is_paused'))
+    if is_paused:
+        expected_status = DownloadJobStatus.paused.value
+        eta_seconds = None
+        speed_bps = 0
+    elif is_waiting:
         sab_status = str(status.get('sab_status') or '').strip().lower()
         expected_status = (
             DownloadJobStatus.paused.value
@@ -3758,18 +3785,20 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
             client_type,
         )
 
-    if is_waiting:
-        # Client-side queueing is intentional backpressure, not a bad release.
-        # Keep the timeout clock parked while the client has not started it yet.
+    if is_paused or is_waiting:
+        # Client-side queueing/pausing is intentional backpressure, not a bad
+        # release. Keep the timeout clock parked while the client isn't
+        # actively transferring so a paused or queued job never times out.
         dj.download_started_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(dj)
         state_label = status.get('qbt_state') or status.get('sab_status') or 'queued'
         logger.info(
-            'Download job %s: %s state=%s; waiting in client queue without consuming retry timeout',
+            'Download job %s: %s state=%s; %s in client without consuming retry timeout',
             dj.id,
             client_type,
             state_label,
+            'paused' if is_paused else 'waiting',
         )
         return
 
