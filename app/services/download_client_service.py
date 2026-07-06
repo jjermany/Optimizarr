@@ -466,115 +466,118 @@ def _sab_is_waiting_status(status: object) -> bool:
     }
 
 
-def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
-    """Returns progress, eta, speed, completion, and save_path for an NZO."""
-    try:
-        # Check active queue first
-        queue_data = _sab_api(s, mode='queue')
-        queue_info = queue_data.get('queue', {})
-        # SABnzbd's top-level queue.paused flag reflects an engine-wide pause
-        # (the user paused the whole queue). This is a separate signal from
-        # each slot's own `status` text, which is not guaranteed to be
-        # rewritten to "Paused" for a slot that was actively transferring
-        # when the pause was applied.
-        queue_paused = bool(queue_info.get('paused'))
-        slots = queue_info.get('slots', [])
-        for slot_index, slot in enumerate(slots):
-            if slot.get('nzo_id') == nzo_id:
-                pct = slot.get('percentage', 0)
+def _sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict | None) -> dict:
+    """Compute an NZO's status from an already-fetched queue/history snapshot.
+
+    Pure function, no API calls -- shared by get_sab_status() (fetches its own
+    snapshot for a single NZO) and get_sab_status_from_snapshot() (reuses one
+    snapshot across many NZOs in a single monitor tick). history_data may be
+    None to check only the queue, matching get_sab_status()'s lazy fetch of
+    history only when the NZO isn't found in the queue.
+    """
+    queue_info = queue_data.get('queue', {})
+    # SABnzbd's top-level queue.paused flag reflects an engine-wide pause
+    # (the user paused the whole queue). This is a separate signal from
+    # each slot's own `status` text, which is not guaranteed to be
+    # rewritten to "Paused" for a slot that was actively transferring
+    # when the pause was applied.
+    queue_paused = bool(queue_info.get('paused'))
+    slots = queue_info.get('slots', [])
+    for slot_index, slot in enumerate(slots):
+        if slot.get('nzo_id') == nzo_id:
+            pct = slot.get('percentage', 0)
+            try:
+                pct = int(float(pct))
+            except (TypeError, ValueError):
+                pct = 0
+            status = slot.get('status', '')
+            status_text = str(status or '').strip().lower()
+            is_stalled = status_text in {'stalled', 'failed'}
+            is_moving = _sab_is_moving_status(status)
+
+            # Compute the slot's own reported transfer speed before
+            # deciding is_waiting. SAB's queue array position alone is
+            # not a fully reliable signal for "actively receiving bytes
+            # right now" -- a brief article/par2 pre-check can leave a
+            # not-yet-active slot with partial percentage even though
+            # it's still waiting its turn, so the head slot must also
+            # show real throughput, not just occupy position 0.
+            speed_bps: int | None = None
+            speed_sources: list[tuple[object, str]] = []
+            if slot.get('mbps') is not None:
+                speed_sources.append((slot.get('mbps'), 'mbps'))
+            if slot.get('kbpersec') is not None:
+                speed_sources.append((slot.get('kbpersec'), 'kbps'))
+            if slot_index == 0 and queue_info.get('mbps') is not None:
+                speed_sources.append((queue_info.get('mbps'), 'mbps'))
+            if slot_index == 0 and queue_info.get('kbpersec') is not None:
+                speed_sources.append((queue_info.get('kbpersec'), 'kbps'))
+
+            for raw_value, unit_hint in speed_sources:
+                speed_text = str(raw_value).strip().lower().replace(',', '.')
                 try:
-                    pct = int(float(pct))
-                except (TypeError, ValueError):
-                    pct = 0
-                status = slot.get('status', '')
-                status_text = str(status or '').strip().lower()
-                is_stalled = status_text in {'stalled', 'failed'}
-                is_moving = _sab_is_moving_status(status)
+                    if speed_text.endswith('mb/s'):
+                        speed_bps = int(float(speed_text.replace('mb/s', '').strip()) * 1024 * 1024)
+                    elif speed_text.endswith('kb/s'):
+                        speed_bps = int(float(speed_text.replace('kb/s', '').strip()) * 1024)
+                    elif unit_hint == 'mbps':
+                        speed_bps = int(float(speed_text) * 1024 * 1024)
+                    else:
+                        speed_bps = int(float(speed_text) * 1024)
+                except ValueError:
+                    speed_bps = None
+                if speed_bps is not None:
+                    break
 
-                # Compute the slot's own reported transfer speed before
-                # deciding is_waiting. SAB's queue array position alone is
-                # not a fully reliable signal for "actively receiving bytes
-                # right now" -- a brief article/par2 pre-check can leave a
-                # not-yet-active slot with partial percentage even though
-                # it's still waiting its turn, so the head slot must also
-                # show real throughput, not just occupy position 0.
-                speed_bps: int | None = None
-                speed_sources: list[tuple[object, str]] = []
-                if slot.get('mbps') is not None:
-                    speed_sources.append((slot.get('mbps'), 'mbps'))
-                if slot.get('kbpersec') is not None:
-                    speed_sources.append((slot.get('kbpersec'), 'kbps'))
-                if slot_index == 0 and queue_info.get('mbps') is not None:
-                    speed_sources.append((queue_info.get('mbps'), 'mbps'))
-                if slot_index == 0 and queue_info.get('kbpersec') is not None:
-                    speed_sources.append((queue_info.get('kbpersec'), 'kbps'))
+            # A queue-wide pause freezes every slot except ones actively
+            # post-processing (moving) or already errored (stalled/
+            # failed) -- SAB keeps those running even while the download
+            # queue itself is paused.
+            is_queue_wide_paused = queue_paused and not is_moving and not is_stalled
+            has_active_speed = bool(speed_bps)
+            # A slot already reporting its own "Stalled"/"Failed" status
+            # text is a stronger, more specific signal than the lack of
+            # throughput below -- treating it as merely "waiting its turn"
+            # would park the stall/retry timeout clock forever, so a
+            # stalled/failed slot must never be reclassified as waiting.
+            is_waiting = (
+                is_queue_wide_paused
+                or _sab_is_waiting_status(status)
+                or slot_index > 0
+                or (slot_index == 0 and not is_moving and not is_stalled and not has_active_speed)
+            )
+            # Normalize the reported status so downstream consumers see
+            # "Paused" even when SAB left this slot's own status text
+            # unchanged (e.g. still "Downloading") while the queue is
+            # globally paused.
+            effective_status = 'Paused' if is_queue_wide_paused else status
+            eta_seconds = None if is_waiting else _parse_sab_eta_seconds(slot.get('timeleft'))
+            if eta_seconds is None and not is_waiting and slot_index == 0:
+                eta_seconds = _parse_sab_eta_seconds(queue_info.get('timeleft'))
+            if is_waiting:
+                speed_bps = 0
+            return {
+                'progress_percent': pct,
+                'eta_seconds': eta_seconds,
+                'download_speed_bps': speed_bps,
+                'client_queue_position': slot_index,
+                'is_complete': False,
+                'is_moving': is_moving,
+                'is_waiting': is_waiting,
+                'is_stalled': is_stalled,
+                # Unlike a transient stall, SAB reporting "Failed" text
+                # already in the live queue means nothing further will
+                # happen without a retry -- mirrors the history branch and
+                # qBittorrent's error/missingFiles handling below so this
+                # in-queue case also gets the immediate-retry treatment
+                # instead of waiting out the generic download timeout.
+                'is_failed': status_text == 'failed',
+                'sab_status': effective_status,
+                'save_path': None,
+                'not_found': False,
+            }
 
-                for raw_value, unit_hint in speed_sources:
-                    speed_text = str(raw_value).strip().lower().replace(',', '.')
-                    try:
-                        if speed_text.endswith('mb/s'):
-                            speed_bps = int(float(speed_text.replace('mb/s', '').strip()) * 1024 * 1024)
-                        elif speed_text.endswith('kb/s'):
-                            speed_bps = int(float(speed_text.replace('kb/s', '').strip()) * 1024)
-                        elif unit_hint == 'mbps':
-                            speed_bps = int(float(speed_text) * 1024 * 1024)
-                        else:
-                            speed_bps = int(float(speed_text) * 1024)
-                    except ValueError:
-                        speed_bps = None
-                    if speed_bps is not None:
-                        break
-
-                # A queue-wide pause freezes every slot except ones actively
-                # post-processing (moving) or already errored (stalled/
-                # failed) -- SAB keeps those running even while the download
-                # queue itself is paused.
-                is_queue_wide_paused = queue_paused and not is_moving and not is_stalled
-                has_active_speed = bool(speed_bps)
-                # A slot already reporting its own "Stalled"/"Failed" status
-                # text is a stronger, more specific signal than the lack of
-                # throughput below -- treating it as merely "waiting its turn"
-                # would park the stall/retry timeout clock forever, so a
-                # stalled/failed slot must never be reclassified as waiting.
-                is_waiting = (
-                    is_queue_wide_paused
-                    or _sab_is_waiting_status(status)
-                    or slot_index > 0
-                    or (slot_index == 0 and not is_moving and not is_stalled and not has_active_speed)
-                )
-                # Normalize the reported status so downstream consumers see
-                # "Paused" even when SAB left this slot's own status text
-                # unchanged (e.g. still "Downloading") while the queue is
-                # globally paused.
-                effective_status = 'Paused' if is_queue_wide_paused else status
-                eta_seconds = None if is_waiting else _parse_sab_eta_seconds(slot.get('timeleft'))
-                if eta_seconds is None and not is_waiting and slot_index == 0:
-                    eta_seconds = _parse_sab_eta_seconds(queue_info.get('timeleft'))
-                if is_waiting:
-                    speed_bps = 0
-                return {
-                    'progress_percent': pct,
-                    'eta_seconds': eta_seconds,
-                    'download_speed_bps': speed_bps,
-                    'client_queue_position': slot_index,
-                    'is_complete': False,
-                    'is_moving': is_moving,
-                    'is_waiting': is_waiting,
-                    'is_stalled': is_stalled,
-                    # Unlike a transient stall, SAB reporting "Failed" text
-                    # already in the live queue means nothing further will
-                    # happen without a retry -- mirrors the history branch and
-                    # qBittorrent's error/missingFiles handling below so this
-                    # in-queue case also gets the immediate-retry treatment
-                    # instead of waiting out the generic download timeout.
-                    'is_failed': status_text == 'failed',
-                    'sab_status': effective_status,
-                    'save_path': None,
-                    'not_found': False,
-                }
-
-        # Check history for completed entry
-        history_data = _sab_api(s, mode='history', limit=100)
+    if history_data is not None:
         for slot in history_data.get('history', {}).get('slots', []):
             if slot.get('nzo_id') == nzo_id:
                 status = slot.get('status', '')
@@ -601,20 +604,34 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
                     'not_found': False,
                 }
 
-        return {
-            'progress_percent': 0,
-            'eta_seconds': None,
-            'download_speed_bps': None,
-            'client_queue_position': None,
-            'is_complete': False,
-            'is_moving': False,
-            'is_waiting': False,
-            'is_stalled': False,
-            'is_failed': False,
-            'sab_status': None,
-            'save_path': None,
-            'not_found': True,
-        }
+    return {
+        'progress_percent': 0,
+        'eta_seconds': None,
+        'download_speed_bps': None,
+        'client_queue_position': None,
+        'is_complete': False,
+        'is_moving': False,
+        'is_waiting': False,
+        'is_stalled': False,
+        'is_failed': False,
+        'sab_status': None,
+        'save_path': None,
+        'not_found': True,
+    }
+
+
+def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
+    """Returns progress, eta, speed, completion, and save_path for an NZO."""
+    try:
+        # Check active queue first
+        queue_data = _sab_api(s, mode='queue')
+        result = _sab_status_from_snapshot(nzo_id, queue_data, None)
+        if not result.get('not_found'):
+            return result
+
+        # Not in the queue -- check history for a completed/failed entry.
+        history_data = _sab_api(s, mode='history', limit=100)
+        return _sab_status_from_snapshot(nzo_id, queue_data, history_data)
     except Exception as exc:
         logger.warning('SABnzbd status check failed for %s: %s', nzo_id, exc)
         return {
@@ -631,6 +648,38 @@ def get_sab_status(s: SabnzbdSettings, nzo_id: str) -> dict:
             'save_path': None,
             'not_found': False,
         }
+
+
+def get_sab_queue_and_history_snapshot(s: SabnzbdSettings) -> tuple[dict, dict] | tuple[None, None]:
+    """Fetch SAB's queue and history once, for reuse across many status checks.
+
+    Checking N tracked SAB jobs by calling get_sab_status() N times means N
+    separate full-queue (and sometimes full-history) fetches per monitor tick
+    -- with a large backlog that's 100+ redundant HTTP requests per second
+    against SABnzbd's API. Callers that need to check many NZOs in one pass
+    should fetch this once and pass it to get_sab_status_from_snapshot() for
+    each job instead.
+
+    Returns (None, None) if the fetch fails, so callers can fall back to the
+    per-job get_sab_status() path (which has its own error handling) instead
+    of silently treating a fetch failure as "not found in SAB".
+    """
+    try:
+        queue_data = _sab_api(s, mode='queue')
+        history_data = _sab_api(s, mode='history', limit=100)
+        return queue_data, history_data
+    except Exception as exc:
+        logger.warning('SABnzbd queue/history snapshot fetch failed: %s', exc)
+        return None, None
+
+
+def get_sab_status_from_snapshot(nzo_id: str, queue_data: dict, history_data: dict) -> dict:
+    """Same result as get_sab_status(), computed from an already-fetched snapshot.
+
+    Pair with get_sab_queue_and_history_snapshot() to check many NZOs against
+    a single fetch instead of one fetch per NZO.
+    """
+    return _sab_status_from_snapshot(nzo_id, queue_data, history_data)
 
 
 def get_sab_queue_items(s: SabnzbdSettings) -> list[dict]:

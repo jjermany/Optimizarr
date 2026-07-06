@@ -3368,11 +3368,21 @@ def _process_downloading_jobs(db: Session) -> None:
         .all()
     )
 
+    # Fetch SAB's queue/history once per tick and share it across every
+    # tracked job below, instead of each job independently re-fetching SAB's
+    # entire queue -- with a large backlog that N+1 pattern means N full-queue
+    # HTTP requests per second against SABnzbd's API instead of one.
+    sab_snapshot: tuple[dict, dict] | None = None
+    if getattr(sab, 'enabled', False) and any(str(dj.client_type or '') == 'sabnzbd' for dj in jobs):
+        queue_data, history_data = download_client_service.get_sab_queue_and_history_snapshot(sab)
+        if queue_data is not None and history_data is not None:
+            sab_snapshot = (queue_data, history_data)
+
     for dj in jobs:
-        _check_download_progress(db, dj, qbt, sab)
+        _check_download_progress(db, dj, qbt, sab, sab_snapshot=sab_snapshot)
 
 
-def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
+def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snapshot: tuple[dict, dict] | None = None) -> None:
     library = db.query(Library).filter(Library.id == dj.library_id).first()
     if library is None or library.profile is None:
         _mark_failed(db, dj, 'Library or profile not found')
@@ -3566,7 +3576,10 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab) -> None:
         _publish_download_job(dj)
         return
 
-    status = download_client_service.get_download_status(client_type, qbt, sab, dj.download_hash or '')
+    if client_type == 'sabnzbd' and sab_snapshot is not None:
+        status = download_client_service.get_sab_status_from_snapshot(dj.download_hash or '', sab_snapshot[0], sab_snapshot[1])
+    else:
+        status = download_client_service.get_download_status(client_type, qbt, sab, dj.download_hash or '')
 
     # qBittorrent can occasionally return a stale hash from the grab response.
     # If the lookup appears missing (0% and not complete), try re-matching by

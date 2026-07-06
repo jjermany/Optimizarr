@@ -29,6 +29,88 @@ def test_get_sab_status_parses_timeleft_eta_and_speed(monkeypatch):
     assert status['not_found'] is False
 
 
+def test_get_sab_status_from_snapshot_matches_get_sab_status_for_queued_item():
+    queue_payload = {
+        'queue': {
+            'kbpersec': '1024',
+            'slots': [
+                {
+                    'nzo_id': 'NZO123',
+                    'percentage': '55',
+                    'status': 'Downloading',
+                    'timeleft': '0:03:10',
+                }
+            ],
+        }
+    }
+    history_payload = {'history': {'slots': []}}
+
+    status = download_client_service.get_sab_status_from_snapshot('NZO123', queue_payload, history_payload)
+
+    assert status['progress_percent'] == 55
+    assert status['eta_seconds'] == 190
+    assert status['download_speed_bps'] == 1024 * 1024
+    assert status['client_queue_position'] == 0
+    assert status['is_complete'] is False
+    assert status['not_found'] is False
+
+
+def test_get_sab_status_from_snapshot_checks_history_when_not_in_queue():
+    queue_payload = {'queue': {'slots': []}}
+    history_payload = {
+        'history': {
+            'slots': [
+                {'nzo_id': 'NZO_DONE', 'status': 'Completed', 'storage': '/complete/Some.Movie'},
+            ],
+        }
+    }
+
+    status = download_client_service.get_sab_status_from_snapshot('NZO_DONE', queue_payload, history_payload)
+
+    assert status['is_complete'] is True
+    assert status['save_path'] == '/complete/Some.Movie'
+    assert status['not_found'] is False
+
+
+def test_get_sab_status_from_snapshot_reports_not_found_when_absent_from_both():
+    queue_payload = {'queue': {'slots': []}}
+    history_payload = {'history': {'slots': []}}
+
+    status = download_client_service.get_sab_status_from_snapshot('NZO_GHOST', queue_payload, history_payload)
+
+    assert status['not_found'] is True
+
+
+def test_get_sab_queue_and_history_snapshot_fetches_both_once(monkeypatch):
+    calls = []
+
+    def fake_sab_api(_settings, **params):
+        calls.append(params.get('mode'))
+        if params.get('mode') == 'queue':
+            return {'queue': {'slots': []}}
+        return {'history': {'slots': []}}
+
+    monkeypatch.setattr(download_client_service, '_sab_api', fake_sab_api)
+
+    queue_data, history_data = download_client_service.get_sab_queue_and_history_snapshot(SimpleNamespace())
+
+    assert calls == ['queue', 'history']
+    assert queue_data == {'queue': {'slots': []}}
+    assert history_data == {'history': {'slots': []}}
+
+
+def test_get_sab_queue_and_history_snapshot_returns_none_pair_on_failure(monkeypatch):
+    def failing_sab_api(_settings, **_params):
+        raise RuntimeError('connection refused')
+
+    monkeypatch.setattr(download_client_service, '_sab_api', failing_sab_api)
+
+    queue_data, history_data = download_client_service.get_sab_queue_and_history_snapshot(SimpleNamespace())
+
+    assert queue_data is None
+    assert history_data is None
+
+
 def test_get_sab_status_head_slot_without_real_speed_is_waiting(monkeypatch):
     # A slot can occupy array position 0 and carry partial percentage (e.g.
     # from a brief article/par2 pre-check) without actually being the item

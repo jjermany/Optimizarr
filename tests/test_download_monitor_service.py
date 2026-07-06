@@ -25,6 +25,7 @@ from app.services.download_monitor_service import (
     _do_search,
     _import_file,
     _mark_failed,
+    _process_downloading_jobs,
     _process_searching_jobs,
     _qbt_strike_state,
     _reconcile_duplicate_qbt_downloads,
@@ -1646,6 +1647,104 @@ def test_check_download_progress_sab_failed_removes_orphaned_client_job(monkeypa
 
         assert remove_calls == ['SAB_FAILED_NZO']
         assert retry_calls == [True]
+
+
+def test_process_downloading_jobs_fetches_sab_snapshot_once_for_many_jobs(monkeypatch):
+    """Checking N tracked SAB jobs must cost one queue/history fetch, not N.
+
+    Regression guard for the N+1 pattern where every tracked SAB job
+    independently re-fetched SABnzbd's entire queue every monitor tick --
+    with a large backlog that meant 100+ redundant full-queue HTTP requests
+    per second against SABnzbd's API.
+    """
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        for i in range(5):
+            db.add(DownloadJob(
+                library_id=library.id,
+                source_file_path=f'/media/Batch.Item.{i}.mkv',
+                release_name=f'Batch.Item.{i}.2025.1080p.WEB-DL',
+                download_hash=f'SAB_BATCH_{i}',
+                client_type='sabnzbd',
+                status=DownloadJobStatus.downloading.value,
+            ))
+        db.commit()
+
+        qbt = SimpleNamespace(enabled=False)
+        sab = SimpleNamespace(enabled=True)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: qbt)
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: sab)
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._cleanup_stale_qbt_torrents',
+            lambda *_args, **_kwargs: 0,
+        )
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._reconcile_duplicate_qbt_downloads',
+            lambda *_args, **_kwargs: 0,
+        )
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._reconcile_duplicate_sab_downloads',
+            lambda *_args, **_kwargs: 0,
+        )
+
+        snapshot_calls = []
+        # Every tracked job's nzo_id is at slot_index 4 except the last one,
+        # so each _check_download_progress call still has real per-job status
+        # to compute, proving the shared snapshot -- not a stub -- is what's
+        # actually driving each job's outcome.
+        queue_payload = {
+            'queue': {
+                'slots': [
+                    {
+                        'nzo_id': f'SAB_BATCH_{i}',
+                        'percentage': str(i * 10),
+                        'status': 'Downloading',
+                        # Only the head slot needs real throughput to avoid
+                        # being classified as waiting -- the rest are
+                        # correctly waiting purely by queue position.
+                        'kbpersec': '500' if i == 0 else '0',
+                    }
+                    for i in range(5)
+                ],
+            }
+        }
+        history_payload = {'history': {'slots': []}}
+
+        def fake_snapshot(_sab):
+            snapshot_calls.append(True)
+            return queue_payload, history_payload
+
+        monkeypatch.setattr(download_client_service, 'get_sab_queue_and_history_snapshot', fake_snapshot)
+        monkeypatch.setattr(download_client_service, 'set_sab_category', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(download_client_service, 'set_sab_priority', lambda *_args, **_kwargs: True)
+
+        per_job_fetch_calls = []
+        monkeypatch.setattr(
+            download_client_service,
+            'get_download_status',
+            lambda *_args, **_kwargs: per_job_fetch_calls.append(True) or {'not_found': True},
+        )
+
+        _process_downloading_jobs(db)
+
+        # One shared fetch for all 5 jobs, and the per-job fallback path
+        # (get_download_status, which does its own fetch) must never fire.
+        assert snapshot_calls == [True]
+        assert per_job_fetch_calls == []
+
+        jobs = db.query(DownloadJob).order_by(DownloadJob.id.asc()).all()
+        for i, dj in enumerate(jobs):
+            db.refresh(dj)
+            assert dj.progress_percent == i * 10
+            # slot_index 0..4: index 0 is the active head, 1-4 are waiting.
+            expected_status = DownloadJobStatus.downloading.value if i == 0 else DownloadJobStatus.queued.value
+            assert dj.status == expected_status
 
 
 # ─────────────────────────────────────────────────────────────────────────────
