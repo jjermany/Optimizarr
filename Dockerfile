@@ -52,6 +52,7 @@ COPY --from=frontend-build /build/dist ./static
 RUN mkdir -p /app/media/Logo
 COPY icon.png /app/media/Logo/icon.png
 COPY icon.png /app/media/Logo/logo.png
+COPY media/Logo/pushover-icon.jpg /app/media/Logo/pushover-icon.jpg
 
 EXPOSE 8080
 
