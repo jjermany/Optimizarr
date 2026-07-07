@@ -870,6 +870,9 @@ class NotificationSettingsResponse(BaseModel):
     smtp_tls: bool
     from_email: str
     to_emails: list[str]
+    pushover_enabled: bool
+    pushover_api_token: str
+    pushover_user_key: str
     notify_on: NotificationTriggerSettings
 
 
@@ -881,6 +884,9 @@ class NotificationSettingsUpdateRequest(BaseModel):
     smtp_tls: bool | None = None
     from_email: str | None = None
     to_emails: list[str] | None = None
+    pushover_enabled: bool | None = None
+    pushover_api_token: str | None = None
+    pushover_user_key: str | None = None
     notify_on: NotificationTriggerSettings | None = None
 
     @field_validator('smtp_host')

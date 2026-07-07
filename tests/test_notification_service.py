@@ -1,3 +1,7 @@
+import httpx
+import pytest
+
+from app.core import secrets_store
 from app.core.database import SessionLocal
 from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
@@ -401,3 +405,209 @@ def test_handle_job_terminal_state_marks_waiting_encode_as_failed_when_encode_fa
         assert updated.status == DownloadJobStatus.failed.value
         assert updated.error_message == 'Fallback encode failed'
         assert updated.completed_at is not None
+
+
+class FakePushoverResponse:
+    def raise_for_status(self):
+        return None
+
+
+def _pushover_settings(**overrides):
+    values = {
+        'pushover_enabled': True,
+        'pushover_api_token': secrets_store.encrypt_secret('app-token'),
+        'pushover_user_key': secrets_store.encrypt_secret('user-key'),
+    }
+    values.update(overrides)
+    return NotificationSettings(**values)
+
+
+def test_send_via_pushover_posts_token_user_title_message(monkeypatch):
+    calls = []
+
+    def fake_post(url, data=None, timeout=None):
+        calls.append((url, data))
+        return FakePushoverResponse()
+
+    monkeypatch.setattr(notification_service.httpx, 'post', fake_post)
+
+    event = notification_service.EmailEvent(subject='Optimizarr job failed', body='Reason: codec mismatch\n')
+    notification_service._send_via_pushover(event, _pushover_settings())
+
+    assert len(calls) == 1
+    url, data = calls[0]
+    assert url == 'https://api.pushover.net/1/messages.json'
+    assert data == {
+        'token': 'app-token',
+        'user': 'user-key',
+        'title': 'Optimizarr job failed',
+        'message': 'Reason: codec mismatch\n',
+    }
+
+
+def test_send_via_pushover_skips_when_disabled_or_unconfigured(monkeypatch):
+    calls = []
+    monkeypatch.setattr(notification_service.httpx, 'post', lambda *args, **kwargs: calls.append(args) or FakePushoverResponse())
+
+    event = notification_service.EmailEvent(subject='subject', body='body')
+
+    notification_service._send_via_pushover(event, _pushover_settings(pushover_enabled=False))
+    notification_service._send_via_pushover(event, _pushover_settings(pushover_api_token=''))
+    notification_service._send_via_pushover(event, _pushover_settings(pushover_user_key=''))
+
+    assert calls == []
+
+
+def test_send_via_pushover_truncates_title_and_message(monkeypatch):
+    calls = []
+
+    def fake_post(url, data=None, timeout=None):
+        calls.append(data)
+        return FakePushoverResponse()
+
+    monkeypatch.setattr(notification_service.httpx, 'post', fake_post)
+
+    event = notification_service.EmailEvent(subject='s' * 300, body='b' * 2000)
+    notification_service._send_via_pushover(event, _pushover_settings())
+
+    assert len(calls[0]['title']) == 250
+    assert len(calls[0]['message']) == 1024
+
+
+def test_send_via_pushover_raises_with_api_errors_on_rejection(monkeypatch):
+    def fake_post(url, data=None, timeout=None):
+        request = httpx.Request('POST', url)
+        return httpx.Response(400, json={'status': 0, 'errors': ['application token is invalid']}, request=request)
+
+    monkeypatch.setattr(notification_service.httpx, 'post', fake_post)
+
+    event = notification_service.EmailEvent(subject='subject', body='body')
+    with pytest.raises(RuntimeError, match='application token is invalid'):
+        notification_service._send_via_pushover(event, _pushover_settings())
+
+
+def test_dispatch_email_event_sends_both_channels(monkeypatch):
+    DummySMTP.sent_messages.clear()
+    monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
+
+    pushover_calls = []
+
+    def fake_post(url, data=None, timeout=None):
+        pushover_calls.append(data)
+        return FakePushoverResponse()
+
+    monkeypatch.setattr(notification_service.httpx, 'post', fake_post)
+
+    db = SessionLocal()
+    try:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.smtp_host = 'smtp.example.com'
+        settings.from_email = 'optimizarr@example.com'
+        settings.to_emails_csv = 'ops@example.com'
+        settings.pushover_enabled = True
+        settings.pushover_api_token = secrets_store.encrypt_secret('app-token')
+        settings.pushover_user_key = secrets_store.encrypt_secret('user-key')
+        db.commit()
+    finally:
+        db.close()
+
+    event = notification_service.EmailEvent(subject='Optimizarr notification test', body='test\n', kind=None)
+    notification_service._dispatch_email_event(event)
+
+    assert len(DummySMTP.sent_messages) == 1
+    assert len(pushover_calls) == 1
+
+
+def test_dispatch_email_event_channel_failures_are_isolated(monkeypatch):
+    DummySMTP.sent_messages.clear()
+    monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
+
+    pushover_calls = []
+
+    def failing_post(url, data=None, timeout=None):
+        pushover_calls.append(data)
+        raise RuntimeError('pushover down')
+
+    monkeypatch.setattr(notification_service.httpx, 'post', failing_post)
+
+    db = SessionLocal()
+    try:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.smtp_host = 'smtp.example.com'
+        settings.from_email = 'optimizarr@example.com'
+        settings.to_emails_csv = 'ops@example.com'
+        settings.pushover_enabled = True
+        settings.pushover_api_token = secrets_store.encrypt_secret('app-token')
+        settings.pushover_user_key = secrets_store.encrypt_secret('user-key')
+        db.commit()
+    finally:
+        db.close()
+
+    event = notification_service.EmailEvent(subject='Optimizarr notification test', body='test\n', kind=None)
+    # Pushover raising must not prevent the email send or escape the dispatcher.
+    notification_service._dispatch_email_event(event)
+
+    assert len(DummySMTP.sent_messages) == 1
+    assert len(pushover_calls) == 1
+
+    # And an SMTP failure must not prevent the Pushover send.
+    def failing_smtp(*args, **kwargs):
+        raise RuntimeError('smtp down')
+
+    monkeypatch.setattr(notification_service.smtplib, 'SMTP', failing_smtp)
+    monkeypatch.setattr(notification_service.httpx, 'post', lambda url, data=None, timeout=None: pushover_calls.append(data) or FakePushoverResponse())
+
+    notification_service._dispatch_email_event(event)
+    assert len(pushover_calls) == 2
+
+
+def test_settings_payload_masks_and_updates_pushover_secrets():
+    db = SessionLocal()
+    try:
+        settings = notification_service.update_settings(db, {
+            'pushover_enabled': True,
+            'pushover_api_token': 'app-token',
+            'pushover_user_key': 'user-key',
+        })
+
+        assert secrets_store.is_encrypted_secret(settings.pushover_api_token)
+        assert secrets_store.is_encrypted_secret(settings.pushover_user_key)
+
+        payload = notification_service.settings_to_payload(settings)
+        assert payload['pushover_enabled'] is True
+        assert payload['pushover_api_token'] == secrets_store.SECRET_MASK
+        assert payload['pushover_user_key'] == secrets_store.SECRET_MASK
+
+        # Round-tripping the masked payload must not clobber the stored secrets.
+        before_token = settings.pushover_api_token
+        settings = notification_service.update_settings(db, {
+            'pushover_enabled': True,
+            'pushover_api_token': secrets_store.SECRET_MASK,
+            'pushover_user_key': secrets_store.SECRET_MASK,
+        })
+        assert settings.pushover_api_token == before_token
+        assert secrets_store.decrypt_secret(settings.pushover_api_token) == 'app-token'
+        assert secrets_store.decrypt_secret(settings.pushover_user_key) == 'user-key'
+    finally:
+        db.close()
+
+
+def test_get_or_create_settings_encrypts_plaintext_pushover_secrets():
+    db = SessionLocal()
+    try:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.pushover_api_token = 'plain-token'
+        settings.pushover_user_key = 'plain-user'
+        db.commit()
+    finally:
+        db.close()
+
+    db = SessionLocal()
+    try:
+        settings = notification_service.get_or_create_notification_settings(db)
+        assert secrets_store.is_encrypted_secret(settings.pushover_api_token)
+        assert secrets_store.is_encrypted_secret(settings.pushover_user_key)
+        assert secrets_store.decrypt_secret(settings.pushover_api_token) == 'plain-token'
+        assert secrets_store.decrypt_secret(settings.pushover_user_key) == 'plain-user'
+    finally:
+        db.close()

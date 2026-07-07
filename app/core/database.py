@@ -191,6 +191,24 @@ def init_db() -> None:
             'notify_on_recovery_ran',
             'notify_on_recovery_ran BOOLEAN NOT NULL DEFAULT 1',
         )
+        _add_column_if_missing(
+            connection,
+            'notification_settings',
+            'pushover_enabled',
+            'pushover_enabled BOOLEAN NOT NULL DEFAULT 0',
+        )
+        _add_column_if_missing(
+            connection,
+            'notification_settings',
+            'pushover_api_token',
+            "pushover_api_token TEXT NOT NULL DEFAULT ''",
+        )
+        _add_column_if_missing(
+            connection,
+            'notification_settings',
+            'pushover_user_key',
+            "pushover_user_key TEXT NOT NULL DEFAULT ''",
+        )
 
         _add_column_if_missing(connection, 'jobs', 'library_id', 'library_id INTEGER')
         _add_column_if_missing(connection, 'jobs', 'profile_snapshot_json', 'profile_snapshot_json TEXT')

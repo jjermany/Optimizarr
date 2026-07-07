@@ -12,6 +12,7 @@ from queue import Empty, Queue
 import smtplib
 from threading import Event, Lock, Thread
 
+import httpx
 from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
@@ -24,6 +25,11 @@ from app.models.notification_settings import NotificationSettings
 from app.services.realtime_service import broker
 
 logger = logging.getLogger(__name__)
+
+_PUSHOVER_API_URL = 'https://api.pushover.net/1/messages.json'
+_PUSHOVER_TIMEOUT = 15
+_PUSHOVER_TITLE_LIMIT = 250
+_PUSHOVER_MESSAGE_LIMIT = 1024
 
 
 def _extract_title_year(source_path: str) -> tuple[str, str | None]:
@@ -185,10 +191,16 @@ def get_or_create_notification_settings(db: Session) -> NotificationSettings:
         db.add(settings)
         db.commit()
         db.refresh(settings)
-    elif settings.smtp_password and not secrets_store.is_encrypted_secret(settings.smtp_password):
-        settings.smtp_password = secrets_store.encrypt_secret(settings.smtp_password)
-        db.commit()
-        db.refresh(settings)
+    else:
+        changed = False
+        for field in ('smtp_password', 'pushover_api_token', 'pushover_user_key'):
+            value = getattr(settings, field)
+            if value and not secrets_store.is_encrypted_secret(value):
+                setattr(settings, field, secrets_store.encrypt_secret(value))
+                changed = True
+        if changed:
+            db.commit()
+            db.refresh(settings)
     return settings
 
 
@@ -201,6 +213,9 @@ def settings_to_payload(settings: NotificationSettings) -> dict:
         'smtp_tls': settings.smtp_tls,
         'from_email': settings.from_email,
         'to_emails': _emails_from_csv(settings.to_emails_csv),
+        'pushover_enabled': settings.pushover_enabled,
+        'pushover_api_token': secrets_store.mask_secret(settings.pushover_api_token),
+        'pushover_user_key': secrets_store.mask_secret(settings.pushover_user_key),
         'notify_on': {
             'job_complete': settings.notify_on_job_complete,
             'job_failed': settings.notify_on_job_failed,
@@ -225,6 +240,14 @@ def update_settings(db: Session, payload: dict) -> NotificationSettings:
         raw = payload['smtp_password'] or ''
         if not secrets_store.is_masked_secret(raw):
             settings.smtp_password = secrets_store.encrypt_secret(raw)
+
+    if 'pushover_enabled' in payload:
+        settings.pushover_enabled = bool(payload['pushover_enabled'])
+    for key in ('pushover_api_token', 'pushover_user_key'):
+        if key in payload:
+            raw = payload[key] or ''
+            if not secrets_store.is_masked_secret(raw):
+                setattr(settings, key, secrets_store.encrypt_secret(raw))
 
     if 'to_emails' in payload:
         settings.to_emails_csv = _emails_to_csv(payload['to_emails'])
@@ -272,6 +295,35 @@ def _send_via_smtp(event: EmailEvent, settings: NotificationSettings) -> None:
         smtp.send_message(message)
 
 
+def _send_via_pushover(event: EmailEvent, settings: NotificationSettings) -> None:
+    if not settings.pushover_enabled:
+        return
+    token = secrets_store.decrypt_secret(settings.pushover_api_token)
+    user_key = secrets_store.decrypt_secret(settings.pushover_user_key)
+    if not token or not user_key:
+        logger.debug('Skipping Pushover send; configuration incomplete')
+        return
+
+    response = httpx.post(
+        _PUSHOVER_API_URL,
+        data={
+            'token': token,
+            'user': user_key,
+            'title': event.subject[:_PUSHOVER_TITLE_LIMIT],
+            'message': event.body[:_PUSHOVER_MESSAGE_LIMIT],
+        },
+        timeout=_PUSHOVER_TIMEOUT,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json().get('errors')
+        except Exception:
+            detail = exc.response.status_code
+        raise RuntimeError(f'Pushover rejected notification: {detail}') from exc
+
+
 def _dispatch_email_event(event: EmailEvent) -> None:
     db = SessionLocal()
     try:
@@ -289,9 +341,16 @@ def _dispatch_email_event(event: EmailEvent) -> None:
             if not getattr(settings, flag_name):
                 logger.debug('Skipping queued email; %s disabled after enqueue', flag_name)
                 return
-        _send_via_smtp(event, settings)
+        try:
+            _send_via_smtp(event, settings)
+        except Exception:
+            logger.exception('Failed to send email notification')
+        try:
+            _send_via_pushover(event, settings)
+        except Exception:
+            logger.exception('Failed to send Pushover notification')
     except Exception:
-        logger.exception('Failed to send email notification')
+        logger.exception('Failed to dispatch notification')
     finally:
         db.close()
 

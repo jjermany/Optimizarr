@@ -664,8 +664,8 @@ function SettingsPage({
         </div>
       </SettingsSectionCard>
 
-      {/* Email Notifications */}
-      <SettingsSectionCard title="Email Notifications" open={settingsSectionsOpen.notifications} onToggle={() => toggleSettingsSection('notifications')}>
+      {/* Notifications */}
+      <SettingsSectionCard title="Notifications" open={settingsSectionsOpen.notifications} onToggle={() => toggleSettingsSection('notifications')}>
         <div className="grid gap-4 md:grid-cols-2">
           <FormField label="SMTP Host">
             <TextInput type="text" value={notificationSettings.smtp_host} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_host: e.target.value }))} placeholder="smtp.example.com" />
@@ -704,6 +704,28 @@ function SettingsPage({
         </div>
 
         <div className="mt-4">
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Pushover</p>
+          <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
+            <div>
+              <p className="text-sm font-medium text-slate-200">Enable Pushover</p>
+              <p className="text-xs text-slate-500">Send push notifications to your devices via Pushover.</p>
+            </div>
+            <Toggle
+              checked={notificationSettings.pushover_enabled}
+              onChange={(e) => setNotificationSettings((prev) => ({ ...prev, pushover_enabled: e.target.checked }))}
+            />
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <FormField label="Pushover API Token">
+              <TextInput type="password" value={notificationSettings.pushover_api_token} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, pushover_api_token: e.target.value }))} />
+            </FormField>
+            <FormField label="Pushover User Key">
+              <TextInput type="password" value={notificationSettings.pushover_user_key} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, pushover_user_key: e.target.value }))} />
+            </FormField>
+          </div>
+        </div>
+
+        <div className="mt-4">
           <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Notify On</p>
           <div className="space-y-2">
             {[
@@ -730,7 +752,7 @@ function SettingsPage({
             Save Notification Settings
           </Btn>
           <Btn variant="secondary" onClick={sendNotificationTest}>
-            Send Test Email
+            Send Test Notification
           </Btn>
         </div>
       </SettingsSectionCard>
