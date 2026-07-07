@@ -294,12 +294,14 @@ function SettingsPage({
     }
   }
 
-  async function sendNotificationTest() {
+  async function sendNotificationTest(agent) {
+    const labels = { email: 'test email', pushover: 'Pushover test notification' };
+    const label = labels[agent] || 'test notification';
     try {
-      await sendTestNotification();
-      pushToast('Queued a test notification email.', 'success');
+      await sendTestNotification(agent);
+      pushToast(`Queued a ${label}.`, 'success');
     } catch (saveError) {
-      pushToast(saveError.message || 'Could not queue test email.', 'error');
+      pushToast(saveError.message || `Could not queue ${label}.`, 'error');
     }
   }
 
@@ -737,6 +739,11 @@ function SettingsPage({
                 />
               </FormField>
             </div>
+            <div className="mt-4">
+              <Btn variant="secondary" size="sm" onClick={() => sendNotificationTest('email')}>
+                Send Test Email
+              </Btn>
+            </div>
           </NotificationAgentPanel>
 
           <NotificationAgentPanel
@@ -769,6 +776,11 @@ function SettingsPage({
                 Download Icon
               </a>
             </div>
+            <div className="mt-4">
+              <Btn variant="secondary" size="sm" onClick={() => sendNotificationTest('pushover')}>
+                Send Test Push
+              </Btn>
+            </div>
           </NotificationAgentPanel>
         </div>
 
@@ -797,9 +809,6 @@ function SettingsPage({
         <div className="mt-5 flex flex-wrap gap-3">
           <Btn variant="violet" disabled={savingSettings} onClick={saveNotificationSettings}>
             Save Notification Settings
-          </Btn>
-          <Btn variant="secondary" onClick={sendNotificationTest}>
-            Send Test Notification
           </Btn>
         </div>
       </SettingsSectionCard>

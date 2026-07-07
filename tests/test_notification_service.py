@@ -538,6 +538,47 @@ def test_dispatch_notification_event_sends_both_channels(monkeypatch):
     assert len(pushover_calls) == 1
 
 
+def test_dispatch_notification_event_respects_channel_filter(monkeypatch):
+    DummySMTP.sent_messages.clear()
+    monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
+
+    pushover_calls = []
+
+    def fake_post(url, data=None, timeout=None):
+        pushover_calls.append(data)
+        return FakePushoverResponse()
+
+    monkeypatch.setattr(notification_service.httpx, 'post', fake_post)
+
+    db = SessionLocal()
+    try:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.email_enabled = True
+        settings.smtp_host = 'smtp.example.com'
+        settings.from_email = 'optimizarr@example.com'
+        settings.to_emails_csv = 'ops@example.com'
+        settings.pushover_enabled = True
+        settings.pushover_api_token = secrets_store.encrypt_secret('app-token')
+        settings.pushover_user_key = secrets_store.encrypt_secret('user-key')
+        db.commit()
+    finally:
+        db.close()
+
+    # channel='pushover' must not touch SMTP even though email is enabled.
+    notification_service._dispatch_notification_event(
+        notification_service.NotificationEvent(subject='test', body='test\n', kind=None, channel='pushover')
+    )
+    assert DummySMTP.sent_messages == []
+    assert len(pushover_calls) == 1
+
+    # channel='email' must not touch Pushover.
+    notification_service._dispatch_notification_event(
+        notification_service.NotificationEvent(subject='test', body='test\n', kind=None, channel='email')
+    )
+    assert len(DummySMTP.sent_messages) == 1
+    assert len(pushover_calls) == 1
+
+
 def test_dispatch_notification_event_channel_failures_are_isolated(monkeypatch):
     DummySMTP.sent_messages.clear()
     monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)

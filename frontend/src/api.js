@@ -256,8 +256,9 @@ export function updateNotificationSettings(payload) {
   });
 }
 
-export function sendTestNotification() {
-  return request('/notifications/test', { method: 'POST' });
+export function sendTestNotification(agent) {
+  const path = agent ? `/notifications/test/${agent}` : '/notifications/test';
+  return request(path, { method: 'POST' });
 }
 
 export function runRecovery() {

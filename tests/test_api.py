@@ -351,6 +351,66 @@ def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
     assert queued == ['sent']
 
 
+def test_per_agent_test_notification_endpoint(monkeypatch):
+    queued = []
+    monkeypatch.setattr(
+        routes.notification_service,
+        'enqueue_test_notification',
+        lambda channel=None: queued.append(channel),
+    )
+
+    # Reset any agent config left behind by other tests sharing the DB. The
+    # API refuses an empty smtp_host by design, so clear directly.
+    from app.core.database import SessionLocal
+    from app.services import notification_service
+
+    with SessionLocal() as db:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.email_enabled = False
+        settings.pushover_enabled = False
+        settings.smtp_host = ''
+        settings.from_email = ''
+        settings.to_emails_csv = ''
+        settings.pushover_api_token = ''
+        settings.pushover_user_key = ''
+        db.commit()
+
+    with TestClient(app) as client:
+
+        # Disabled agents refuse with an actionable message.
+        assert client.post('/notifications/test/email').status_code == 400
+        assert client.post('/notifications/test/pushover').status_code == 400
+        # Unknown agents are a 404, not a silent no-op.
+        assert client.post('/notifications/test/discord').status_code == 404
+
+        # Enabled but unconfigured agents still refuse.
+        client.put('/notifications/settings', json={'email_enabled': True, 'pushover_enabled': True})
+        unconfigured_email = client.post('/notifications/test/email')
+        assert unconfigured_email.status_code == 400
+        assert 'not fully configured' in unconfigured_email.json()['detail']
+        assert client.post('/notifications/test/pushover').status_code == 400
+
+        # Fully configured agents queue a channel-targeted test.
+        client.put(
+            '/notifications/settings',
+            json={
+                'smtp_host': 'smtp.example.com',
+                'from_email': 'optimizarr@example.com',
+                'to_emails': ['ops@example.com'],
+                'pushover_api_token': 'app-token',
+                'pushover_user_key': 'user-key',
+            },
+        )
+        email_response = client.post('/notifications/test/email')
+        assert email_response.status_code == 202
+        assert email_response.json() == {'status': 'queued', 'agent': 'email'}
+        pushover_response = client.post('/notifications/test/pushover')
+        assert pushover_response.status_code == 202
+        assert pushover_response.json() == {'status': 'queued', 'agent': 'pushover'}
+
+    assert queued == ['email', 'pushover']
+
+
 def test_auth_bootstrap_and_login_flow():
     _clear_auth_state()
 

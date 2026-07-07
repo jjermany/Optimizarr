@@ -71,6 +71,9 @@ class NotificationEvent:
     subject: str
     body: str
     kind: str | None = None
+    # None broadcasts to every enabled agent; 'email' / 'pushover' targets one
+    # (used by the per-agent test buttons).
+    channel: str | None = None
 
 
 @dataclass(slots=True)
@@ -346,14 +349,16 @@ def _dispatch_notification_event(event: NotificationEvent) -> None:
             if not getattr(settings, flag_name):
                 logger.debug('Skipping queued email; %s disabled after enqueue', flag_name)
                 return
-        try:
-            _send_via_smtp(event, settings)
-        except Exception:
-            logger.exception('Failed to send email notification')
-        try:
-            _send_via_pushover(event, settings)
-        except Exception:
-            logger.exception('Failed to send Pushover notification')
+        if event.channel in (None, 'email'):
+            try:
+                _send_via_smtp(event, settings)
+            except Exception:
+                logger.exception('Failed to send email notification')
+        if event.channel in (None, 'pushover'):
+            try:
+                _send_via_pushover(event, settings)
+            except Exception:
+                logger.exception('Failed to send Pushover notification')
     except Exception:
         logger.exception('Failed to dispatch notification')
     finally:
@@ -392,12 +397,16 @@ def stop_notification_worker() -> None:
     _worker_thread = None
 
 
-def enqueue_notification(subject: str, body: str, kind: str | None = None) -> None:
-    _notification_queue.put(NotificationEvent(subject=subject, body=body, kind=kind))
+def enqueue_notification(subject: str, body: str, kind: str | None = None, channel: str | None = None) -> None:
+    _notification_queue.put(NotificationEvent(subject=subject, body=body, kind=kind, channel=channel))
 
 
-def enqueue_test_notification() -> None:
-    enqueue_notification('Optimizarr notification test', 'This is a test email from Optimizarr notifications.')
+def enqueue_test_notification(channel: str | None = None) -> None:
+    enqueue_notification(
+        'Optimizarr notification test',
+        'This is a test notification from Optimizarr.',
+        channel=channel,
+    )
 
 
 def _batch_digest_enabled() -> bool:

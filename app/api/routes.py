@@ -1387,6 +1387,21 @@ def update_notification_settings(
     return NotificationSettingsResponse(**notification_service.settings_to_payload(settings))
 
 
+def _validate_test_notification_agent(agent: str, settings) -> None:
+    if agent == 'email':
+        if not settings.email_enabled:
+            raise HTTPException(status_code=400, detail='Email agent is not enabled')
+        if not settings.smtp_host or not settings.from_email or not settings.to_emails_csv:
+            raise HTTPException(status_code=400, detail='Email agent is not fully configured (SMTP host, from address and recipients are required)')
+    elif agent == 'pushover':
+        if not settings.pushover_enabled:
+            raise HTTPException(status_code=400, detail='Pushover agent is not enabled')
+        if not settings.pushover_api_token or not settings.pushover_user_key:
+            raise HTTPException(status_code=400, detail='Pushover agent is not fully configured (API token and user key are required)')
+    else:
+        raise HTTPException(status_code=404, detail='Unknown notification agent')
+
+
 @router.post('/notifications/test', status_code=202)
 def send_test_notification(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> dict[str, str]:
     settings = notification_service.get_or_create_notification_settings(db)
@@ -1394,6 +1409,18 @@ def send_test_notification(_: None = Depends(require_ui_auth), db: Session = Dep
         raise HTTPException(status_code=400, detail='No notification agents are enabled')
     notification_service.enqueue_test_notification()
     return {'status': 'queued'}
+
+
+@router.post('/notifications/test/{agent}', status_code=202)
+def send_test_notification_for_agent(
+    agent: str,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> dict[str, str]:
+    settings = notification_service.get_or_create_notification_settings(db)
+    _validate_test_notification_agent(agent, settings)
+    notification_service.enqueue_test_notification(channel=agent)
+    return {'status': 'queued', 'agent': agent}
 
 
 @router.get('/plex/settings', response_model=PlexSettingsResponse)
