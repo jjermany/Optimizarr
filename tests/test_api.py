@@ -87,6 +87,29 @@ def test_branding_asset_endpoint_prefers_dynamic_icon(monkeypatch, tmp_path):
     assert response.text == '<svg></svg>'
 
 
+def test_branding_asset_endpoint_serves_pushover_icon(monkeypatch, tmp_path):
+    logo_dir = tmp_path / 'Logo'
+    logo_dir.mkdir(parents=True)
+    (logo_dir / 'pushover-icon.jpg').write_bytes(b'jpeg-bytes')
+    monkeypatch.setattr(routes, 'BRANDING_ROOTS', (logo_dir,))
+
+    with TestClient(app) as client:
+        response = client.get('/branding/pushover-icon')
+
+    assert response.status_code == 200
+    assert response.content == b'jpeg-bytes'
+
+
+def test_branding_pushover_icon_asset_is_bundled():
+    # The repo-bundled fallback root must actually contain the icon the
+    # settings UI offers for download.
+    with TestClient(app) as client:
+        response = client.get('/branding/pushover-icon')
+
+    assert response.status_code == 200
+    assert response.content[:3] == b'\xff\xd8\xff'
+
+
 def test_branding_asset_endpoint_returns_404_for_unknown_asset():
     with TestClient(app) as client:
         response = client.get('/branding/not-real')
@@ -247,7 +270,7 @@ def test_get_libraries_includes_scan_state(monkeypatch, tmp_path):
 
 def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
     queued = []
-    monkeypatch.setattr(routes.notification_service, 'enqueue_test_email', lambda: queued.append('sent'))
+    monkeypatch.setattr(routes.notification_service, 'enqueue_test_notification', lambda: queued.append('sent'))
 
     with TestClient(app) as client:
         get_response = client.get('/notifications/settings')
@@ -259,6 +282,7 @@ def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
         update_response = client.put(
             '/notifications/settings',
             json={
+                'email_enabled': True,
                 'smtp_host': 'smtp.example.com',
                 'smtp_port': 2525,
                 'smtp_user': 'user',
@@ -278,6 +302,7 @@ def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
         )
         assert update_response.status_code == 200
         updated = update_response.json()
+        assert updated['email_enabled'] is True
         assert updated['smtp_host'] == 'smtp.example.com'
         assert updated['smtp_port'] == 2525
         assert updated['to_emails'] == ['ops@example.com', 'alerts@example.com']
@@ -315,6 +340,13 @@ def test_get_and_update_notification_settings_and_test_endpoint(monkeypatch):
         test_response = client.post('/notifications/test')
         assert test_response.status_code == 202
         assert test_response.json() == {'status': 'queued'}
+
+        # With every agent disabled the test endpoint refuses instead of
+        # silently queueing a notification that can never be delivered.
+        disable_response = client.put('/notifications/settings', json={'email_enabled': False, 'pushover_enabled': False})
+        assert disable_response.status_code == 200
+        rejected = client.post('/notifications/test')
+        assert rejected.status_code == 400
 
     assert queued == ['sent']
 

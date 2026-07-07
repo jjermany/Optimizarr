@@ -303,6 +303,7 @@ def get_branding_asset(asset_name: str) -> FileResponse:
         'logo': ['logo.png', 'logo.svg', 'logo.webp', 'logo.jpg', 'logo.jpeg', 'Logo.png', 'Logo.svg'],
         'icon': ['dynamic-icon.png', 'dynamic-icon.svg', 'icon.png', 'icon.svg'],
         'dynamic-icon': ['dynamic-icon.png', 'dynamic-icon.svg'],
+        'pushover-icon': ['pushover-icon.jpg'],
     }
 
     candidates = asset_variants.get(asset_name)
@@ -863,6 +864,7 @@ class NotificationTriggerSettings(BaseModel):
 
 
 class NotificationSettingsResponse(BaseModel):
+    email_enabled: bool
     smtp_host: str
     smtp_port: int
     smtp_user: str
@@ -877,6 +879,7 @@ class NotificationSettingsResponse(BaseModel):
 
 
 class NotificationSettingsUpdateRequest(BaseModel):
+    email_enabled: bool | None = None
     smtp_host: str | None = None
     smtp_port: int | None = Field(default=None, ge=1, le=65535)
     smtp_user: str | None = None
@@ -1385,8 +1388,11 @@ def update_notification_settings(
 
 
 @router.post('/notifications/test', status_code=202)
-def send_test_notification(_: None = Depends(require_ui_auth)) -> dict[str, str]:
-    notification_service.enqueue_test_email()
+def send_test_notification(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> dict[str, str]:
+    settings = notification_service.get_or_create_notification_settings(db)
+    if not settings.email_enabled and not settings.pushover_enabled:
+        raise HTTPException(status_code=400, detail='No notification agents are enabled')
+    notification_service.enqueue_test_notification()
     return {'status': 'queued'}
 
 

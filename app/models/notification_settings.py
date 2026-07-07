@@ -8,6 +8,7 @@ class NotificationSettings(Base):
     __tablename__ = 'notification_settings'
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    email_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     smtp_host: Mapped[str] = mapped_column(String(255), default='', nullable=False)
     smtp_port: Mapped[int] = mapped_column(Integer, default=587, nullable=False)
     smtp_user: Mapped[str] = mapped_column(String(255), default='', nullable=False)

@@ -67,7 +67,7 @@ def format_duration(seconds: int | None) -> str | None:
 
 
 @dataclass(slots=True)
-class EmailEvent:
+class NotificationEvent:
     subject: str
     body: str
     kind: str | None = None
@@ -87,7 +87,7 @@ class BatchTracker:
 
 
 _stop_event = Event()
-_email_queue: Queue[EmailEvent] = Queue()
+_notification_queue: Queue[NotificationEvent] = Queue()
 _worker_thread: Thread | None = None
 _batch_lock = Lock()
 _batches: list[BatchTracker] = []
@@ -206,6 +206,7 @@ def get_or_create_notification_settings(db: Session) -> NotificationSettings:
 
 def settings_to_payload(settings: NotificationSettings) -> dict:
     return {
+        'email_enabled': settings.email_enabled,
         'smtp_host': settings.smtp_host,
         'smtp_port': settings.smtp_port,
         'smtp_user': settings.smtp_user,
@@ -230,6 +231,8 @@ def settings_to_payload(settings: NotificationSettings) -> dict:
 def update_settings(db: Session, payload: dict) -> NotificationSettings:
     settings = get_or_create_notification_settings(db)
 
+    if 'email_enabled' in payload:
+        settings.email_enabled = bool(payload['email_enabled'])
     for key in ['smtp_host', 'smtp_port', 'smtp_user', 'smtp_tls', 'from_email']:
         if key in payload:
             value = payload[key]
@@ -271,7 +274,9 @@ def update_settings(db: Session, payload: dict) -> NotificationSettings:
     return settings
 
 
-def _send_via_smtp(event: EmailEvent, settings: NotificationSettings) -> None:
+def _send_via_smtp(event: NotificationEvent, settings: NotificationSettings) -> None:
+    if not settings.email_enabled:
+        return
     recipients = _emails_from_csv(settings.to_emails_csv)
     if not settings.smtp_host or not settings.from_email or not recipients:
         logger.debug('Skipping email send; SMTP configuration incomplete')
@@ -295,7 +300,7 @@ def _send_via_smtp(event: EmailEvent, settings: NotificationSettings) -> None:
         smtp.send_message(message)
 
 
-def _send_via_pushover(event: EmailEvent, settings: NotificationSettings) -> None:
+def _send_via_pushover(event: NotificationEvent, settings: NotificationSettings) -> None:
     if not settings.pushover_enabled:
         return
     token = secrets_store.decrypt_secret(settings.pushover_api_token)
@@ -324,7 +329,7 @@ def _send_via_pushover(event: EmailEvent, settings: NotificationSettings) -> Non
         raise RuntimeError(f'Pushover rejected notification: {detail}') from exc
 
 
-def _dispatch_email_event(event: EmailEvent) -> None:
+def _dispatch_notification_event(event: NotificationEvent) -> None:
     db = SessionLocal()
     try:
         settings = get_or_create_notification_settings(db)
@@ -358,14 +363,14 @@ def _dispatch_email_event(event: EmailEvent) -> None:
 def _send_worker() -> None:
     while not _stop_event.is_set():
         try:
-            event = _email_queue.get(timeout=0.25)
+            event = _notification_queue.get(timeout=0.25)
         except Empty:
             continue
 
         try:
-            _dispatch_email_event(event)
+            _dispatch_notification_event(event)
         finally:
-            _email_queue.task_done()
+            _notification_queue.task_done()
 
 
 def start_notification_worker() -> Thread:
@@ -387,12 +392,12 @@ def stop_notification_worker() -> None:
     _worker_thread = None
 
 
-def enqueue_email(subject: str, body: str, kind: str | None = None) -> None:
-    _email_queue.put(EmailEvent(subject=subject, body=body, kind=kind))
+def enqueue_notification(subject: str, body: str, kind: str | None = None) -> None:
+    _notification_queue.put(NotificationEvent(subject=subject, body=body, kind=kind))
 
 
-def enqueue_test_email() -> None:
-    enqueue_email('Optimizarr notification test', 'This is a test email from Optimizarr notifications.')
+def enqueue_test_notification() -> None:
+    enqueue_notification('Optimizarr notification test', 'This is a test email from Optimizarr notifications.')
 
 
 def _batch_digest_enabled() -> bool:
@@ -436,7 +441,7 @@ def enqueue_job_complete(job: Job) -> None:
         f'Encode Time: {duration_label or "n/a"}\n'
         f'Status: Completed successfully.\n'
     )
-    enqueue_email(subject='Optimizarr job complete', body=body, kind='job_complete')
+    enqueue_notification(subject='Optimizarr job complete', body=body, kind='job_complete')
 
 
 def enqueue_download_job_complete(download_job: DownloadJob) -> None:
@@ -459,7 +464,7 @@ def enqueue_download_job_complete(download_job: DownloadJob) -> None:
         f'File: {file_name}\n'
         f'Status: Download imported successfully.\n'
     )
-    enqueue_email(subject='Optimizarr job complete', body=body, kind='job_complete')
+    enqueue_notification(subject='Optimizarr job complete', body=body, kind='job_complete')
 
 
 def enqueue_job_failed(job: Job) -> None:
@@ -493,7 +498,7 @@ def enqueue_job_failed(job: Job) -> None:
         reason=job.error_message or 'optimization_failed',
         suggested_action='Review the file and encoder settings, then retry the job.',
     )
-    enqueue_email(subject='Optimizarr job failed', body=body, kind='job_failed')
+    enqueue_notification(subject='Optimizarr job failed', body=body, kind='job_failed')
 
 
 def enqueue_download_job_failed(download_job: DownloadJob) -> None:
@@ -517,7 +522,7 @@ def enqueue_download_job_failed(download_job: DownloadJob) -> None:
         reason=download_job.error_message or 'download_failed',
         suggested_action='Review the download/import logs and retry the job.',
     )
-    enqueue_email(subject='Optimizarr job failed', body=body, kind='job_failed')
+    enqueue_notification(subject='Optimizarr job failed', body=body, kind='job_failed')
 
 
 def enqueue_job_interrupted(*, job_id: int, reason: str = 'Interrupted by application restart') -> None:
@@ -546,7 +551,7 @@ def enqueue_job_interrupted(*, job_id: int, reason: str = 'Interrupted by applic
         reason=reason,
         suggested_action='Run recovery and requeue interrupted jobs if needed.',
     )
-    enqueue_email(subject='Optimizarr job interrupted', body=body, kind='job_interrupted')
+    enqueue_notification(subject='Optimizarr job interrupted', body=body, kind='job_interrupted')
 
 
 def enqueue_low_disk_space_alert(*, min_free_gb: int, free_gb: float, library_name: str | None, file_name: str | None) -> None:
@@ -564,7 +569,7 @@ def enqueue_low_disk_space_alert(*, min_free_gb: int, free_gb: float, library_na
         reason=f'Queue paused for low disk space ({free_gb:.2f} GB free, minimum {min_free_gb} GB).',
         suggested_action='Free disk space in cache/workspace and resume the queue.',
     )
-    enqueue_email(subject='Optimizarr queue paused: low cache space', body=body, kind='low_disk_pause')
+    enqueue_notification(subject='Optimizarr queue paused: low cache space', body=body, kind='low_disk_pause')
 
 
 def enqueue_recovery_ran(*, trigger: str, recovered_jobs: int, requeued_jobs: int, cleaned_workspaces: int) -> None:
@@ -585,7 +590,7 @@ def enqueue_recovery_ran(*, trigger: str, recovered_jobs: int, requeued_jobs: in
         ),
         suggested_action='Review interrupted jobs and queue status in the dashboard.',
     )
-    enqueue_email(subject='Optimizarr recovery completed', body=body, kind='recovery_ran')
+    enqueue_notification(subject='Optimizarr recovery completed', body=body, kind='recovery_ran')
 
 
 def register_scan_batch(job_ids: list[int], library_name: str | None = None) -> None:
@@ -727,4 +732,4 @@ def handle_job_terminal_state(job_id: int, status: str) -> None:
         f'Status: {status_line}\n'
         'Suggested action: Review failed or skipped items and retry any jobs that need another pass.\n'
     )
-    enqueue_email(subject='Optimizarr batch complete', body=body, kind='batch_complete')
+    enqueue_notification(subject='Optimizarr batch complete', body=body, kind='batch_complete')

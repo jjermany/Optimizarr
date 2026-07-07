@@ -5563,7 +5563,7 @@ def test_import_file_sends_completion_notification(monkeypatch, tmp_path):
         db.refresh(dj)
 
         queued = []
-        monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
+        monkeypatch.setattr(notification_service, 'enqueue_notification', lambda subject, body, kind=None: queued.append((subject, body)))
         monkeypatch.setattr(download_client_service, 'remove_qbt_torrent', lambda *_args, **_kwargs: True)
 
         _import_file(
@@ -5666,7 +5666,7 @@ def test_mark_failed_sends_failure_notification(monkeypatch):
         db.refresh(dj)
 
         queued = []
-        monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
+        monkeypatch.setattr(notification_service, 'enqueue_notification', lambda subject, body, kind=None: queued.append((subject, body)))
 
         _mark_failed(db, dj, 'Download timed out after 60 minutes')
         db.refresh(dj)

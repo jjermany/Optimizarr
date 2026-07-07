@@ -1,6 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 
 import {
+  API_BASE,
   createTotpSecret,
   disableAccountTwoFactor,
   enableAccountTwoFactor,
@@ -30,6 +31,29 @@ import {
   Toggle,
 } from './ui';
 
+function NotificationAgentPanel({ name, description, enabled, onToggleEnabled, open, onToggleOpen, children }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-slate-800/60 bg-slate-950/30">
+      <div className="flex items-center gap-4 px-4 py-3">
+        <button
+          type="button"
+          onClick={onToggleOpen}
+          aria-expanded={open}
+          className="flex flex-1 items-center justify-between gap-3 text-left transition-colors hover:text-slate-100"
+        >
+          <div>
+            <p className="text-sm font-medium text-slate-200">{name}</p>
+            <p className="text-xs text-slate-500">{description}</p>
+          </div>
+          <span className={`inline-block text-slate-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} aria-hidden="true">⌄</span>
+        </button>
+        <Toggle checked={enabled} onChange={onToggleEnabled} />
+      </div>
+      {open && <div className="border-t border-slate-800/60 px-4 py-4">{children}</div>}
+    </div>
+  );
+}
+
 function SettingsPage({
   settings,
   setSettings,
@@ -57,6 +81,7 @@ function SettingsPage({
   onDuplicateOptimizedCleanupRun,
 }) {
   const [settingsSectionsOpen, setSettingsSectionsOpen] = useState(SETTINGS_SECTIONS_DEFAULT);
+  const [openNotificationAgents, setOpenNotificationAgents] = useState({ email: false, pushover: false });
   const [savingSettings, setSavingSettings] = useState(false);
   const [accountForm, setAccountForm] = useState({
     username: '',
@@ -666,68 +691,90 @@ function SettingsPage({
 
       {/* Notifications */}
       <SettingsSectionCard title="Notifications" open={settingsSectionsOpen.notifications} onToggle={() => toggleSettingsSection('notifications')}>
-        <div className="grid gap-4 md:grid-cols-2">
-          <FormField label="SMTP Host">
-            <TextInput type="text" value={notificationSettings.smtp_host} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_host: e.target.value }))} placeholder="smtp.example.com" />
-          </FormField>
-          <FormField label="SMTP Port">
-            <TextInput type="number" min={1} max={65535} value={notificationSettings.smtp_port} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_port: Number(e.target.value) }))} />
-          </FormField>
-          <FormField label="SMTP Username">
-            <TextInput type="text" value={notificationSettings.smtp_user} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_user: e.target.value }))} />
-          </FormField>
-          <FormField label="SMTP Password">
-            <TextInput type="password" value={notificationSettings.smtp_password} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_password: e.target.value }))} />
-          </FormField>
-          <FormField label="From Email">
-            <TextInput type="email" value={notificationSettings.from_email} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, from_email: e.target.value }))} placeholder="noreply@example.com" />
-          </FormField>
-          <div className="flex items-end pb-1">
-            <Toggle
-              checked={notificationSettings.smtp_tls}
-              onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_tls: e.target.checked }))}
-              label="Use TLS"
-            />
-          </div>
-          <FormField label="Recipient Emails" hint="Comma or newline separated." span2>
-            <textarea
-              className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100 outline-none transition-all duration-150 focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30"
-              rows={3}
-              value={notificationSettings.to_emails.join(', ')}
-              onChange={(e) => setNotificationSettings((prev) => ({
-                ...prev,
-                to_emails: e.target.value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
-              }))}
-              placeholder="user@example.com, other@example.com"
-            />
-          </FormField>
-        </div>
-
-        <div className="mt-4">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Pushover</p>
-          <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
-            <div>
-              <p className="text-sm font-medium text-slate-200">Enable Pushover</p>
-              <p className="text-xs text-slate-500">Send push notifications to your devices via Pushover.</p>
+        <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Agents</p>
+        <div className="space-y-3">
+          <NotificationAgentPanel
+            name="Email (SMTP)"
+            description="Send notification emails through your SMTP server."
+            enabled={notificationSettings.email_enabled}
+            onToggleEnabled={(e) => setNotificationSettings((prev) => ({ ...prev, email_enabled: e.target.checked }))}
+            open={openNotificationAgents.email}
+            onToggleOpen={() => setOpenNotificationAgents((prev) => ({ ...prev, email: !prev.email }))}
+          >
+            <div className="grid gap-4 md:grid-cols-2">
+              <FormField label="SMTP Host">
+                <TextInput type="text" value={notificationSettings.smtp_host} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_host: e.target.value }))} placeholder="smtp.example.com" />
+              </FormField>
+              <FormField label="SMTP Port">
+                <TextInput type="number" min={1} max={65535} value={notificationSettings.smtp_port} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_port: Number(e.target.value) }))} />
+              </FormField>
+              <FormField label="SMTP Username">
+                <TextInput type="text" value={notificationSettings.smtp_user} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_user: e.target.value }))} />
+              </FormField>
+              <FormField label="SMTP Password">
+                <TextInput type="password" value={notificationSettings.smtp_password} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_password: e.target.value }))} />
+              </FormField>
+              <FormField label="From Email">
+                <TextInput type="email" value={notificationSettings.from_email} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, from_email: e.target.value }))} placeholder="noreply@example.com" />
+              </FormField>
+              <div className="flex items-end pb-1">
+                <Toggle
+                  checked={notificationSettings.smtp_tls}
+                  onChange={(e) => setNotificationSettings((prev) => ({ ...prev, smtp_tls: e.target.checked }))}
+                  label="Use TLS"
+                />
+              </div>
+              <FormField label="Recipient Emails" hint="Comma or newline separated." span2>
+                <textarea
+                  className="w-full rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-sm text-slate-100 outline-none transition-all duration-150 focus:border-cyan-500/70 focus:ring-1 focus:ring-cyan-500/30"
+                  rows={3}
+                  value={notificationSettings.to_emails.join(', ')}
+                  onChange={(e) => setNotificationSettings((prev) => ({
+                    ...prev,
+                    to_emails: e.target.value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean),
+                  }))}
+                  placeholder="user@example.com, other@example.com"
+                />
+              </FormField>
             </div>
-            <Toggle
-              checked={notificationSettings.pushover_enabled}
-              onChange={(e) => setNotificationSettings((prev) => ({ ...prev, pushover_enabled: e.target.checked }))}
-            />
-          </div>
-          <div className="grid gap-4 md:grid-cols-2">
-            <FormField label="Pushover API Token">
-              <TextInput type="password" value={notificationSettings.pushover_api_token} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, pushover_api_token: e.target.value }))} />
-            </FormField>
-            <FormField label="Pushover User Key">
-              <TextInput type="password" value={notificationSettings.pushover_user_key} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, pushover_user_key: e.target.value }))} />
-            </FormField>
-          </div>
+          </NotificationAgentPanel>
+
+          <NotificationAgentPanel
+            name="Pushover"
+            description="Send push notifications to your devices via Pushover."
+            enabled={notificationSettings.pushover_enabled}
+            onToggleEnabled={(e) => setNotificationSettings((prev) => ({ ...prev, pushover_enabled: e.target.checked }))}
+            open={openNotificationAgents.pushover}
+            onToggleOpen={() => setOpenNotificationAgents((prev) => ({ ...prev, pushover: !prev.pushover }))}
+          >
+            <div className="grid gap-4 md:grid-cols-2">
+              <FormField label="API Token" hint="Your Pushover application token.">
+                <TextInput type="password" value={notificationSettings.pushover_api_token} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, pushover_api_token: e.target.value }))} />
+              </FormField>
+              <FormField label="User Key" hint="Your Pushover user key.">
+                <TextInput type="password" value={notificationSettings.pushover_user_key} onChange={(e) => setNotificationSettings((prev) => ({ ...prev, pushover_user_key: e.target.value }))} />
+              </FormField>
+            </div>
+            <div className="mt-4 flex items-center gap-3 rounded-lg border border-slate-800/60 bg-slate-900/40 px-4 py-3">
+              <img src={`${API_BASE}/branding/pushover-icon`} alt="Optimizarr Pushover icon" className="h-9 w-9 rounded-lg" />
+              <div className="flex-1">
+                <p className="text-sm text-slate-200">Application icon</p>
+                <p className="text-xs text-slate-500">Upload this 128×128 JPG as the icon for your Optimizarr application on pushover.net.</p>
+              </div>
+              <a
+                href={`${API_BASE}/branding/pushover-icon`}
+                download="optimizarr-pushover-icon.jpg"
+                className="inline-flex items-center rounded-xl border border-slate-600/80 bg-slate-800/85 px-3 py-1.5 text-xs font-semibold text-slate-100 transition-all duration-150 hover:border-slate-500 hover:bg-slate-700/85"
+              >
+                Download Icon
+              </a>
+            </div>
+          </NotificationAgentPanel>
         </div>
 
         <div className="mt-4">
           <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Notify On</p>
-          <div className="space-y-2">
+          <div className="grid gap-2 sm:grid-cols-2">
             {[
               { key: 'job_complete', label: 'Job Complete' },
               { key: 'job_failed', label: 'Job Failed' },

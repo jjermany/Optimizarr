@@ -41,6 +41,7 @@ def test_send_via_smtp_builds_html_email(monkeypatch):
     monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
 
     settings = NotificationSettings(
+        email_enabled=True,
         smtp_host='smtp.example.com',
         smtp_port=2525,
         smtp_user='mailer',
@@ -50,7 +51,7 @@ def test_send_via_smtp_builds_html_email(monkeypatch):
         to_emails_csv='ops@example.com',
     )
 
-    event = notification_service.EmailEvent(
+    event = notification_service.NotificationEvent(
         subject='Optimizarr job failed',
         body='Library: Movies\nFile: film.mkv\nReason: codec mismatch\nSuggested action: retry\n',
     )
@@ -69,7 +70,24 @@ def test_send_via_smtp_builds_html_email(monkeypatch):
     assert 'Automated notification from Optimizarr.' in html_parts[0].get_content()
 
 
-def test_dispatch_email_event_skips_send_if_toggle_disabled_after_enqueue(monkeypatch):
+def test_send_via_smtp_skips_when_email_disabled(monkeypatch):
+    DummySMTP.sent_messages.clear()
+    monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
+
+    settings = NotificationSettings(
+        email_enabled=False,
+        smtp_host='smtp.example.com',
+        from_email='optimizarr@example.com',
+        to_emails_csv='ops@example.com',
+    )
+    event = notification_service.NotificationEvent(subject='subject', body='body')
+
+    notification_service._send_via_smtp(event, settings)
+
+    assert DummySMTP.sent_messages == []
+
+
+def test_dispatch_notification_event_skips_send_if_toggle_disabled_after_enqueue(monkeypatch):
     DummySMTP.sent_messages.clear()
     monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
 
@@ -84,7 +102,7 @@ def test_dispatch_email_event_skips_send_if_toggle_disabled_after_enqueue(monkey
     finally:
         db.close()
 
-    event = notification_service.EmailEvent(
+    event = notification_service.NotificationEvent(
         subject='Optimizarr job complete',
         body='Status: Completed successfully.\n',
         kind='job_complete',
@@ -100,12 +118,12 @@ def test_dispatch_email_event_skips_send_if_toggle_disabled_after_enqueue(monkey
     finally:
         db.close()
 
-    notification_service._dispatch_email_event(event)
+    notification_service._dispatch_notification_event(event)
 
     assert DummySMTP.sent_messages == []
 
 
-def test_dispatch_email_event_skips_send_for_unknown_kind(monkeypatch):
+def test_dispatch_notification_event_skips_send_for_unknown_kind(monkeypatch):
     DummySMTP.sent_messages.clear()
     monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
 
@@ -122,24 +140,25 @@ def test_dispatch_email_event_skips_send_for_unknown_kind(monkeypatch):
     # A kind that isn't in _NOTIFY_FLAG_BY_KIND (e.g. a typo, or a new
     # enqueue_* call site that forgot to register its flag) must fail closed
     # instead of silently bypassing every notification preference toggle.
-    event = notification_service.EmailEvent(
+    event = notification_service.NotificationEvent(
         subject='Optimizarr unknown event',
         body='Status: n/a\n',
         kind='not_a_real_kind',
     )
 
-    notification_service._dispatch_email_event(event)
+    notification_service._dispatch_notification_event(event)
 
     assert DummySMTP.sent_messages == []
 
 
-def test_dispatch_email_event_sends_test_email_regardless_of_kind(monkeypatch):
+def test_dispatch_notification_event_sends_test_email_regardless_of_kind(monkeypatch):
     DummySMTP.sent_messages.clear()
     monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
 
     db = SessionLocal()
     try:
         settings = notification_service.get_or_create_notification_settings(db)
+        settings.email_enabled = True
         settings.smtp_host = 'smtp.example.com'
         settings.from_email = 'optimizarr@example.com'
         settings.to_emails_csv = 'ops@example.com'
@@ -147,11 +166,11 @@ def test_dispatch_email_event_sends_test_email_regardless_of_kind(monkeypatch):
     finally:
         db.close()
 
-    # kind=None is the explicit bypass used by enqueue_test_email(); it must
+    # kind=None is the explicit bypass used by enqueue_test_notification(); it must
     # keep sending regardless of any notification toggle.
-    event = notification_service.EmailEvent(subject='Optimizarr notification test', body='test\n', kind=None)
+    event = notification_service.NotificationEvent(subject='Optimizarr notification test', body='test\n', kind=None)
 
-    notification_service._dispatch_email_event(event)
+    notification_service._dispatch_notification_event(event)
 
     assert len(DummySMTP.sent_messages) == 1
 
@@ -199,7 +218,7 @@ def test_format_duration_formats_human_readable_runtime():
 
 def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
     queued = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_notification', lambda subject, body, kind=None: queued.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)
@@ -223,7 +242,7 @@ def test_enqueue_job_failed_is_grouped_when_part_of_batch(monkeypatch):
 
 def test_enqueue_job_failed_sends_individual_when_batch_digest_disabled(monkeypatch):
     queued = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_notification', lambda subject, body, kind=None: queued.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)
@@ -246,7 +265,7 @@ def test_enqueue_job_failed_sends_individual_when_batch_digest_disabled(monkeypa
 
 def test_enqueue_job_complete_is_suppressed_when_batch_digest_enabled(monkeypatch):
     queued = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_notification', lambda subject, body, kind=None: queued.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)
@@ -278,7 +297,7 @@ def test_enqueue_job_complete_is_suppressed_when_batch_digest_enabled(monkeypatc
 
 def test_enqueue_job_complete_marks_encode_and_includes_runtime(monkeypatch):
     queued = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_notification', lambda subject, body, kind=None: queued.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)
@@ -311,7 +330,7 @@ def test_enqueue_job_complete_marks_encode_and_includes_runtime(monkeypatch):
 
 def test_enqueue_download_job_complete_marks_download_type(monkeypatch):
     queued = []
-    monkeypatch.setattr(notification_service, 'enqueue_email', lambda subject, body, kind=None: queued.append((subject, body)))
+    monkeypatch.setattr(notification_service, 'enqueue_notification', lambda subject, body, kind=None: queued.append((subject, body)))
 
     with SessionLocal() as db:
         settings = notification_service.get_or_create_notification_settings(db)
@@ -431,7 +450,7 @@ def test_send_via_pushover_posts_token_user_title_message(monkeypatch):
 
     monkeypatch.setattr(notification_service.httpx, 'post', fake_post)
 
-    event = notification_service.EmailEvent(subject='Optimizarr job failed', body='Reason: codec mismatch\n')
+    event = notification_service.NotificationEvent(subject='Optimizarr job failed', body='Reason: codec mismatch\n')
     notification_service._send_via_pushover(event, _pushover_settings())
 
     assert len(calls) == 1
@@ -449,7 +468,7 @@ def test_send_via_pushover_skips_when_disabled_or_unconfigured(monkeypatch):
     calls = []
     monkeypatch.setattr(notification_service.httpx, 'post', lambda *args, **kwargs: calls.append(args) or FakePushoverResponse())
 
-    event = notification_service.EmailEvent(subject='subject', body='body')
+    event = notification_service.NotificationEvent(subject='subject', body='body')
 
     notification_service._send_via_pushover(event, _pushover_settings(pushover_enabled=False))
     notification_service._send_via_pushover(event, _pushover_settings(pushover_api_token=''))
@@ -467,7 +486,7 @@ def test_send_via_pushover_truncates_title_and_message(monkeypatch):
 
     monkeypatch.setattr(notification_service.httpx, 'post', fake_post)
 
-    event = notification_service.EmailEvent(subject='s' * 300, body='b' * 2000)
+    event = notification_service.NotificationEvent(subject='s' * 300, body='b' * 2000)
     notification_service._send_via_pushover(event, _pushover_settings())
 
     assert len(calls[0]['title']) == 250
@@ -481,12 +500,12 @@ def test_send_via_pushover_raises_with_api_errors_on_rejection(monkeypatch):
 
     monkeypatch.setattr(notification_service.httpx, 'post', fake_post)
 
-    event = notification_service.EmailEvent(subject='subject', body='body')
+    event = notification_service.NotificationEvent(subject='subject', body='body')
     with pytest.raises(RuntimeError, match='application token is invalid'):
         notification_service._send_via_pushover(event, _pushover_settings())
 
 
-def test_dispatch_email_event_sends_both_channels(monkeypatch):
+def test_dispatch_notification_event_sends_both_channels(monkeypatch):
     DummySMTP.sent_messages.clear()
     monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
 
@@ -501,6 +520,7 @@ def test_dispatch_email_event_sends_both_channels(monkeypatch):
     db = SessionLocal()
     try:
         settings = notification_service.get_or_create_notification_settings(db)
+        settings.email_enabled = True
         settings.smtp_host = 'smtp.example.com'
         settings.from_email = 'optimizarr@example.com'
         settings.to_emails_csv = 'ops@example.com'
@@ -511,14 +531,14 @@ def test_dispatch_email_event_sends_both_channels(monkeypatch):
     finally:
         db.close()
 
-    event = notification_service.EmailEvent(subject='Optimizarr notification test', body='test\n', kind=None)
-    notification_service._dispatch_email_event(event)
+    event = notification_service.NotificationEvent(subject='Optimizarr notification test', body='test\n', kind=None)
+    notification_service._dispatch_notification_event(event)
 
     assert len(DummySMTP.sent_messages) == 1
     assert len(pushover_calls) == 1
 
 
-def test_dispatch_email_event_channel_failures_are_isolated(monkeypatch):
+def test_dispatch_notification_event_channel_failures_are_isolated(monkeypatch):
     DummySMTP.sent_messages.clear()
     monkeypatch.setattr(notification_service.smtplib, 'SMTP', DummySMTP)
 
@@ -533,6 +553,7 @@ def test_dispatch_email_event_channel_failures_are_isolated(monkeypatch):
     db = SessionLocal()
     try:
         settings = notification_service.get_or_create_notification_settings(db)
+        settings.email_enabled = True
         settings.smtp_host = 'smtp.example.com'
         settings.from_email = 'optimizarr@example.com'
         settings.to_emails_csv = 'ops@example.com'
@@ -543,9 +564,9 @@ def test_dispatch_email_event_channel_failures_are_isolated(monkeypatch):
     finally:
         db.close()
 
-    event = notification_service.EmailEvent(subject='Optimizarr notification test', body='test\n', kind=None)
+    event = notification_service.NotificationEvent(subject='Optimizarr notification test', body='test\n', kind=None)
     # Pushover raising must not prevent the email send or escape the dispatcher.
-    notification_service._dispatch_email_event(event)
+    notification_service._dispatch_notification_event(event)
 
     assert len(DummySMTP.sent_messages) == 1
     assert len(pushover_calls) == 1
@@ -557,7 +578,7 @@ def test_dispatch_email_event_channel_failures_are_isolated(monkeypatch):
     monkeypatch.setattr(notification_service.smtplib, 'SMTP', failing_smtp)
     monkeypatch.setattr(notification_service.httpx, 'post', lambda url, data=None, timeout=None: pushover_calls.append(data) or FakePushoverResponse())
 
-    notification_service._dispatch_email_event(event)
+    notification_service._dispatch_notification_event(event)
     assert len(pushover_calls) == 2
 
 
