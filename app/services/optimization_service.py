@@ -343,6 +343,133 @@ def _audio_args(audio_mode: str) -> list[str]:
     return ['-c:a', 'copy']
 
 
+def _probe_audio_streams(input_path: str) -> list[dict[str, Any]]:
+    command = [
+        'ffprobe',
+        '-v',
+        'error',
+        '-select_streams',
+        'a',
+        '-show_entries',
+        'stream=index:stream_disposition=default:stream_tags=language',
+        '-of',
+        'json',
+        input_path,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return []
+    streams = payload.get('streams') if isinstance(payload, dict) else None
+    return streams if isinstance(streams, list) else []
+
+
+def _select_primary_audio_index(input_path: str) -> int:
+    """Return the 0-based ordinal (among audio streams) of the source's primary track.
+
+    Without explicit mapping, FFmpeg selects the audio stream with the most
+    channels, which frequently lands on a foreign-language dub track instead of
+    the source's original language. Honour the container's own idea of the
+    primary track: the stream flagged 'default', falling back to the first
+    audio stream.
+    """
+    streams = _probe_audio_streams(input_path)
+    for ordinal, stream in enumerate(streams):
+        disposition = stream.get('disposition') or {}
+        if disposition.get('default'):
+            language = (stream.get('tags') or {}).get('language') or 'und'
+            logger.info(
+                'Selected default-flagged audio track %d (language=%s) from %s',
+                ordinal, language, input_path,
+            )
+            return ordinal
+    if streams:
+        language = (streams[0].get('tags') or {}).get('language') or 'und'
+        logger.info(
+            'No default-flagged audio track; selected first audio track (language=%s) from %s',
+            language, input_path,
+        )
+    return 0
+
+
+# Subtitle codecs MKV can store as-is.
+_MKV_COPYABLE_SUBTITLE_CODECS = {
+    'subrip', 'srt', 'ass', 'ssa', 'webvtt',
+    'hdmv_pgs_subtitle', 'dvd_subtitle', 'dvb_subtitle',
+}
+# Text-based codecs MKV cannot store directly but that convert cleanly to SRT.
+_TEXT_SUBTITLE_CODECS = {'mov_text', 'text'}
+
+
+def _probe_subtitle_codecs(input_path: str) -> list[str] | None:
+    """Return codec names of the input's subtitle streams, or None if probing failed."""
+    command = [
+        'ffprobe',
+        '-v',
+        'error',
+        '-select_streams',
+        's',
+        '-show_entries',
+        'stream=codec_name',
+        '-of',
+        'json',
+        input_path,
+    ]
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return None
+    streams = payload.get('streams') if isinstance(payload, dict) else None
+    if not isinstance(streams, list):
+        return None
+    return [str(stream.get('codec_name') or '').lower() for stream in streams]
+
+
+def _subtitle_map_args(input_path: str) -> list[str]:
+    codecs = _probe_subtitle_codecs(input_path)
+    if codecs is None:
+        # Probe failed — map whatever is there and copy, matching mkv-source behaviour.
+        return ['-map', '0:s?', '-c:s', 'copy']
+    args: list[str] = []
+    output_ordinal = 0
+    for source_ordinal, codec in enumerate(codecs):
+        if codec in _MKV_COPYABLE_SUBTITLE_CODECS:
+            subtitle_codec = 'copy'
+        elif codec in _TEXT_SUBTITLE_CODECS:
+            subtitle_codec = 'srt'
+        else:
+            logger.info(
+                'Dropping subtitle track %d (codec=%s) not representable in MKV from %s',
+                source_ordinal, codec, input_path,
+            )
+            continue
+        args.extend(['-map', f'0:s:{source_ordinal}', f'-c:s:{output_ordinal}', subtitle_codec])
+        output_ordinal += 1
+    return args
+
+
+def _stream_map_args(input_path: str, output_path: str, profile: dict[str, Any]) -> list[str]:
+    container = Path(output_path).suffix.lstrip('.').lower() or _container_from_profile(profile)
+    args = ['-map', '0:v:0', '-map', f'0:a:{_select_primary_audio_index(input_path)}?']
+    if container == 'mkv':
+        # MKV can hold nearly any subtitle codec plus font attachments; keep them.
+        args.extend(_subtitle_map_args(input_path))
+        args.extend(['-map', '0:t?'])
+    return args
+
+
 def _software_preset(speed_preset: str) -> str:
     return {
         'fast': 'veryfast',
@@ -552,6 +679,7 @@ def _build_command_with_selection(
         if filters:
             command.extend(['-vf', ','.join(filters)])
 
+    command.extend(_stream_map_args(input_path, output_path, profile))
     command.extend(['-c:v', selection.encoder])
     command.extend(video_preset_args)
     command.extend(_video_rate_args(selection.encoder, bitrate_mode, bitrate_mbps, crf, target_height))
@@ -1267,6 +1395,7 @@ def _build_resume_command(
         if filters:
             command.extend(['-vf', ','.join(filters)])
 
+    command.extend(_stream_map_args(input_path, output_path, profile))
     command.extend(['-c:v', selection.encoder])
     command.extend(video_preset_args)
     command.extend(_video_rate_args(selection.encoder, bitrate_mode, bitrate_mbps, crf, target_height))

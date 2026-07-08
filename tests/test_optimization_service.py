@@ -111,6 +111,8 @@ def test_optimize_video_runs_and_reports_progress(monkeypatch, tmp_path):
     monkeypatch.setattr(optimization_service, '_probe_duration_seconds', lambda _: 100.0)
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
     monkeypatch.setattr(optimization_service, 'is_hdr_video', lambda _: False)
+    monkeypatch.setattr(optimization_service, '_probe_audio_streams', lambda _: [])
+    monkeypatch.setattr(optimization_service, '_probe_subtitle_codecs', lambda _: [])
 
     def fake_popen(*args, **kwargs):
         return DummyPopen(
@@ -709,6 +711,123 @@ def test_build_encoder_command_hdr_qsv_applies_tonemap(monkeypatch):
     vf = command[command.index('-vf') + 1]
     assert vf.startswith('hwupload=extra_hw_frames=64,vpp_qsv=tonemap=1')
     assert 'scale_qsv=-1:1080' in vf
+
+
+def test_build_encoder_command_maps_default_flagged_audio_track(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1080)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+    monkeypatch.setattr(
+        optimization_service,
+        '_probe_audio_streams',
+        lambda _: [
+            {'index': 1, 'disposition': {'default': 0}, 'tags': {'language': 'spa'}},
+            {'index': 2, 'disposition': {'default': 1}, 'tags': {'language': 'eng'}},
+        ],
+    )
+    monkeypatch.setattr(optimization_service, '_probe_subtitle_codecs', lambda _: [])
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    assert '-map' in command
+    assert '0:v:0' in command
+    assert '0:a:1?' in command
+
+
+def test_build_encoder_command_maps_first_audio_track_without_default_flag(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1080)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+    monkeypatch.setattr(
+        optimization_service,
+        '_probe_audio_streams',
+        lambda _: [
+            {'index': 1, 'disposition': {'default': 0}, 'tags': {'language': 'eng'}},
+            {'index': 2, 'disposition': {'default': 0}, 'tags': {'language': 'spa'}},
+        ],
+    )
+    monkeypatch.setattr(optimization_service, '_probe_subtitle_codecs', lambda _: [])
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mkv', profile)
+
+    assert '0:a:0?' in command
+
+
+def test_build_encoder_command_mkv_copies_and_converts_subtitles(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mkv',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1080)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+    monkeypatch.setattr(optimization_service, '_probe_audio_streams', lambda _: [])
+    monkeypatch.setattr(
+        optimization_service,
+        '_probe_subtitle_codecs',
+        lambda _: ['subrip', 'mov_text', 'unknown_codec', 'hdmv_pgs_subtitle'],
+    )
+
+    command = optimization_service.build_encoder_command('/media/in.mp4', '/media/out.mkv', profile)
+
+    joined = ' '.join(command)
+    assert '-map 0:s:0 -c:s:0 copy' in joined
+    assert '-map 0:s:1 -c:s:1 srt' in joined
+    # The unsupported codec is dropped; PGS keeps sequential output ordinal 2.
+    assert '-map 0:s:2' not in joined
+    assert '-map 0:s:3 -c:s:2 copy' in joined
+    assert '-map 0:t?' in joined
+
+
+def test_build_encoder_command_mp4_output_skips_subtitle_mapping(monkeypatch):
+    profile = {
+        'codec': 'h264',
+        'bitrate_mode': 'cbr',
+        'speed_preset': 'medium',
+        'audio_mode': 'copy',
+        'container': 'mp4',
+        'target_resolution': 1080,
+        'bitrate_mbps': 8,
+        'crf': 23,
+    }
+
+    monkeypatch.setattr(optimization_service, '_probe_height', lambda _: 1080)
+    monkeypatch.setattr(optimization_service, '_encoder_available', lambda _: False)
+    monkeypatch.setattr(optimization_service, '_probe_audio_streams', lambda _: [])
+
+    command = optimization_service.build_encoder_command('/media/in.mkv', '/media/out.mp4', profile)
+
+    joined = ' '.join(command)
+    assert '0:v:0' in command
+    assert '0:a:0?' in command
+    assert '0:s' not in joined
+    assert '0:t?' not in joined
 
 
 def test_refresh_encoder_cache_parses_ffmpeg_encoders(monkeypatch):
