@@ -11,6 +11,7 @@ import {
   TERMINAL_STATUSES,
   buildFallbackHistoryByEncodeJobId,
   buildUnifiedHistoryItems,
+  buildPaginationItems,
   compareActiveJobsDefault,
   compareHistoryItemsByOption,
   downloadJobMatchesSearch,
@@ -821,6 +822,13 @@ function JobsPage({
   );
 
   const queueCount = unifiedAllQueueItems.length;
+  const queuedEncodeCount = activeJobs.filter((job) => job.status === 'queued').length;
+  const allEncodeCount = activeJobs.length;
+  const queueEmptyMessage = queueSearch
+    ? 'No queue items match this search.'
+    : queuePaused
+      ? 'The queue is empty and new jobs are paused.'
+      : 'The queue is empty. Optimizarr is watching enabled libraries for eligible media.';
 
   const totalJobPages = useMemo(
     () => Math.max(1, Math.ceil(unifiedQueueItems.length / JOBS_PAGE_SIZE)),
@@ -891,9 +899,11 @@ function JobsPage({
           </div>
           <div className="flex flex-wrap items-center justify-between gap-3">
           {/* Tab switcher */}
-          <div className="flex gap-1 rounded-xl border border-slate-700/70 bg-slate-950/60 p-1">
+          <div role="tablist" aria-label="Job activity view" className="flex gap-1 rounded-xl border border-slate-700/70 bg-slate-950/60 p-1">
             <button
               type="button"
+              role="tab"
+              aria-selected={jobsView === 'queue'}
               onClick={() => setJobsView('queue')}
               className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'queue' ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
             >
@@ -902,6 +912,8 @@ function JobsPage({
             </button>
             <button
               type="button"
+              role="tab"
+              aria-selected={jobsView === 'history'}
               onClick={() => setJobsView('history')}
               className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${jobsView === 'history' ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950 shadow-sm shadow-cyan-500/30' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-100'}`}
             >
@@ -919,6 +931,7 @@ function JobsPage({
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative">
                 <TextInput
+                  aria-label="Search queue"
                   type="text"
                   placeholder="Search queue…"
                   value={queueSearch}
@@ -937,6 +950,7 @@ function JobsPage({
                 )}
               </div>
               <SelectInput
+                aria-label="Sort queue"
                 value={queueSort}
                 onChange={(e) => { handleQueueSortChange(e.target.value); }}
                 className="w-44 py-1.5 text-xs"
@@ -946,14 +960,16 @@ function JobsPage({
                 <option value="year_newest">Release Year (Newest)</option>
                 <option value="year_oldest">Release Year (Oldest)</option>
               </SelectInput>
-              <Btn size="sm" variant="secondary" onClick={onCancelAllQueued}>Cancel Queued Encodes</Btn>
-              <Btn size="sm" variant="secondary" onClick={onClearQueue}>Clear Queue</Btn>
-              <Btn size="sm" variant="danger" onClick={onAbortAllJobs}>Abort Active Encodes</Btn>
+              <Btn size="sm" variant="secondary" disabled={queuedEncodeCount === 0} onClick={onCancelAllQueued}>Cancel Queued Encodes ({queuedEncodeCount})</Btn>
+              <Btn size="sm" variant="secondary" disabled={queueCount === 0} onClick={onClearQueue}>Clear Entire Queue ({queueCount})</Btn>
+              <Btn size="sm" variant="danger" disabled={allEncodeCount === 0} onClick={onAbortAllJobs}>Cancel All Encodes ({allEncodeCount})</Btn>
               <Btn size="sm" variant="warning" onClick={() => onQueueAction(queuePaused ? 'resume' : 'pause')}>
                 {queuePaused ? 'Resume New Jobs' : 'Pause New Jobs'}
               </Btn>
-              <p className="text-xs text-slate-500">
-                Current encodes keep running. This only stops new queue starts.
+              <p className={`basis-full text-xs ${queuePaused ? 'text-amber-300' : 'text-slate-500'}`}>
+                {queuePaused
+                  ? 'Paused: queued items remain in place, and current work may finish.'
+                  : 'Pause New Jobs stops new queue starts without interrupting current work.'}
               </p>
             </div>
           )}
@@ -968,6 +984,7 @@ function JobsPage({
                   <button
                     key={value}
                     type="button"
+                    aria-pressed={historyTypeFilter === value}
                     onClick={() => {
                       setHistoryTypeFilter(value);
                       setHistoryPage(1);
@@ -983,6 +1000,7 @@ function JobsPage({
                 ))}
               </div>
               <TextInput
+                aria-label="Search history"
                 type="text"
                 placeholder="Search history…"
                 value={historySearch}
@@ -993,6 +1011,7 @@ function JobsPage({
                 className="w-48 py-1.5 text-xs"
               />
               <SelectInput
+                aria-label="Sort history"
                 value={historySort}
                 onChange={(e) => {
                   setHistorySort(e.target.value);
@@ -1004,7 +1023,7 @@ function JobsPage({
                 <option value="year_newest">Release Year (Newest)</option>
                 <option value="year_oldest">Release Year (Oldest)</option>
               </SelectInput>
-              <Btn size="sm" variant="danger" onClick={onPurgeHistory}>Clear History</Btn>
+              <Btn size="sm" variant="danger" disabled={totalHistoryCount === 0} onClick={onPurgeHistory}>Clear History ({totalHistoryCount})</Btn>
             </div>
           )}
         </div>
@@ -1015,7 +1034,7 @@ function JobsPage({
             <div className="space-y-3 p-3 md:hidden">
               {pagedJobs.length === 0 && (
                 <div className="rounded-xl border border-slate-700/70 bg-slate-900/60 px-4 py-10 text-center text-sm text-slate-500">
-                  {queueSearch ? 'No matching jobs.' : 'No jobs in queue.'}
+                  {queueEmptyMessage}
                 </div>
               )}
               {pagedJobs.map((item) => (
@@ -1062,7 +1081,7 @@ function JobsPage({
                   {pagedJobs.length === 0 && (
                     <tr>
                       <td colSpan={9} className="px-4 py-10 text-center text-sm text-slate-500">
-                        {queueSearch ? 'No matching jobs.' : 'No jobs in queue.'}
+                        {queueEmptyMessage}
                       </td>
                     </tr>
                   )}
@@ -1097,15 +1116,19 @@ function JobsPage({
               <div className="flex items-center justify-between border-t border-slate-700/70 px-5 py-3 text-sm text-slate-400">
                 <p>Page {jobsPage} of {totalJobPages}</p>
                 <div className="flex items-center gap-1">
-                  {Array.from({ length: totalJobPages }, (_, i) => i + 1).map((pageNum) => (
-                    <button
-                      key={pageNum}
-                      type="button"
-                      onClick={() => setJobsPage(pageNum)}
-                      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${jobsPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
-                    >
-                      {pageNum}
-                    </button>
+                  {buildPaginationItems(jobsPage, totalJobPages).map((item) => (
+                    typeof item === 'number' ? (
+                      <button
+                        key={item}
+                        type="button"
+                        aria-current={jobsPage === item ? 'page' : undefined}
+                        aria-label={`Queue page ${item}`}
+                        onClick={() => setJobsPage(item)}
+                        className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${jobsPage === item ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                      >
+                        {item}
+                      </button>
+                    ) : <span key={item} aria-hidden="true" className="px-1 text-slate-600">…</span>
                   ))}
                 </div>
               </div>
@@ -1199,15 +1222,19 @@ function JobsPage({
               <div className="flex items-center justify-between border-t border-slate-700/70 px-5 py-3 text-sm text-slate-400">
                 <p>Page {historyPage} of {totalHistoryPages}</p>
                 <div className="flex items-center gap-1">
-                  {Array.from({ length: totalHistoryPages }, (_, i) => i + 1).map((pageNum) => (
-                    <button
-                      key={pageNum}
-                      type="button"
-                      onClick={() => setHistoryPage(pageNum)}
-                      className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${historyPage === pageNum ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
-                    >
-                      {pageNum}
-                    </button>
+                  {buildPaginationItems(historyPage, totalHistoryPages).map((item) => (
+                    typeof item === 'number' ? (
+                      <button
+                        key={item}
+                        type="button"
+                        aria-current={historyPage === item ? 'page' : undefined}
+                        aria-label={`History page ${item}`}
+                        onClick={() => setHistoryPage(item)}
+                        className={`rounded-lg px-2.5 py-1 text-xs font-medium transition-all duration-150 ${historyPage === item ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950' : 'bg-slate-800 text-slate-300 hover:bg-slate-700'}`}
+                      >
+                        {item}
+                      </button>
+                    ) : <span key={item} aria-hidden="true" className="px-1 text-slate-600">…</span>
                   ))}
                 </div>
               </div>

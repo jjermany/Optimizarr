@@ -33,6 +33,29 @@ def test_find_existing_target_artifact_for_identity_matches_different_id_tag(tmp
     assert find_existing_target_artifact_for_identity(str(source), 1080, '-1080p') == existing
 
 
+def test_find_existing_target_artifact_matches_yearless_same_folder_movie(tmp_path):
+    existing = tmp_path / 'Roommates {tmdb-123} [Bluray]-1080p.mkv'
+    source = tmp_path / 'Roommates {imdb-tt123} [WEBDL]-2160p.mkv'
+    existing.touch()
+    source.touch()
+
+    assert media_identity_key(str(source)) is None
+    assert find_existing_target_artifact_for_identity(str(source), 1080, '-optimized') == existing
+
+
+def test_find_existing_target_artifact_probes_unlabelled_same_identity(monkeypatch, tmp_path):
+    existing = tmp_path / 'Roommates (2026) optimized.mkv'
+    source = tmp_path / 'Roommates (2026) source.mkv'
+    existing.touch()
+    source.touch()
+    monkeypatch.setattr(
+        'app.services.job_service.optimization_service.probe_video_height',
+        lambda path: 1080 if path == str(existing) else 2160,
+    )
+
+    assert find_existing_target_artifact_for_identity(str(source), 1080, '-1080p') == existing
+
+
 def test_has_completed_job_for_identity(tmp_path):
     with SessionLocal() as db:
         db.query(Job).delete()

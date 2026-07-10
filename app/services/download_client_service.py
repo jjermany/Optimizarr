@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 
 import httpx
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core import secrets_store
@@ -51,8 +52,16 @@ def get_or_create_qbt_settings(db: Session) -> QBittorrentSettings:
     if settings is None:
         settings = QBittorrentSettings(id=1)
         db.add(settings)
-        db.commit()
-        db.refresh(settings)
+        try:
+            db.commit()
+            db.refresh(settings)
+        except IntegrityError:
+            # Initial UI requests are concurrent. Another request may create
+            # this singleton after our first SELECT but before our INSERT.
+            db.rollback()
+            settings = db.query(QBittorrentSettings).filter(QBittorrentSettings.id == 1).first()
+            if settings is None:
+                raise
     if settings.password and not secrets_store.is_encrypted_secret(settings.password):
         settings.password = secrets_store.encrypt_secret(settings.password)
         db.commit()
@@ -363,8 +372,14 @@ def get_or_create_sab_settings(db: Session) -> SabnzbdSettings:
     if settings is None:
         settings = SabnzbdSettings(id=1)
         db.add(settings)
-        db.commit()
-        db.refresh(settings)
+        try:
+            db.commit()
+            db.refresh(settings)
+        except IntegrityError:
+            db.rollback()
+            settings = db.query(SabnzbdSettings).filter(SabnzbdSettings.id == 1).first()
+            if settings is None:
+                raise
     if settings.api_key and not secrets_store.is_encrypted_secret(settings.api_key):
         settings.api_key = secrets_store.encrypt_secret(settings.api_key)
         db.commit()

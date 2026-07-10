@@ -13,12 +13,97 @@ import {
   getDisplayTitle,
   getDownloadEtaSeconds,
   libraryQueueCount,
+  libraryDetailsHaveChanges,
+  libraryProfileHasChanges,
+  buildLibraryProfileOverview,
+  settingsValuesEqual,
+  buildDashboardOperationalStatus,
+  buildPaginationItems,
   mergeDownloadJobsWithUpdate,
   mergeJobsWithUpdate,
   normalizeDownloadJob,
   removeJobById,
   shouldShowDownloadElapsed,
 } from './App';
+
+describe('library unsaved change detection', () => {
+  it('tracks editable details but ignores server-managed library fields', () => {
+    const baseline = { id: 7, name: 'Movies', path: '/media/movies', scanning: false };
+    expect(libraryDetailsHaveChanges({ ...baseline, scanning: true }, baseline)).toBe(false);
+    expect(libraryDetailsHaveChanges({ ...baseline, path: '/media/films' }, baseline)).toBe(true);
+  });
+
+  it('detects profile edits regardless of property order', () => {
+    const baseline = { codec: 'hevc', target_resolution: 1080, hdr_only: true };
+    expect(libraryProfileHasChanges({ hdr_only: true, target_resolution: 1080, codec: 'hevc' }, baseline)).toBe(false);
+    expect(libraryProfileHasChanges({ ...baseline, target_resolution: 720 }, baseline)).toBe(true);
+  });
+});
+
+describe('library profile behavior overview', () => {
+  it('explains HDR tone mapping, download fallback, and schedule behavior', () => {
+    const overview = buildLibraryProfileOverview({
+      hdr_only: true,
+      tone_map_hdr: true,
+      minimum_source_resolution: 2160,
+      target_resolution: 1080,
+      codec: 'hevc',
+      download_enabled: true,
+      download_timeout_minutes: 45,
+      schedule_enabled: true,
+      schedule_start_hour: 22,
+      schedule_end_hour: 6,
+    }, { prowlarrEnabled: true, qbittorrentEnabled: true });
+
+    expect(overview.items.map((item) => item.value)).toEqual([
+      'HDR sources at 2160p or higher',
+      '1080p HEVC SDR (tone-mapped)',
+      'Search for a replacement first; encode after 45 minutes',
+      '22:00–06:00',
+    ]);
+    expect(overview.warnings).toEqual([]);
+  });
+
+  it('warns that download mode falls back to encoding when integrations are disabled', () => {
+    const overview = buildLibraryProfileOverview({ download_enabled: true }, {});
+    expect(overview.warnings).toHaveLength(2);
+    expect(overview.warnings.join(' ')).toContain('encode locally');
+  });
+});
+
+describe('settings dirty-state comparison', () => {
+  it('compares nested settings independent of property order', () => {
+    const saved = { enabled: true, notify_on: { failed: true, complete: false }, recipients: ['a', 'b'] };
+    const reordered = { recipients: ['a', 'b'], notify_on: { complete: false, failed: true }, enabled: true };
+    expect(settingsValuesEqual(reordered, saved)).toBe(true);
+    expect(settingsValuesEqual({ ...reordered, enabled: false }, saved)).toBe(false);
+  });
+});
+
+describe('dashboard operational status', () => {
+  it('prioritizes setup and pause conditions over idle state', () => {
+    expect(buildDashboardOperationalStatus({ libraries: [] }).title).toBe('Add your first library');
+    expect(buildDashboardOperationalStatus({ queuePaused: true, libraries: [{ enabled: true }] }).title).toBe('New jobs are paused');
+    expect(buildDashboardOperationalStatus({ libraries: [{ enabled: false }] }).title).toBe('All libraries are disabled');
+  });
+
+  it('distinguishes processing, waiting, and ready states', () => {
+    expect(buildDashboardOperationalStatus({ libraries: [{ enabled: true }], queueCount: 3, workingCount: 1 }).tone).toBe('working');
+    expect(buildDashboardOperationalStatus({ libraries: [{ enabled: true }], queueCount: 3, workingCount: 0 }).tone).toBe('waiting');
+    expect(buildDashboardOperationalStatus({ libraries: [{ enabled: true }], queueCount: 0, workingCount: 0 }).tone).toBe('idle');
+  });
+});
+
+describe('compact pagination', () => {
+  it('shows every page for short result sets', () => {
+    expect(buildPaginationItems(3, 5)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('keeps the first, nearby, and last pages for long result sets', () => {
+    expect(buildPaginationItems(50, 100)).toEqual([1, 'ellipsis-1-49', 49, 50, 51, 'ellipsis-51-100', 100]);
+    expect(buildPaginationItems(1, 100)).toEqual([1, 2, 'ellipsis-2-100', 100]);
+  });
+});
 
 describe('realtime refresh cadence', () => {
   it('keeps active queue polling fast enough for progress bars', () => {

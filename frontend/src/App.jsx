@@ -96,6 +96,10 @@ import {
   validateLibraryDraft,
   getAvailableDownloadFallbackCodecs,
   validateLibraryForm,
+  libraryDetailsHaveChanges,
+  libraryProfileHasChanges,
+  buildLibraryProfileOverview,
+  buildDashboardOperationalStatus,
 } from './lib/appUtils';
 export * from './lib/appUtils';
 
@@ -127,6 +131,7 @@ export default function App() {
   const [metrics, setMetrics] = useState();
   const [jobs, setJobs] = useState([]);
   const [libraries, setLibraries] = useState([]);
+  const [libraryBaselines, setLibraryBaselines] = useState({});
   const [libraryProfiles, setLibraryProfiles] = useState({});
   const [settings, setSettings] = useState();
   const [accountSettings, setAccountSettings] = useState();
@@ -142,6 +147,7 @@ export default function App() {
   const [dirBrowser, setDirBrowser] = useState({ open: false, target: null, initialPath: null });
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
+  const [profileBaseline, setProfileBaseline] = useState(null);
   const [profileSectionsOpen, setProfileSectionsOpen] = useState(() => ({
     ...PROFILE_SECTIONS_DEFAULT,
     // Fall back to the legacy combined prefs key so saved section states survive.
@@ -191,6 +197,7 @@ export default function App() {
   const [nowHour, setNowHour] = useState(() => new Date().getHours());
   const [pendingJobActions, setPendingJobActions] = useState({});
   const [pendingDownloadActions, setPendingDownloadActions] = useState({});
+  const [hasUnsavedSettings, setHasUnsavedSettings] = useState(false);
 
   const wsRef = useRef();
   const jobsStateRef = useRef([]);
@@ -238,6 +245,7 @@ export default function App() {
   const onCleanupRun = useEventCallback(() => handleCleanupRun());
   const onOptimizedCleanupRun = useEventCallback(() => handleOptimizedCleanupRun());
   const onDuplicateOptimizedCleanupRun = useEventCallback(() => handleDuplicateOptimizedCleanupRun());
+  const onSettingsDirtyChange = useEventCallback((dirty) => setHasUnsavedSettings(Boolean(dirty)));
 
   // Build a lookup map: library id → library name
   const libraryById = useMemo(
@@ -282,6 +290,14 @@ export default function App() {
   );
 
   const queueCount = unifiedAllQueueItems.length;
+  const workingDownloadStatuses = new Set(['checking', 'searching', 'downloading', 'repairing', 'unpacking', 'moving', 'importing']);
+  const dashboardStatus = buildDashboardOperationalStatus({
+    queuePaused,
+    libraries,
+    queueCount,
+    workingCount: activeJobs.filter((job) => isActiveEncodeStatus(job.status)).length
+      + activeDlQueueItems.filter((job) => workingDownloadStatuses.has(String(job.status ?? '').toLowerCase())).length,
+  });
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -297,6 +313,33 @@ export default function App() {
   );
 
   const selectedLibraryProfile = selectedLibraryId ? libraryProfiles[selectedLibraryId] : null;
+  const selectedLibraryBaseline = selectedLibraryId ? libraryBaselines[selectedLibraryId] : null;
+  const libraryDetailsDirty = libraryDetailsHaveChanges(selectedLibrary, selectedLibraryBaseline);
+  const libraryProfileDirty = libraryProfileHasChanges(profileDraft, profileBaseline);
+  const hasUnsavedLibraryChanges = libraryDetailsDirty || libraryProfileDirty;
+  const libraryProfileOverview = useMemo(
+    () => buildLibraryProfileOverview(profileDraft, {
+      prowlarrEnabled: Boolean(prowlarrSettings?.enabled),
+      qbittorrentEnabled: Boolean(qbtSettings?.enabled),
+      sabnzbdEnabled: Boolean(sabSettings?.enabled),
+    }),
+    [profileDraft, prowlarrSettings?.enabled, qbtSettings?.enabled, sabSettings?.enabled],
+  );
+  const unsavedLibraryChangesRef = useRef(false);
+  const unsavedSettingsRef = useRef(false);
+  const selectedLibraryIdRef = useRef(null);
+
+  useEffect(() => {
+    unsavedLibraryChangesRef.current = hasUnsavedLibraryChanges;
+  }, [hasUnsavedLibraryChanges]);
+
+  useEffect(() => {
+    unsavedSettingsRef.current = hasUnsavedSettings;
+  }, [hasUnsavedSettings]);
+
+  useEffect(() => {
+    selectedLibraryIdRef.current = selectedLibraryId;
+  }, [selectedLibraryId]);
 
   const libraryRuntimeStates = useMemo(() => {
     return libraries.map((library) => {
@@ -636,7 +679,17 @@ export default function App() {
   async function refreshLibrariesAndProfiles({ showToast = true } = {}) {
     try {
       const nextLibraries = await fetchLibraries();
-      setLibraries(nextLibraries);
+      setLibraries((prev) => {
+        if (!unsavedLibraryChangesRef.current || !selectedLibraryIdRef.current) return nextLibraries;
+        const editedLibrary = prev.find((library) => library.id === selectedLibraryIdRef.current);
+        if (!editedLibrary) return nextLibraries;
+        return nextLibraries.map((library) => (
+          library.id === editedLibrary.id
+            ? { ...library, name: editedLibrary.name, path: editedLibrary.path }
+            : library
+        ));
+      });
+      setLibraryBaselines(Object.fromEntries(nextLibraries.map((library) => [library.id, { ...library }])));
       setSelectedLibraryId((prevSelectedLibraryId) => {
         if (nextLibraries.length === 0) return null;
         if (prevSelectedLibraryId == null) return nextLibraries[0].id;
@@ -649,7 +702,12 @@ export default function App() {
           return [library.id, profile];
         }),
       );
-      setLibraryProfiles(Object.fromEntries(profileEntries));
+      const nextProfiles = Object.fromEntries(profileEntries);
+      setLibraryProfiles((prev) => {
+        const editedLibraryId = selectedLibraryIdRef.current;
+        if (!unsavedLibraryChangesRef.current || !editedLibraryId || !prev[editedLibraryId]) return nextProfiles;
+        return { ...nextProfiles, [editedLibraryId]: prev[editedLibraryId] };
+      });
       return true;
     } catch (refreshError) {
       if (showToast) pushToast(refreshError.message || 'Could not refresh libraries.', 'error');
@@ -658,8 +716,39 @@ export default function App() {
   }
 
   function navigate(page) {
+    if (
+      page !== activePage
+      && activePage === 'settings'
+      && unsavedSettingsRef.current
+      && !window.confirm('Leave Settings with unsaved changes? Your edits will remain available until you reload Optimizarr.')
+    ) return;
+    if (
+      page !== activePage
+      && unsavedLibraryChangesRef.current
+      && !window.confirm('Discard unsaved changes to this library?')
+    ) return;
+    if (page !== activePage && unsavedLibraryChangesRef.current) discardSelectedLibraryChanges();
     window.location.hash = page;
     setActivePage(page);
+  }
+
+  function discardSelectedLibraryChanges() {
+    unsavedLibraryChangesRef.current = false;
+    if (selectedLibraryId && selectedLibraryBaseline) {
+      setLibraries((prev) => prev.map((library) => (
+        library.id === selectedLibraryId ? { ...selectedLibraryBaseline } : library
+      )));
+    }
+    if (profileBaseline) setProfileDraft({ ...profileBaseline });
+    setProfileErrors({});
+    setLibraryFormErrors({});
+  }
+
+  function selectLibrary(libraryId) {
+    if (libraryId === selectedLibraryId) return;
+    if (unsavedLibraryChangesRef.current && !window.confirm('Discard unsaved changes to this library?')) return;
+    if (unsavedLibraryChangesRef.current) discardSelectedLibraryChanges();
+    setSelectedLibraryId(libraryId);
   }
 
   function pushToast(messageText, tone = 'info', options = {}) {
@@ -869,6 +958,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedLibraryId || !selectedLibraryProfile) {
       setProfileDraft(null);
+      setProfileBaseline(null);
       setTargetResolutionCustom(false);
       setMinimumResolutionCustom(false);
       setProfileErrors({});
@@ -890,10 +980,21 @@ export default function App() {
       nextDraft.crf = 23;
     }
     setProfileDraft(nextDraft);
+    setProfileBaseline({ ...nextDraft });
     setTargetResolutionCustom(!TARGET_RESOLUTION_PRESETS.includes(Number(nextDraft.target_resolution)));
     setMinimumResolutionCustom(!MIN_SOURCE_RESOLUTION_PRESETS.includes(Number(nextDraft.minimum_source_resolution)));
     setProfileErrors({});
   }, [selectedLibraryId, selectedLibraryProfile]);
+
+  useEffect(() => {
+    function warnBeforeUnload(event) {
+      if (!unsavedLibraryChangesRef.current && !unsavedSettingsRef.current) return;
+      event.preventDefault();
+      event.returnValue = '';
+    }
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, []);
 
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
@@ -1177,6 +1278,9 @@ export default function App() {
   }
 
   async function handleAbortAllJobs() {
+    const encodeCount = activeJobs.length;
+    if (encodeCount === 0) return;
+    if (!window.confirm(`Cancel all ${encodeCount} non-terminal encode job${encodeCount === 1 ? '' : 's'}? This includes queued, paused, and running encodes, and partial progress will be removed.`)) return;
     try {
       const result = await abortAllJobs();
       pushToast(`Aborted ${result.aborted_job_ids.length} encode job(s).`, 'success');
@@ -1188,6 +1292,9 @@ export default function App() {
   }
 
   async function handleCancelAllQueued() {
+    const queuedCount = activeJobs.filter((job) => job.status === 'queued').length;
+    if (queuedCount === 0) return;
+    if (!window.confirm(`Cancel ${queuedCount} queued encode job${queuedCount === 1 ? '' : 's'}? Running and paused encodes will not be changed.`)) return;
     try {
       const result = await cancelAllQueued();
       pushToast(`Cancelled ${result.cancelled_job_ids.length} queued encode job(s).`, 'success');
@@ -1199,6 +1306,14 @@ export default function App() {
   }
 
   async function handlePurgeHistory() {
+    const terminalEncodeCount = jobs.filter((job) => TERMINAL_STATUSES.has(String(job.status ?? '').toLowerCase())).length;
+    const terminalDownloadCount = downloadJobs.filter((job) => {
+      const status = String(job.status ?? '').toLowerCase();
+      return TERMINAL_DL_STATUSES.has(status) && status !== 'fallback_queued';
+    }).length;
+    const historyCount = terminalEncodeCount + terminalDownloadCount;
+    if (historyCount === 0) return;
+    if (!window.confirm(`Clear ${historyCount} history item${historyCount === 1 ? '' : 's'}? This removes encode and download records but does not delete media files.`)) return;
     try {
       const result = await purgeHistory();
       // Remove terminal download jobs from local state immediately — the server
@@ -1239,6 +1354,8 @@ export default function App() {
   }
 
   async function handleCreateLibrary() {
+    if (unsavedLibraryChangesRef.current && !window.confirm('Discard unsaved changes to the selected library and add a new library?')) return;
+    if (unsavedLibraryChangesRef.current) discardSelectedLibraryChanges();
     const nextErrors = validateLibraryForm(libraryDraft);
     setLibraryFormErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
@@ -1258,6 +1375,8 @@ export default function App() {
   }
 
   async function handleDeleteLibrary(libraryId) {
+    const libraryToDelete = libraries.find((library) => library.id === libraryId);
+    if (!window.confirm(`Delete ${libraryToDelete?.name || 'this library'}? Jobs and media files will not be deleted.`)) return;
     setDeletingLibraryId(libraryId);
     try {
       await deleteLibrary(libraryId);
@@ -1282,9 +1401,9 @@ export default function App() {
     try {
       const updated = await updateLibrary(selectedLibrary.id, { name: selectedLibrary.name.trim(), path: selectedLibrary.path.trim(), enabled: selectedLibrary.enabled });
       setLibraries((prev) => prev.map((library) => (library.id === updated.id ? updated : library)));
+      setLibraryBaselines((prev) => ({ ...prev, [updated.id]: { ...updated } }));
       setLibraryFormErrors({});
       pushToast('Library details saved.', 'success');
-      await refreshLibrariesAndProfiles();
     } catch (saveError) {
       pushToast(saveError.message || 'Failed to save library details.', 'error');
     } finally {
@@ -1334,6 +1453,7 @@ export default function App() {
       const updated = await updateLibraryProfile(selectedLibrary.id, profileDraft);
       setLibraryProfiles((prev) => ({ ...prev, [selectedLibrary.id]: updated }));
       setProfileDraft({ ...updated });
+      setProfileBaseline({ ...updated });
       setTargetResolutionCustom(!TARGET_RESOLUTION_PRESETS.includes(Number(updated.target_resolution)));
       setMinimumResolutionCustom(!MIN_SOURCE_RESOLUTION_PRESETS.includes(Number(updated.minimum_source_resolution)));
       pushToast('Library profile saved.', 'success');
@@ -1514,7 +1634,7 @@ export default function App() {
   if (authStatus.loading) {
     return (
       <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
-        <div className="mx-auto flex min-h-[70vh] max-w-md items-center justify-center">
+        <div className="mx-auto flex min-h-[70vh] w-full min-w-0 max-w-md items-center justify-center">
           <SectionCard className="w-full">
             <SectionTitle>Loading</SectionTitle>
             <p className="text-sm text-slate-300">Checking authentication status…</p>
@@ -1527,7 +1647,7 @@ export default function App() {
   if (authStatus.setup_required) {
     return (
       <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
-        <div className="mx-auto flex min-h-[70vh] max-w-lg items-center justify-center">
+        <div className="mx-auto flex min-h-[70vh] w-full min-w-0 max-w-lg items-center justify-center">
           <SectionCard className="w-full space-y-4">
             <SectionTitle>Initial Admin Setup</SectionTitle>
             <p className="text-sm text-slate-300">Create the first admin account to secure Optimizarr. Dual-factor authentication is optional and can be skipped.</p>
@@ -1625,7 +1745,7 @@ export default function App() {
   if (!authStatus.authenticated) {
     return (
       <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
-        <div className="mx-auto flex min-h-[70vh] max-w-md items-center justify-center">
+        <div className="mx-auto flex min-h-[70vh] w-full min-w-0 max-w-md items-center justify-center">
           <SectionCard className="w-full space-y-4">
             <SectionTitle>Login</SectionTitle>
             <form className="space-y-3" onSubmit={handleLoginSubmit}>
@@ -1672,7 +1792,7 @@ export default function App() {
   if (!initialDataLoaded) {
     return (
       <main className="app-shell min-h-screen p-4 text-slate-100 md:p-6">
-        <div className="mx-auto flex min-h-[70vh] max-w-md items-center justify-center">
+        <div className="mx-auto flex min-h-[70vh] w-full min-w-0 max-w-md items-center justify-center">
           <SectionCard className="w-full space-y-4">
             <SectionTitle>Loading Workspace</SectionTitle>
             {!initialDataError ? (
@@ -1745,12 +1865,13 @@ export default function App() {
               </Btn>
             </div>
           </div>
-          <nav className="relative mt-3 flex gap-1 rounded-xl border border-slate-700/70 bg-slate-950/60 p-1">
+          <nav aria-label="Primary navigation" className="relative mt-3 flex gap-1 overflow-x-auto rounded-xl border border-slate-700/70 bg-slate-950/60 p-1">
             {Object.entries(PAGE_KEYS).map(([key, label]) => (
               <button
                 key={key}
                 type="button"
-                className={`rounded-lg px-4 py-2 text-sm font-medium transition-all duration-200 ${
+                aria-current={activePage === key ? 'page' : undefined}
+                className={`shrink-0 rounded-lg px-2 py-2 text-xs font-medium transition-all duration-200 sm:px-4 sm:text-sm ${
                   activePage === key
                     ? 'bg-gradient-to-r from-cyan-400 to-sky-400 text-slate-950 shadow-sm shadow-cyan-500/30'
                     : 'text-slate-400 hover:bg-slate-800/80 hover:text-slate-100'
@@ -1772,10 +1893,11 @@ export default function App() {
         />
 
         {/* Toast stack */}
-        <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col gap-2">
+        <div aria-label="Notifications" aria-live="polite" className="pointer-events-none fixed right-4 bottom-4 z-50 flex flex-col gap-2">
           {toasts.map((toast) => (
             <div
               key={toast.id}
+              role={toast.tone === 'error' ? 'alert' : 'status'}
               className={`animate-slide-in-right rounded-xl border px-4 py-2.5 text-sm shadow-xl backdrop-blur-sm ${
                 toast.tone === 'error'
                   ? 'border-red-700/60 bg-red-950/90 text-red-200'
@@ -1830,6 +1952,31 @@ export default function App() {
         {/* ── Dashboard ──────────────────────────────────────────────────────── */}
         {activePage === 'dashboard' && (
           <section className="animate-fade-in space-y-5">
+            <SectionCard className={`border-l-4 ${
+              dashboardStatus.tone === 'paused'
+                ? 'border-l-amber-400'
+                : dashboardStatus.tone === 'working'
+                  ? 'border-l-cyan-400'
+                  : dashboardStatus.tone === 'setup'
+                    ? 'border-l-violet-400'
+                    : 'border-l-emerald-400'
+            }`}>
+              <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Operational status</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-100">{dashboardStatus.title}</p>
+                  <p className="mt-1 text-sm text-slate-400">{dashboardStatus.detail}</p>
+                </div>
+                {queuePaused ? (
+                  <Btn variant="success" onClick={() => handleQueueAction('resume')}>Resume New Jobs</Btn>
+                ) : (
+                  <Btn variant="secondary" onClick={() => navigate(dashboardStatus.action)}>
+                    {dashboardStatus.action === 'jobs' ? 'View Queue' : libraries.length === 0 ? 'Add Library' : 'Manage Libraries'}
+                  </Btn>
+                )}
+              </div>
+            </SectionCard>
+
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-6">
               <StatCard label="GPU" value={formatGpuPercent(metrics)} />
               <StatCard label="CPU" value={`${metrics?.cpu_percent ?? 0}%`} />
@@ -1843,17 +1990,27 @@ export default function App() {
               <SectionTitle>Library Status</SectionTitle>
               <div className="space-y-2">
                 {libraryRuntimeStates.length === 0 && (
-                  <p className="text-sm text-slate-500">No libraries configured yet.</p>
+                  <div className="rounded-xl border border-dashed border-slate-700 bg-slate-950/25 px-4 py-8 text-center">
+                    <p className="text-sm font-medium text-slate-300">No libraries configured yet.</p>
+                    <p className="mt-1 text-xs text-slate-500">Add a movie or TV library to begin discovering eligible media.</p>
+                    <Btn className="mt-4" size="sm" onClick={() => navigate('libraries')}>Add Library</Btn>
+                  </div>
                 )}
                 {libraryRuntimeStates.map(({ library, state, queue }) => (
-                  <div key={library.id} className="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/40 px-4 py-3 transition-colors duration-150 hover:border-slate-700/60">
-                    <div>
+                  <div key={library.id} className="flex flex-col gap-3 rounded-lg border border-slate-800/60 bg-slate-950/40 px-4 py-3 transition-colors duration-150 hover:border-slate-700/60 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
                       <p className="font-medium text-cyan-200">{library.name}</p>
-                      <p className="mt-0.5 text-xs text-slate-500">{library.path}</p>
+                      <p className="mt-0.5 truncate text-xs text-slate-500" title={library.path}>{library.path}</p>
                     </div>
-                    <div className="text-right">
-                      <p className="text-sm text-slate-300">{state}</p>
-                      <p className="mt-0.5 text-xs text-slate-500">Queue: {queue}</p>
+                    <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+                      <div className="mr-1 sm:text-right">
+                        <p className="text-sm text-slate-300">{state}</p>
+                        <p className="mt-0.5 text-xs text-slate-500">Queue: {queue}</p>
+                      </div>
+                      <Btn size="sm" variant="secondary" disabled={Boolean(library.scanning)} onClick={() => handleLibraryScan(library.id)}>
+                        {library.scanning ? 'Scanning…' : 'Scan'}
+                      </Btn>
+                      <Btn size="sm" variant="secondary" onClick={() => { setSelectedLibraryId(library.id); navigate('libraries'); }}>Edit</Btn>
                     </div>
                   </div>
                 ))}
@@ -1864,10 +2021,10 @@ export default function App() {
 
         {/* ── Libraries ──────────────────────────────────────────────────────── */}
         {activePage === 'libraries' && (
-          <section className="animate-fade-in grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
+          <section className="min-w-0 animate-fade-in grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
 
             {/* Left: list + add form */}
-            <div className="space-y-4">
+            <div className="min-w-0 space-y-4">
               <SectionCard>
                 <SectionTitle>Add Library</SectionTitle>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -1890,6 +2047,7 @@ export default function App() {
                       <button
                         type="button"
                         title="Browse directories"
+                        aria-label="Browse for new library path"
                         className="shrink-0 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-cyan-300 transition-colors"
                         onClick={() => openDirBrowser('new', libraryDraft.path)}
                       >
@@ -1923,13 +2081,14 @@ export default function App() {
                       }`}
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setSelectedLibraryId(library.id)}>
+                        <button type="button" className="min-w-0 flex-1 text-left" onClick={() => selectLibrary(library.id)}>
                           <p className="font-medium text-cyan-200 truncate">{library.name}</p>
                           <p className="mt-0.5 text-xs text-slate-500 truncate">{library.path}</p>
                           <p className="mt-0.5 text-xs text-slate-400">Queue: {libraryQueueCount(library, jobs, downloadJobs)}</p>
                         </button>
                         <div className="flex shrink-0 items-center gap-2">
                           <Toggle
+                            ariaLabel={`${library.enabled ? 'Disable' : 'Enable'} ${library.name}`}
                             checked={library.enabled}
                             onChange={(e) => handleLibraryToggle(library.id, e.target.checked)}
                           />
@@ -1953,6 +2112,54 @@ export default function App() {
                 <p className="text-sm text-slate-400">Select a library to edit its encoding profile.</p>
               ) : (
                 <div className="space-y-5">
+                  {hasUnsavedLibraryChanges && (
+                    <div role="status" className="sticky top-3 z-20 flex flex-col gap-3 rounded-xl border border-amber-500/40 bg-amber-950/95 px-4 py-3 shadow-xl shadow-slate-950/50 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-amber-100">Unsaved library changes</p>
+                        <p className="text-xs text-amber-200/70">
+                          {libraryDetailsDirty && libraryProfileDirty
+                            ? 'Library details and profile settings have changed.'
+                            : libraryDetailsDirty
+                              ? 'Library details have changed.'
+                              : 'Profile settings have changed.'}
+                        </p>
+                      </div>
+                      <Btn variant="secondary" size="sm" onClick={discardSelectedLibraryChanges}>Discard</Btn>
+                    </div>
+                  )}
+                  <div className="rounded-xl border border-cyan-700/40 bg-cyan-950/20 p-4">
+                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-semibold text-cyan-100">Profile behavior</p>
+                        <p className="text-xs text-slate-400">A preview of how Optimizarr will handle this library.</p>
+                      </div>
+                      <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${
+                        selectedLibrary.enabled
+                          ? 'border-emerald-600/40 bg-emerald-950/30 text-emerald-300'
+                          : 'border-slate-600/60 bg-slate-900/60 text-slate-400'
+                      }`}
+                      >
+                        {selectedLibrary.enabled ? 'Active' : 'Library paused'}
+                      </span>
+                    </div>
+                    <dl className="grid gap-2 sm:grid-cols-2">
+                      {libraryProfileOverview.items.map((item) => (
+                        <div key={item.label} className="rounded-lg border border-slate-800/70 bg-slate-950/35 px-3 py-2">
+                          <dt className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{item.label}</dt>
+                          <dd className="mt-0.5 text-sm text-slate-200">{item.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                    {libraryProfileOverview.warnings.length > 0 && (
+                      <div className="mt-3 space-y-2" role="alert">
+                        {libraryProfileOverview.warnings.map((warning) => (
+                          <p key={warning} className="rounded-lg border border-amber-600/40 bg-amber-950/35 px-3 py-2 text-xs text-amber-200">
+                            {warning} Configure the integration in Settings.
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                   <CollapsibleSection
                     title="Library Details"
                     open={profileSectionsOpen.details}
@@ -1976,6 +2183,7 @@ export default function App() {
                           <button
                             type="button"
                             title="Browse directories"
+                            aria-label={`Browse for ${selectedLibrary.name} library path`}
                             className="shrink-0 rounded-lg border border-slate-700 bg-slate-800/80 px-3 py-2 text-slate-300 hover:bg-slate-700 hover:text-cyan-300 transition-colors"
                             onClick={() => openDirBrowser(selectedLibrary.id, selectedLibrary.path)}
                           >
@@ -1987,7 +2195,7 @@ export default function App() {
                         Status: <span className="text-slate-200">{libraryRuntimeStates.find((item) => item.library.id === selectedLibrary.id)?.state}</span>
                       </p>
                       <div className="flex flex-wrap gap-2">
-                        <Btn variant="primary" disabled={savingLibrary} onClick={handleSaveLibraryDetails}>
+                        <Btn variant="primary" disabled={savingLibrary || !libraryDetailsDirty} onClick={handleSaveLibraryDetails}>
                           {savingLibrary ? 'Saving…' : 'Save Details'}
                         </Btn>
                         <Btn variant="danger" disabled={deletingLibraryId === selectedLibrary.id} onClick={() => handleDeleteLibrary(selectedLibrary.id)}>
@@ -2026,6 +2234,7 @@ export default function App() {
                       <p className="mb-2 text-sm font-medium text-slate-200">Library Enabled</p>
                       <p className="mb-3 text-xs text-slate-500">Disable to pause optimization for this library.</p>
                       <Toggle
+                        ariaLabel={`Enable ${selectedLibrary.name}`}
                         checked={selectedLibrary.enabled}
                         onChange={(e) => handleLibraryToggle(selectedLibrary.id, e.target.checked)}
                         label={selectedLibrary.enabled ? 'Enabled' : 'Disabled'}
@@ -2037,6 +2246,7 @@ export default function App() {
                       <p className="mb-2 text-sm font-medium text-slate-200">HDR Only</p>
                       <p className="mb-3 text-xs text-slate-500">Only process HDR media in this library.</p>
                       <Toggle
+                        ariaLabel="Only process HDR media"
                         checked={profileDraft.hdr_only}
                         onChange={(e) => setProfileDraft((prev) => ({ ...prev, hdr_only: e.target.checked }))}
                         label={profileDraft.hdr_only ? 'Enabled' : 'Disabled'}
@@ -2048,6 +2258,7 @@ export default function App() {
                       <p className="mb-2 text-sm font-medium text-slate-200">Tone Map HDR to SDR</p>
                       <p className="mb-3 text-xs text-slate-500">Strip HDR metadata and convert to SDR during encoding. Reduces playback stutters on SDR devices.</p>
                       <Toggle
+                        ariaLabel="Tone-map HDR to SDR"
                         checked={profileDraft.tone_map_hdr}
                         onChange={(e) => setProfileDraft((prev) => ({ ...prev, tone_map_hdr: e.target.checked }))}
                         label={profileDraft.tone_map_hdr ? 'Enabled' : 'Disabled'}
@@ -2295,6 +2506,7 @@ export default function App() {
                         <p className="text-xs text-slate-500">Search Prowlarr for a pre-encoded version before falling back to transcoding. Requires Prowlarr and a download client to be configured in Settings.</p>
                       </div>
                       <Toggle
+                        ariaLabel="Enable download mode"
                         checked={profileDraft.download_enabled ?? false}
                         onChange={(e) => setProfileDraft((prev) => ({ ...prev, download_enabled: e.target.checked }))}
                       />
@@ -2367,7 +2579,7 @@ export default function App() {
                     )}
                   </CollapsibleSection>
 
-                  <Btn variant="primary" size="lg" disabled={savingProfile} onClick={handleSaveLibraryProfile} className="w-full sm:w-auto">
+                  <Btn variant="primary" size="lg" disabled={savingProfile || !libraryProfileDirty} onClick={handleSaveLibraryProfile} className="w-full sm:w-auto">
                     {savingProfile ? 'Saving…' : 'Save Profile'}
                   </Btn>
                 </div>
@@ -2413,7 +2625,7 @@ export default function App() {
           />
         )}
 
-        {activePage === 'settings' && (
+        <div className={activePage === 'settings' ? '' : 'hidden'} aria-hidden={activePage === 'settings' ? undefined : 'true'}>
           <SettingsPage
             settings={settings}
             setSettings={setSettings}
@@ -2439,8 +2651,9 @@ export default function App() {
             onCleanupRun={onCleanupRun}
             onOptimizedCleanupRun={onOptimizedCleanupRun}
             onDuplicateOptimizedCleanupRun={onDuplicateOptimizedCleanupRun}
+            onDirtyChange={onSettingsDirtyChange}
           />
-        )}
+        </div>
 
       </div>
       <Modal open={qrModal.open} onClose={closeQrModal} title={qrModal.title}>

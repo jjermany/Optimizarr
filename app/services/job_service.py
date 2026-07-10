@@ -790,13 +790,25 @@ def find_existing_target_artifact_for_identity(
 ) -> Path | None:
     """Find a same-folder artifact for the same media that satisfies the target."""
     identity_key = media_identity_key(source_path)
-    if not identity_key:
-        return None
-
     source = Path(source_path)
     parent = source.parent
     if not parent.exists() or not parent.is_dir():
         return None
+
+    # A title/year identity is deliberately required for database-wide dedupe,
+    # but same-folder artifact detection can safely use a narrower filename
+    # fallback.  Some managers omit the year from filenames (or only put it in
+    # metadata), which previously disabled this check entirely.
+    def local_title_key(path: Path) -> str:
+        stem = re.sub(r'\[[^\]]+\]|\{[^}]+\}', ' ', path.stem)
+        stem = re.split(
+            r'(?i)(?:\b(?:19|20)\d{2}\b|\b(?:2160|1080|720|480)[pi]\b|\b[24]k\b)',
+            stem,
+            maxsplit=1,
+        )[0]
+        return _normalize_identity_text(stem)
+
+    source_local_key = local_title_key(source)
 
     source_resolved = None
     try:
@@ -813,11 +825,18 @@ def find_existing_target_artifact_for_identity(
         except OSError:
             if candidate == source:
                 continue
-        if media_identity_key(str(candidate)) != identity_key:
+        candidate_identity = media_identity_key(str(candidate))
+        if identity_key:
+            if candidate_identity != identity_key:
+                continue
+        elif not source_local_key or local_title_key(candidate) != source_local_key:
             continue
         if output_suffix and candidate.stem.endswith(output_suffix):
             return candidate
         if _has_exact_resolution_label(candidate, target_resolution):
+            return candidate
+        candidate_height = optimization_service.probe_video_height(str(candidate))
+        if candidate_height is not None and abs(int(candidate_height) - int(target_resolution)) <= 32:
             return candidate
     return None
 

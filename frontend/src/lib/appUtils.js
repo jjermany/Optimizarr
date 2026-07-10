@@ -16,6 +16,7 @@ export const HISTORY_PAGE_SIZE = 25;
 export const LOGS_PAGE_SIZE = 25;
 export const JOBS_UI_PREFS_KEY = 'optimizarr.jobsUiPrefs.v1';
 export const LIBRARIES_UI_PREFS_KEY = 'optimizarr.librariesUiPrefs.v1';
+export const SETTINGS_UI_PREFS_KEY = 'optimizarr.settingsUiPrefs.v1';
 export const PROFILE_SECTIONS_DEFAULT = {
   details: false,
   processing: false,
@@ -833,6 +834,105 @@ export function validateLibraryForm(draft) {
   return errors;
 }
 
+export function libraryDetailsHaveChanges(library, baseline) {
+  if (!library || !baseline) return false;
+  return library.name !== baseline.name || library.path !== baseline.path;
+}
+
+export function libraryProfileHasChanges(profile, baseline) {
+  if (!profile || !baseline) return false;
+  const keys = new Set([...Object.keys(profile), ...Object.keys(baseline)]);
+  return [...keys].some((key) => !Object.is(profile[key], baseline[key]));
+}
+
+export function buildLibraryProfileOverview(profile, integrations = {}) {
+  if (!profile) return { items: [], warnings: [] };
+
+  const target = Number(profile.target_resolution) || 1080;
+  const minimum = Number(profile.minimum_source_resolution) || 2160;
+  const codec = CODEC_LABELS[profile.codec] ?? String(profile.codec || 'auto').toUpperCase();
+  const hdrRequired = Boolean(profile.hdr_only || profile.tone_map_hdr);
+  const items = [
+    {
+      label: 'Eligible media',
+      value: hdrRequired
+        ? `HDR sources at ${minimum}p or higher`
+        : `Sources above ${target}p, starting at ${minimum}p`,
+    },
+    {
+      label: 'Output',
+      value: `${target}p ${codec}${profile.tone_map_hdr ? ' SDR (tone-mapped)' : ''}`,
+    },
+    {
+      label: 'Route',
+      value: profile.download_enabled
+        ? `Search for a replacement first; encode after ${Number(profile.download_timeout_minutes) || 60} minutes`
+        : 'Encode locally',
+    },
+    {
+      label: 'Schedule',
+      value: profile.schedule_enabled === false
+        ? 'Any time'
+        : `${String(Number(profile.schedule_start_hour) || 0).padStart(2, '0')}:00–${String(Number(profile.schedule_end_hour) || 0).padStart(2, '0')}:00`,
+    },
+  ];
+
+  const warnings = [];
+  if (profile.download_enabled && !integrations.prowlarrEnabled) {
+    warnings.push('Prowlarr is disabled. Optimizarr will encode locally instead of searching.');
+  }
+  if (profile.download_enabled && !integrations.qbittorrentEnabled && !integrations.sabnzbdEnabled) {
+    warnings.push('No download client is enabled. Optimizarr will encode locally instead of downloading.');
+  }
+  return { items, warnings };
+}
+
+export function settingsValuesEqual(left, right) {
+  if (Object.is(left, right)) return true;
+  if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length || leftKeys.some((key, index) => key !== rightKeys[index])) return false;
+  return leftKeys.every((key) => settingsValuesEqual(left[key], right[key]));
+}
+
+export function buildDashboardOperationalStatus({ queuePaused, libraries = [], queueCount = 0, workingCount = 0 }) {
+  if (libraries.length === 0) {
+    return { tone: 'setup', title: 'Add your first library', detail: 'Optimizarr needs a media library before it can discover work.', action: 'libraries' };
+  }
+  if (queuePaused) {
+    return { tone: 'paused', title: 'New jobs are paused', detail: 'Current work may finish, but no new queue items will start.', action: 'jobs' };
+  }
+  const enabledCount = libraries.filter((library) => library.enabled).length;
+  if (enabledCount === 0) {
+    return { tone: 'paused', title: 'All libraries are disabled', detail: 'Enable a library to resume discovery and optimization.', action: 'libraries' };
+  }
+  if (workingCount > 0) {
+    return { tone: 'working', title: `Processing ${workingCount} item${workingCount === 1 ? '' : 's'}`, detail: `${queueCount} total item${queueCount === 1 ? '' : 's'} currently in the queue.`, action: 'jobs' };
+  }
+  if (queueCount > 0) {
+    return { tone: 'waiting', title: `${queueCount} item${queueCount === 1 ? '' : 's'} waiting`, detail: 'Items may be waiting for their schedule, download client, or an available worker.', action: 'jobs' };
+  }
+  return { tone: 'idle', title: 'Watching for eligible media', detail: `${enabledCount} enabled ${enabledCount === 1 ? 'library is' : 'libraries are'} ready for discovery.`, action: 'libraries' };
+}
+
+export function buildPaginationItems(currentPage, totalPages) {
+  const total = Math.max(1, Number(totalPages) || 1);
+  const current = Math.min(total, Math.max(1, Number(currentPage) || 1));
+  if (total <= 7) return Array.from({ length: total }, (_, index) => index + 1);
+
+  const pages = [...new Set([1, total, current - 1, current, current + 1].filter((page) => page >= 1 && page <= total))]
+    .sort((left, right) => left - right);
+  const items = [];
+  for (const page of pages) {
+    const previous = items[items.length - 1];
+    if (typeof previous === 'number' && page - previous > 1) items.push(`ellipsis-${previous}-${page}`);
+    items.push(page);
+  }
+  return items;
+}
+
 // ── Small reusable UI primitives ─────────────────────────────────────────────
 
 export function loadJobsUiPrefs() {
@@ -851,6 +951,18 @@ export function loadLibrariesUiPrefs() {
   if (typeof window === 'undefined') return {};
   try {
     const raw = window.localStorage.getItem(LIBRARIES_UI_PREFS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function loadSettingsUiPrefs() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(SETTINGS_UI_PREFS_KEY);
     if (!raw) return {};
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === 'object' ? parsed : {};

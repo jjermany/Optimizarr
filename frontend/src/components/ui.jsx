@@ -4,7 +4,7 @@ import { fetchDirs } from '../api';
 
 export function SectionCard({ children, className = '' }) {
   return (
-    <div className={`relative overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-900/72 p-5 shadow-xl shadow-slate-950/45 backdrop-blur-sm ${className}`}>
+    <div className={`relative min-w-0 overflow-hidden rounded-2xl border border-slate-700/70 bg-slate-900/72 p-5 shadow-xl shadow-slate-950/45 backdrop-blur-sm ${className}`}>
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-white/[0.03] via-transparent to-transparent" />
       {children}
     </div>
@@ -21,7 +21,7 @@ export function SectionTitle({ children, className = '' }) {
 }
 
 
-export function SettingsSectionCard({ title, open, onToggle, children }) {
+export function SettingsSectionCard({ title, open, onToggle, children, dirty = false }) {
   const contentId = useId();
 
   return (
@@ -33,7 +33,14 @@ export function SettingsSectionCard({ title, open, onToggle, children }) {
         onClick={onToggle}
         className={`relative flex w-full items-center justify-between gap-4 px-5 text-left transition-colors hover:bg-slate-800/40 ${open ? 'pb-4' : 'py-5'}`}
       >
-        <SectionTitle className="mb-0">{title}</SectionTitle>
+        <div className="flex min-w-0 items-center gap-2">
+          <SectionTitle className="mb-0">{title}</SectionTitle>
+          {dirty && (
+            <span className="rounded-full border border-amber-500/40 bg-amber-950/40 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-amber-300">
+              Unsaved
+            </span>
+          )}
+        </div>
         <span className="flex shrink-0 items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
           {open ? 'Collapse' : 'Expand'}
           <span className={`inline-block transition-transform duration-200 ${open ? 'rotate-180' : ''}`} aria-hidden="true">⌄</span>
@@ -49,18 +56,21 @@ export function SettingsSectionCard({ title, open, onToggle, children }) {
 }
 
 export function CollapsibleSection({ title, open, onToggle, children, divider = false }) {
+  const contentId = useId();
   return (
     <div>
       {divider && <hr className="mb-5 border-slate-800" />}
       <button
         type="button"
+        aria-expanded={open}
+        aria-controls={contentId}
         onClick={onToggle}
         className="mb-4 flex w-full items-center justify-between rounded-xl border border-slate-800/70 bg-slate-950/25 px-4 py-3 text-left transition-colors hover:bg-slate-950/40"
       >
         <SectionTitle>{title}</SectionTitle>
         <span className="text-sm text-slate-400">{open ? 'Hide' : 'Show'}</span>
       </button>
-      {open && children}
+      {open && <div id={contentId}>{children}</div>}
     </div>
   );
 }
@@ -69,7 +79,7 @@ export function FormField({ label, hint, error, children, span2 = false }) {
   return (
     <label className={`flex flex-col gap-1.5 ${span2 ? 'md:col-span-2' : ''}`}>
       <span className="text-sm font-medium text-slate-200">{label}</span>
-      {hint && <p className="text-xs text-slate-500">{hint}</p>}
+      {hint && <p className="break-words text-xs text-slate-500">{hint}</p>}
       {children}
       {error && <p className="text-xs text-red-400">{error}</p>}
     </label>
@@ -120,23 +130,65 @@ export function Btn({ variant = 'primary', size = 'md', className = '', children
 }
 
 export function Modal({ open, title, onClose, children }) {
+  const titleId = useId();
+  const dialogRef = useRef(null);
+  const closeRef = useRef(onClose);
+
+  useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!open) return undefined;
+    const previouslyFocused = document.activeElement;
     function onKeyDown(event) {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') {
+        closeRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = dialogRef.current?.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable?.length) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     }
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
+    const focusTimer = window.setTimeout(() => dialogRef.current?.focus(), 0);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener('keydown', onKeyDown);
+      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
+    };
+  }, [open]);
 
   if (!open) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <button type="button" className="absolute inset-0 bg-slate-950/85" onClick={onClose} aria-label="Close dialog" />
-      <div className="relative z-10 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl shadow-black/50">
+      <button type="button" tabIndex={-1} aria-hidden="true" className="absolute inset-0 bg-slate-950/85" onClick={onClose} />
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="relative z-10 w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-5 shadow-2xl shadow-black/50"
+      >
         <div className="mb-4 flex items-center justify-between gap-3">
-          <h3 className="text-sm font-semibold tracking-wide text-slate-100">{title}</h3>
+          <h3 id={titleId} className="text-sm font-semibold tracking-wide text-slate-100">{title}</h3>
           <Btn variant="secondary" size="sm" onClick={onClose}>Close</Btn>
         </div>
         {children}
@@ -242,11 +294,11 @@ export function HistoryTypeBadge({ type }) {
   );
 }
 
-export function Toggle({ checked, onChange, label }) {
+export function Toggle({ checked, onChange, label, ariaLabel }) {
   return (
     <label className="flex cursor-pointer items-center gap-3">
       <div className="relative">
-        <input type="checkbox" className="sr-only" checked={checked} onChange={onChange} />
+        <input type="checkbox" aria-label={ariaLabel || label} className="sr-only" checked={checked} onChange={onChange} />
         <div className={`h-6 w-11 rounded-full border transition-colors duration-200 ${checked ? 'border-cyan-400/70 bg-cyan-500/40' : 'border-slate-600 bg-slate-700/80'}`} />
         <div className={`absolute top-1 left-1 h-4 w-4 rounded-full bg-white shadow transition-transform duration-200 ${checked ? 'translate-x-5' : 'translate-x-0'}`} />
       </div>
@@ -277,9 +329,52 @@ export function StatusDot({ status }) {
 }
 
 export function DirBrowserModal({ open, initialPath, onSelect, onClose }) {
+  const titleId = useId();
+  const dialogRef = useRef(null);
+  const closeRef = useRef(onClose);
   const [current, setCurrent] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const previouslyFocused = document.activeElement;
+    function onKeyDown(event) {
+      if (event.key === 'Escape') {
+        closeRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = dialogRef.current?.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+      );
+      if (!focusable?.length) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    const focusTimer = window.setTimeout(() => dialogRef.current?.focus(), 0);
+    return () => {
+      window.clearTimeout(focusTimer);
+      window.removeEventListener('keydown', onKeyDown);
+      if (previouslyFocused instanceof HTMLElement) previouslyFocused.focus();
+    };
+  }, [open]);
 
   async function navigate(path) {
     setLoading(true);
@@ -310,11 +405,19 @@ export function DirBrowserModal({ open, initialPath, onSelect, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
-          <h3 className="text-sm font-semibold text-slate-200">Browse Directories</h3>
-          <button type="button" className="text-slate-400 hover:text-slate-200 text-lg leading-none" onClick={onClose}>✕</button>
+          <h3 id={titleId} className="text-sm font-semibold text-slate-200">Browse Directories</h3>
+          <button type="button" aria-label="Close directory browser" className="text-slate-400 hover:text-slate-200 text-lg leading-none" onClick={onClose}>✕</button>
         </div>
 
         {/* Current path */}
@@ -329,8 +432,8 @@ export function DirBrowserModal({ open, initialPath, onSelect, onClose }) {
 
         {/* Directory listing */}
         <div className="max-h-72 overflow-y-auto px-2 py-2">
-          {loading && <p className="px-2 py-3 text-sm text-slate-400">Loading…</p>}
-          {error && <p className="px-2 py-3 text-sm text-red-400">{error}</p>}
+          {loading && <p role="status" className="px-2 py-3 text-sm text-slate-400">Loading…</p>}
+          {error && <p role="alert" className="px-2 py-3 text-sm text-red-400">{error}</p>}
           {!loading && !error && current && current.dirs.length === 0 && (
             <p className="px-2 py-3 text-xs text-slate-500">No subdirectories here.</p>
           )}

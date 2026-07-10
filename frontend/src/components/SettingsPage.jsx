@@ -19,7 +19,12 @@ import {
   updateSabnzbdSettings,
   updateSettings,
 } from '../api';
-import { SETTINGS_SECTIONS_DEFAULT } from '../lib/appUtils';
+import {
+  SETTINGS_SECTIONS_DEFAULT,
+  SETTINGS_UI_PREFS_KEY,
+  loadSettingsUiPrefs,
+  settingsValuesEqual,
+} from '../lib/appUtils';
 import {
   Btn,
   FormField,
@@ -30,6 +35,15 @@ import {
   TextInput,
   Toggle,
 } from './ui';
+
+const TORRENT_CLEANUP_SETTING_KEYS = new Set([
+  'qbt_strike_check_interval_seconds',
+  'qbt_metadata_max_strikes',
+  'qbt_stalled_max_strikes',
+  'qbt_slow_min_speed_bps',
+  'qbt_slow_max_strikes',
+  'qbt_slow_ignore_private',
+]);
 
 function NotificationAgentPanel({ name, description, enabled, onToggleEnabled, open, onToggleOpen, children }) {
   return (
@@ -47,7 +61,7 @@ function NotificationAgentPanel({ name, description, enabled, onToggleEnabled, o
           </div>
           <span className={`inline-block text-slate-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`} aria-hidden="true">⌄</span>
         </button>
-        <Toggle checked={enabled} onChange={onToggleEnabled} />
+        <Toggle checked={enabled} onChange={onToggleEnabled} ariaLabel={`Enable ${name}`} />
       </div>
       {open && <div className="border-t border-slate-800/60 px-4 py-4">{children}</div>}
     </div>
@@ -79,8 +93,12 @@ function SettingsPage({
   onCleanupRun,
   onOptimizedCleanupRun,
   onDuplicateOptimizedCleanupRun,
+  onDirtyChange,
 }) {
-  const [settingsSectionsOpen, setSettingsSectionsOpen] = useState(SETTINGS_SECTIONS_DEFAULT);
+  const [settingsSectionsOpen, setSettingsSectionsOpen] = useState(() => ({
+    ...SETTINGS_SECTIONS_DEFAULT,
+    ...(loadSettingsUiPrefs().sectionsOpen ?? {}),
+  }));
   const [openNotificationAgents, setOpenNotificationAgents] = useState({ email: false, pushover: false });
   const [savingSettings, setSavingSettings] = useState(false);
   const [accountForm, setAccountForm] = useState({
@@ -112,6 +130,67 @@ function SettingsPage({
   const [testingQbtConnection, setTestingQbtConnection] = useState(false);
   const [savingSabSettings, setSavingSabSettings] = useState(false);
   const [testingSabConnection, setTestingSabConnection] = useState(false);
+  const [savedBaselines, setSavedBaselines] = useState({});
+
+  useEffect(() => {
+    window.localStorage.setItem(SETTINGS_UI_PREFS_KEY, JSON.stringify({ sectionsOpen: settingsSectionsOpen }));
+  }, [settingsSectionsOpen]);
+
+  useEffect(() => {
+    setSavedBaselines((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const [key, value] of Object.entries({
+        general: settings,
+        notifications: notificationSettings,
+        plex: plexSettings,
+        prowlarr: prowlarrSettings,
+        qbittorrent: qbtSettings,
+        sabnzbd: sabSettings,
+      })) {
+        if (value && next[key] === undefined) {
+          next[key] = structuredClone(value);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [settings, notificationSettings, plexSettings, prowlarrSettings, qbtSettings, sabSettings]);
+
+  const accountCredentialsDirty = Boolean(
+    accountSettings
+    && (
+      accountForm.username !== (accountSettings.username ?? '')
+      || accountForm.currentPassword
+      || accountForm.newPassword
+      || accountForm.confirmNewPassword
+    )
+  );
+  const accountSecurityDirty = Object.values(accountTwoFactorDraft).some(Boolean)
+    || Object.values(accountDisableTwoFactorDraft).some(Boolean);
+  const savedGeneralSettings = savedBaselines.general;
+  const torrentCleanupDirty = Boolean(savedGeneralSettings && [...TORRENT_CLEANUP_SETTING_KEYS].some(
+    (key) => !settingsValuesEqual(settings?.[key], savedGeneralSettings[key]),
+  ));
+  const generalSettingsDirty = Boolean(savedGeneralSettings && Object.keys(settings ?? {}).some(
+    (key) => !TORRENT_CLEANUP_SETTING_KEYS.has(key) && !settingsValuesEqual(settings[key], savedGeneralSettings[key]),
+  ));
+  const dirtySections = {
+    account: accountCredentialsDirty || accountSecurityDirty,
+    general: generalSettingsDirty,
+    cleanup: torrentCleanupDirty,
+    notifications: Boolean(savedBaselines.notifications && !settingsValuesEqual(notificationSettings, savedBaselines.notifications)),
+    plex: Boolean(savedBaselines.plex && !settingsValuesEqual(plexSettings, savedBaselines.plex)),
+    prowlarr: Boolean(savedBaselines.prowlarr && !settingsValuesEqual(prowlarrSettings, savedBaselines.prowlarr)),
+    qbittorrent: Boolean(savedBaselines.qbittorrent && !settingsValuesEqual(qbtSettings, savedBaselines.qbittorrent)),
+    sabnzbd: Boolean(savedBaselines.sabnzbd && !settingsValuesEqual(sabSettings, savedBaselines.sabnzbd)),
+  };
+  const hasUnsavedSettings = Object.values(dirtySections).some(Boolean);
+
+  useEffect(() => {
+    onDirtyChange?.(hasUnsavedSettings);
+    return () => onDirtyChange?.(false);
+  }, [hasUnsavedSettings, onDirtyChange]);
 
   useEffect(() => {
     if (!accountSettings) return;
@@ -131,6 +210,7 @@ function SettingsPage({
     try {
       const updated = await updateSettings(settings);
       setSettings(updated);
+      setSavedBaselines((prev) => ({ ...prev, general: structuredClone(updated) }));
       pushToast('Settings saved.', 'success');
     } catch (saveError) {
       pushToast(saveError.message || 'Failed to save settings.', 'error');
@@ -286,6 +366,7 @@ function SettingsPage({
     try {
       const updated = await updateNotificationSettings(notificationSettings);
       setNotificationSettings(updated);
+      setSavedBaselines((prev) => ({ ...prev, notifications: structuredClone(updated) }));
       pushToast('Notification settings saved.', 'success');
     } catch (saveError) {
       pushToast(saveError.message || 'Could not save notification settings.', 'error');
@@ -311,6 +392,7 @@ function SettingsPage({
     try {
       const updated = await updatePlexSettings(plexSettings);
       setPlexSettings(updated);
+      setSavedBaselines((prev) => ({ ...prev, plex: structuredClone(updated) }));
       pushToast('Plex settings saved.', 'success');
     } catch (saveError) {
       pushToast(saveError.message || 'Could not save Plex settings.', 'error');
@@ -354,6 +436,7 @@ function SettingsPage({
     try {
       const updated = await updateProwlarrSettings(prowlarrSettings);
       setProwlarrSettings(updated);
+      setSavedBaselines((prev) => ({ ...prev, prowlarr: structuredClone(updated) }));
       pushToast('Prowlarr settings saved.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not save Prowlarr settings.', 'error');
@@ -384,6 +467,7 @@ function SettingsPage({
     try {
       const updated = await updateQBittorrentSettings(qbtSettings);
       setQbtSettings(updated);
+      setSavedBaselines((prev) => ({ ...prev, qbittorrent: structuredClone(updated) }));
       pushToast('qBittorrent settings saved.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not save qBittorrent settings.', 'error');
@@ -414,6 +498,7 @@ function SettingsPage({
     try {
       const updated = await updateSabnzbdSettings(sabSettings);
       setSabSettings(updated);
+      setSavedBaselines((prev) => ({ ...prev, sabnzbd: structuredClone(updated) }));
       pushToast('SABnzbd settings saved.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not save SABnzbd settings.', 'error');
@@ -451,7 +536,13 @@ function SettingsPage({
 
   return (
     <section className="animate-fade-in space-y-5">
-      <SettingsSectionCard title="Account Settings" open={settingsSectionsOpen.account} onToggle={() => toggleSettingsSection('account')}>
+      {hasUnsavedSettings && (
+        <div role="status" className="sticky top-3 z-30 rounded-xl border border-amber-500/40 bg-amber-950/95 px-4 py-3 shadow-xl shadow-slate-950/50">
+          <p className="text-sm font-semibold text-amber-100">Unsaved settings</p>
+          <p className="text-xs text-amber-200/70">Sections with pending changes are marked below. General settings and torrent cleanup rules share one save operation.</p>
+        </div>
+      )}
+      <SettingsSectionCard dirty={dirtySections.account} title="Account Settings" open={settingsSectionsOpen.account} onToggle={() => toggleSettingsSection('account')}>
         <div className="grid gap-4 md:grid-cols-2">
           <FormField label="Username">
             <TextInput
@@ -488,7 +579,7 @@ function SettingsPage({
         </div>
 
         <div className="mt-5 flex flex-wrap gap-3">
-          <Btn variant="violet" disabled={savingAccountSettings} onClick={saveAccountSettings}>
+          <Btn variant="violet" disabled={savingAccountSettings || !accountCredentialsDirty} onClick={saveAccountSettings}>
             {savingAccountSettings ? 'Saving…' : 'Save Account'}
           </Btn>
           <span className="rounded-full border border-slate-700 bg-slate-900/80 px-3 py-2 text-xs text-slate-300">
@@ -572,7 +663,7 @@ function SettingsPage({
         )}
       </SettingsSectionCard>
 
-      <SettingsSectionCard title="General Settings" open={settingsSectionsOpen.general} onToggle={() => toggleSettingsSection('general')}>
+      <SettingsSectionCard dirty={dirtySections.general} title="General Settings" open={settingsSectionsOpen.general} onToggle={() => toggleSettingsSection('general')}>
         <div className="grid gap-4 md:grid-cols-2">
           <FormField label="History Retention (Days)" hint="How long to keep completed job history.">
             <TextInput type="number" min={1} value={settings.history_retention_days} onChange={(e) => setSettings((prev) => ({ ...prev, history_retention_days: Number(e.target.value) }))} />
@@ -630,6 +721,7 @@ function SettingsPage({
               <p className="text-xs text-slate-500">Automatically scan libraries for new media files.</p>
             </div>
             <Toggle
+              ariaLabel="Enable automatic discovery"
               checked={settings.auto_discovery_enabled}
               onChange={(e) => setSettings((prev) => ({ ...prev, auto_discovery_enabled: e.target.checked }))}
             />
@@ -641,6 +733,7 @@ function SettingsPage({
               <p className="text-xs text-slate-500">Automatically re-add jobs that were interrupted by an unexpected shutdown.</p>
             </div>
             <Toggle
+              ariaLabel="Requeue interrupted jobs"
               checked={settings.requeue_interrupted_jobs}
               onChange={(e) => setSettings((prev) => ({ ...prev, requeue_interrupted_jobs: e.target.checked }))}
             />
@@ -652,6 +745,7 @@ function SettingsPage({
               <p className="text-xs text-slate-500">Remove leftover temporary encoding directories on startup.</p>
             </div>
             <Toggle
+              ariaLabel="Clean workspaces on startup"
               checked={settings.cleanup_workspaces_on_startup}
               onChange={(e) => setSettings((prev) => ({ ...prev, cleanup_workspaces_on_startup: e.target.checked }))}
             />
@@ -663,6 +757,7 @@ function SettingsPage({
               <p className="text-xs text-slate-500">Automatically remove duplicate optimized/source artifacts on the configured interval.</p>
             </div>
             <Toggle
+              ariaLabel="Enable duplicate cleanup"
               checked={settings.duplicate_cleanup_enabled}
               onChange={(e) => setSettings((prev) => ({ ...prev, duplicate_cleanup_enabled: e.target.checked }))}
             />
@@ -685,14 +780,14 @@ function SettingsPage({
         </div>
 
         <div className="mt-5">
-          <Btn variant="primary" size="lg" disabled={savingSettings} onClick={saveSettings}>
+          <Btn variant="primary" size="lg" disabled={savingSettings || !dirtySections.general} onClick={saveSettings}>
             {savingSettings ? 'Saving…' : 'Save Settings'}
           </Btn>
         </div>
       </SettingsSectionCard>
 
       {/* Notifications */}
-      <SettingsSectionCard title="Notifications" open={settingsSectionsOpen.notifications} onToggle={() => toggleSettingsSection('notifications')}>
+      <SettingsSectionCard dirty={dirtySections.notifications} title="Notifications" open={settingsSectionsOpen.notifications} onToggle={() => toggleSettingsSection('notifications')}>
         <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Agents</p>
         <div className="space-y-3">
           <NotificationAgentPanel
@@ -798,6 +893,7 @@ function SettingsPage({
               <div key={key} className="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-2.5">
                 <span className="text-sm text-slate-200">{label}</span>
                 <Toggle
+                  ariaLabel={`Notify on ${label}`}
                   checked={notificationSettings.notify_on[key]}
                   onChange={(e) => setNotificationSettings((prev) => ({ ...prev, notify_on: { ...prev.notify_on, [key]: e.target.checked } }))}
                 />
@@ -807,7 +903,7 @@ function SettingsPage({
         </div>
 
         <div className="mt-5 flex flex-wrap gap-3">
-          <Btn variant="violet" disabled={savingSettings} onClick={saveNotificationSettings}>
+          <Btn variant="violet" disabled={savingSettings || !dirtySections.notifications} onClick={saveNotificationSettings}>
             Save Notification Settings
           </Btn>
         </div>
@@ -815,13 +911,14 @@ function SettingsPage({
 
       {/* Prowlarr Integration */}
       {prowlarrSettings && (
-        <SettingsSectionCard title="Prowlarr Integration" open={settingsSectionsOpen.prowlarr} onToggle={() => toggleSettingsSection('prowlarr')}>
+        <SettingsSectionCard dirty={dirtySections.prowlarr || dirtySections.cleanup} title="Prowlarr & Torrent Cleanup" open={settingsSectionsOpen.prowlarr} onToggle={() => toggleSettingsSection('prowlarr')}>
           <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
             <div>
               <p className="text-sm font-medium text-slate-200">Enable Prowlarr</p>
               <p className="text-xs text-slate-500">Search Prowlarr indexers for pre-encoded releases instead of transcoding.</p>
             </div>
             <Toggle
+              ariaLabel="Enable Prowlarr"
               checked={prowlarrSettings.enabled}
               onChange={(e) => setProwlarrSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
             />
@@ -895,6 +992,7 @@ function SettingsPage({
                       <p className="text-xs text-slate-500">Private torrents still receive metadata and stalled strikes.</p>
                     </div>
                     <Toggle
+                      ariaLabel="Ignore private slow torrents"
                       checked={settings.qbt_slow_ignore_private}
                       onChange={(e) => setSettings((prev) => ({ ...prev, qbt_slow_ignore_private: e.target.checked }))}
                     />
@@ -902,18 +1000,18 @@ function SettingsPage({
                 </div>
               </div>
               <div className="mt-4">
-                <Btn variant="primary" disabled={savingSettings} onClick={saveSettings}>
+                <Btn variant="primary" disabled={savingSettings || !dirtySections.cleanup} onClick={saveSettings}>
                   {savingSettings ? 'Saving...' : 'Save Cleanup Rules'}
                 </Btn>
               </div>
             </div>
           )}
           <div className="mt-5 flex flex-wrap gap-3">
-            <Btn variant="violet" disabled={savingProwlarrSettings} onClick={saveProwlarrSettings}>
+            <Btn variant="violet" disabled={savingProwlarrSettings || !dirtySections.prowlarr} onClick={saveProwlarrSettings}>
               {savingProwlarrSettings ? 'Saving…' : 'Save Prowlarr Settings'}
             </Btn>
-            <Btn variant="secondary" disabled={testingProwlarrConnection} onClick={handleTestProwlarrConnection}>
-              {testingProwlarrConnection ? 'Testing…' : 'Test Connection'}
+            <Btn variant="secondary" title={dirtySections.prowlarr ? 'Save Prowlarr settings before testing the connection.' : undefined} disabled={testingProwlarrConnection || dirtySections.prowlarr} onClick={handleTestProwlarrConnection}>
+              {dirtySections.prowlarr ? 'Save Before Testing' : testingProwlarrConnection ? 'Testing…' : 'Test Connection'}
             </Btn>
           </div>
         </SettingsSectionCard>
@@ -921,13 +1019,14 @@ function SettingsPage({
 
       {/* qBittorrent */}
       {qbtSettings && (
-        <SettingsSectionCard title="qBittorrent" open={settingsSectionsOpen.qbittorrent} onToggle={() => toggleSettingsSection('qbittorrent')}>
+        <SettingsSectionCard dirty={dirtySections.qbittorrent} title="qBittorrent" open={settingsSectionsOpen.qbittorrent} onToggle={() => toggleSettingsSection('qbittorrent')}>
           <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
             <div>
               <p className="text-sm font-medium text-slate-200">Enable qBittorrent</p>
               <p className="text-xs text-slate-500">Used for torrent releases from Prowlarr. Downloads tagged with "optimizarr" and left to follow qBittorrent's own seeding rules after import.</p>
             </div>
             <Toggle
+              ariaLabel="Enable qBittorrent"
               checked={qbtSettings.enabled}
               onChange={(e) => setQbtSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
             />
@@ -968,11 +1067,11 @@ function SettingsPage({
             </FormField>
           </div>
           <div className="mt-5 flex flex-wrap gap-3">
-            <Btn variant="violet" disabled={savingQbtSettings} onClick={saveQbtSettings}>
+            <Btn variant="violet" disabled={savingQbtSettings || !dirtySections.qbittorrent} onClick={saveQbtSettings}>
               {savingQbtSettings ? 'Saving…' : 'Save qBittorrent Settings'}
             </Btn>
-            <Btn variant="secondary" disabled={testingQbtConnection} onClick={handleTestQbtConnection}>
-              {testingQbtConnection ? 'Testing…' : 'Test Connection'}
+            <Btn variant="secondary" title={dirtySections.qbittorrent ? 'Save qBittorrent settings before testing the connection.' : undefined} disabled={testingQbtConnection || dirtySections.qbittorrent} onClick={handleTestQbtConnection}>
+              {dirtySections.qbittorrent ? 'Save Before Testing' : testingQbtConnection ? 'Testing…' : 'Test Connection'}
             </Btn>
           </div>
         </SettingsSectionCard>
@@ -980,13 +1079,14 @@ function SettingsPage({
 
       {/* SABnzbd */}
       {sabSettings && (
-        <SettingsSectionCard title="SABnzbd" open={settingsSectionsOpen.sabnzbd} onToggle={() => toggleSettingsSection('sabnzbd')}>
+        <SettingsSectionCard dirty={dirtySections.sabnzbd} title="SABnzbd" open={settingsSectionsOpen.sabnzbd} onToggle={() => toggleSettingsSection('sabnzbd')}>
           <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
             <div>
               <p className="text-sm font-medium text-slate-200">Enable SABnzbd</p>
               <p className="text-xs text-slate-500">Used for usenet/NZB releases from Prowlarr. History entry is automatically removed from SABnzbd after a successful import.</p>
             </div>
             <Toggle
+              ariaLabel="Enable SABnzbd"
               checked={sabSettings.enabled}
               onChange={(e) => setSabSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
             />
@@ -1019,24 +1119,25 @@ function SettingsPage({
             </FormField>
           </div>
           <div className="mt-5 flex flex-wrap gap-3">
-            <Btn variant="violet" disabled={savingSabSettings} onClick={saveSabSettings}>
+            <Btn variant="violet" disabled={savingSabSettings || !dirtySections.sabnzbd} onClick={saveSabSettings}>
               {savingSabSettings ? 'Saving…' : 'Save SABnzbd Settings'}
             </Btn>
-            <Btn variant="secondary" disabled={testingSabConnection} onClick={handleTestSabConnection}>
-              {testingSabConnection ? 'Testing…' : 'Test Connection'}
+            <Btn variant="secondary" title={dirtySections.sabnzbd ? 'Save SABnzbd settings before testing the connection.' : undefined} disabled={testingSabConnection || dirtySections.sabnzbd} onClick={handleTestSabConnection}>
+              {dirtySections.sabnzbd ? 'Save Before Testing' : testingSabConnection ? 'Testing…' : 'Test Connection'}
             </Btn>
           </div>
         </SettingsSectionCard>
       )}
 
       {/* Plex Integration */}
-      <SettingsSectionCard title="Plex Integration" open={settingsSectionsOpen.plex} onToggle={() => toggleSettingsSection('plex')}>
+      <SettingsSectionCard dirty={dirtySections.plex} title="Plex Integration" open={settingsSectionsOpen.plex} onToggle={() => toggleSettingsSection('plex')}>
         <div className="mb-4 flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-3">
           <div>
             <p className="text-sm font-medium text-slate-200">Enable Plex Scan</p>
             <p className="text-xs text-slate-500">Trigger a Plex library scan after each file finishes encoding.</p>
           </div>
           <Toggle
+            ariaLabel="Enable Plex scans"
             checked={plexSettings.enabled}
             onChange={(e) => setPlexSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
           />
@@ -1084,14 +1185,14 @@ function SettingsPage({
           </div>
         )}
         <div className="mt-5 flex flex-wrap gap-3">
-          <Btn variant="violet" disabled={savingPlexSettings} onClick={savePlexSettings}>
+          <Btn variant="violet" disabled={savingPlexSettings || !dirtySections.plex} onClick={savePlexSettings}>
             {savingPlexSettings ? 'Saving…' : 'Save Plex Settings'}
           </Btn>
-          <Btn variant="secondary" disabled={testingPlexConnection} onClick={handleTestPlexConnection}>
-            {testingPlexConnection ? 'Testing…' : 'Test Connection'}
+          <Btn variant="secondary" title={dirtySections.plex ? 'Save Plex settings before testing the connection.' : undefined} disabled={testingPlexConnection || dirtySections.plex} onClick={handleTestPlexConnection}>
+            {dirtySections.plex ? 'Save Before Testing' : testingPlexConnection ? 'Testing…' : 'Test Connection'}
           </Btn>
-          <Btn variant="secondary" disabled={loadingPlexLibraries} onClick={loadPlexLibraries}>
-            {loadingPlexLibraries ? 'Loading…' : 'Load Sections'}
+          <Btn variant="secondary" title={dirtySections.plex ? 'Save Plex settings before loading library sections.' : undefined} disabled={loadingPlexLibraries || dirtySections.plex} onClick={loadPlexLibraries}>
+            {dirtySections.plex ? 'Save Before Loading' : loadingPlexLibraries ? 'Loading…' : 'Load Sections'}
           </Btn>
         </div>
       </SettingsSectionCard>

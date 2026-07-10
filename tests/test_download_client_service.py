@@ -1,6 +1,50 @@
 from types import SimpleNamespace
 
+import pytest
+from sqlalchemy.exc import IntegrityError
+
+from app.models.qbittorrent_settings import QBittorrentSettings
+from app.models.sabnzbd_settings import SabnzbdSettings
 from app.services import download_client_service
+
+
+@pytest.mark.parametrize(
+    ('getter', 'existing'),
+    [
+        (
+            download_client_service.get_or_create_qbt_settings,
+            QBittorrentSettings(id=1, enabled=False, host='http://localhost', port=8080, username='admin', password=''),
+        ),
+        (
+            download_client_service.get_or_create_sab_settings,
+            SabnzbdSettings(id=1, enabled=False, host='http://localhost', port=8080, api_key=''),
+        ),
+    ],
+)
+def test_get_or_create_download_settings_recovers_from_concurrent_singleton_insert(getter, existing):
+    class FakeQuery:
+        def __init__(self):
+            self.calls = 0
+
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            self.calls += 1
+            return None if self.calls == 1 else existing
+
+    query = FakeQuery()
+    db = SimpleNamespace(
+        query=lambda _model: query,
+        add=lambda _row: None,
+        commit=lambda: (_ for _ in ()).throw(IntegrityError('insert', {}, Exception('duplicate'))),
+        refresh=lambda _row: None,
+        rollback=lambda: setattr(db, 'rolled_back', True),
+        rolled_back=False,
+    )
+
+    assert getter(db) is existing
+    assert db.rolled_back is True
 
 
 def test_get_sab_status_parses_timeleft_eta_and_speed(monkeypatch):
