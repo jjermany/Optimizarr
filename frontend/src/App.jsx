@@ -2390,8 +2390,8 @@ export default function App() {
                     {/* CRF */}
                     {profileDraft.bitrate_mode === 'vbr_crf' && (
                       <FormField label={`CRF (${profileDraft.crf ?? 23})`} hint="Range 18–30. Lower = better quality / larger files." error={profileErrors.crf} span2>
-                        <input type="range" min={1} max={40} value={profileDraft.crf ?? 23} onChange={(e) => setProfileDraft((prev) => ({ ...prev, crf: Number(e.target.value) }))} className="w-full" />
-                        <TextInput type="number" min={1} value={profileDraft.crf ?? 23} onChange={(e) => setProfileDraft((prev) => ({ ...prev, crf: Number(e.target.value) }))} className="mt-2" />
+                        <input type="range" min={18} max={30} value={profileDraft.crf ?? 23} onChange={(e) => setProfileDraft((prev) => ({ ...prev, crf: Number(e.target.value) }))} className="w-full" />
+                        <TextInput type="number" min={18} max={30} value={profileDraft.crf ?? 23} onChange={(e) => setProfileDraft((prev) => ({ ...prev, crf: Number(e.target.value) }))} className="mt-2" />
                       </FormField>
                     )}
 

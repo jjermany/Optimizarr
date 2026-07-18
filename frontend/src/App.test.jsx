@@ -24,6 +24,7 @@ import {
   normalizeDownloadJob,
   removeJobById,
   shouldShowDownloadElapsed,
+  validateLibraryDraft,
 } from './App';
 
 describe('library unsaved change detection', () => {
@@ -41,6 +42,20 @@ describe('library unsaved change detection', () => {
 });
 
 describe('library profile behavior overview', () => {
+  it('rejects CRF values outside the supported 18-30 range', () => {
+    const baseDraft = {
+      target_resolution: 1080,
+      minimum_source_resolution: 2160,
+      bitrate_mode: 'vbr_crf',
+      max_workers: 1,
+    };
+
+    expect(validateLibraryDraft({ ...baseDraft, crf: 17 }, true).crf).toBe('CRF must be between 18 and 30.');
+    expect(validateLibraryDraft({ ...baseDraft, crf: 31 }, true).crf).toBe('CRF must be between 18 and 30.');
+    expect(validateLibraryDraft({ ...baseDraft, crf: 18 }, true).crf).toBeUndefined();
+    expect(validateLibraryDraft({ ...baseDraft, crf: 30 }, true).crf).toBeUndefined();
+  });
+
   it('explains HDR tone mapping, download fallback, and schedule behavior', () => {
     const overview = buildLibraryProfileOverview({
       hdr_only: true,

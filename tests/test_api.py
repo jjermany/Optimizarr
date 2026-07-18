@@ -669,6 +669,12 @@ def test_create_update_delete_library_and_profile_endpoints(monkeypatch, tmp_pat
         assert profile_response.json()['schedule_policy'] == 'finish_current'
         assert profile_response.json()['output_conflict_policy'] == 'skip'
 
+        low_crf_response = client.put(f'/libraries/{library_id}/profile', json={'bitrate_mode': 'vbr_crf', 'crf': 17})
+        assert low_crf_response.status_code == 422
+
+        high_crf_response = client.put(f'/libraries/{library_id}/profile', json={'bitrate_mode': 'vbr_crf', 'crf': 31})
+        assert high_crf_response.status_code == 422
+
         update_profile_response = client.put(
             f'/libraries/{library_id}/profile',
             json={

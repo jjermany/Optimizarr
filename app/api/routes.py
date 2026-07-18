@@ -1212,7 +1212,7 @@ class LibraryProfileUpdateRequest(BaseModel):
     audio_mode: AudioModeEnum | None = None
     bitrate_mode: BitrateModeEnum | None = None
     bitrate_mbps: int | None = Field(default=None, ge=1)
-    crf: int | None = Field(default=None, ge=1)
+    crf: int | None = Field(default=None, ge=18, le=30)
     speed_preset: SpeedPresetEnum | None = None
     hdr_only: bool | None = None
     tone_map_hdr: bool | None = None
