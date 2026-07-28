@@ -101,6 +101,7 @@ _NOTIFY_FLAG_BY_KIND: dict[str, str] = {
     'low_disk_pause': 'notify_on_low_disk_pause',
     'recovery_ran': 'notify_on_recovery_ran',
     'batch_complete': 'notify_on_batch_complete',
+    'manual_interaction': 'notify_on_manual_interaction',
 }
 _FAILURE_REASON_HINTS: dict[str, str] = {
     'qsv_encode_failed': 'Intel Quick Sync Video (QSV) failed to initialize or encode on this host.',
@@ -227,6 +228,7 @@ def settings_to_payload(settings: NotificationSettings) -> dict:
             'low_disk_pause': settings.notify_on_low_disk_pause,
             'recovery_ran': settings.notify_on_recovery_ran,
             'batch_complete': settings.notify_on_batch_complete,
+            'manual_interaction': settings.notify_on_manual_interaction,
         },
     }
 
@@ -271,6 +273,8 @@ def update_settings(db: Session, payload: dict) -> NotificationSettings:
         settings.notify_on_recovery_ran = bool(notify_on['recovery_ran'])
     if 'batch_complete' in notify_on:
         settings.notify_on_batch_complete = bool(notify_on['batch_complete'])
+    if 'manual_interaction' in notify_on:
+        settings.notify_on_manual_interaction = bool(notify_on['manual_interaction'])
 
     db.commit()
     db.refresh(settings)
@@ -474,6 +478,40 @@ def enqueue_download_job_complete(download_job: DownloadJob) -> None:
         f'Status: Download imported successfully.\n'
     )
     enqueue_notification(subject='Optimizarr job complete', body=body, kind='job_complete')
+
+
+def enqueue_download_needs_review(download_job: DownloadJob, review: dict | None = None) -> None:
+    db = SessionLocal()
+    try:
+        settings = get_or_create_notification_settings(db)
+        if not settings.notify_on_manual_interaction:
+            return
+        library_name = None
+        if download_job.library_id:
+            library = db.query(Library).filter(Library.id == download_job.library_id).first()
+            library_name = library.name if library else None
+    finally:
+        db.close()
+
+    review = review if isinstance(review, dict) else {}
+    reasons = [str(reason) for reason in review.get('reasons', []) if str(reason).strip()]
+    candidates = review.get('candidates', [])
+    candidate_count = len(candidates) if isinstance(candidates, list) else 0
+    body = (
+        'Job Type: Download\n'
+        f'Library: {library_name or "unknown"}\n'
+        f'File: {format_display_name(download_job.source_file_path)}\n'
+        f'Release: {download_job.release_name or "unknown"}\n'
+        f'Confidence: {review.get("confidence") or "unknown"}\n'
+        f'Candidates: {candidate_count}\n'
+        f'Reason: {"; ".join(reasons) if reasons else "Import confidence requires review"}\n'
+        'Suggested action: Open the Jobs queue and choose Import Selected, Reject & Retry, or Encode Source.\n'
+    )
+    enqueue_notification(
+        subject='Optimizarr manual interaction required',
+        body=body,
+        kind='manual_interaction',
+    )
 
 
 def enqueue_job_failed(job: Job) -> None:

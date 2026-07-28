@@ -22,6 +22,7 @@ class NotificationSettings(Base):
     notify_on_low_disk_pause: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notify_on_recovery_ran: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notify_on_batch_complete: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    notify_on_manual_interaction: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     pushover_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     pushover_api_token: Mapped[str] = mapped_column(Text, default='', nullable=False)
     pushover_user_key: Mapped[str] = mapped_column(Text, default='', nullable=False)

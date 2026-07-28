@@ -20,6 +20,7 @@ from app.services.download_monitor_service import (
     _extract_qbt_info_hash,
     _find_completed_download_match,
     _find_sab_queue_item_for_download_job,
+    _hold_download_for_review,
     _build_search_query,
     _check_download_progress,
     _cleanup_stale_qbt_torrents,
@@ -105,6 +106,32 @@ def test_import_assessment_holds_ambiguous_multiple_video_payload(monkeypatch, t
     assert selected is None
     assert review['confidence'] == 'medium'
     assert '2 video files require a selection' in review['reasons']
+
+
+def test_hold_for_review_notifies_only_on_first_transition(monkeypatch):
+    notifications = []
+    monkeypatch.setattr(
+        notification_service,
+        'enqueue_download_needs_review',
+        lambda job, review: notifications.append((job.id, review['confidence'])),
+    )
+    monkeypatch.setattr('app.services.download_monitor_service._publish_download_job', lambda _job: None)
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+        dj = DownloadJob(
+            source_file_path='/movies/When Harry Met Sally (1989).mkv',
+            status=DownloadJobStatus.downloading.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+        review = {'confidence': 'low', 'reasons': ['Resolution mismatch'], 'candidates': []}
+
+        _hold_download_for_review(db, dj, review)
+        _hold_download_for_review(db, dj, review)
+
+    assert notifications == [(dj.id, 'low')]
 
 
 

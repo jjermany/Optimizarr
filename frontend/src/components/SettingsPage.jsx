@@ -889,6 +889,7 @@ function SettingsPage({
               { key: 'low_disk_pause', label: 'Low Disk Pause' },
               { key: 'recovery_ran', label: 'Recovery Ran' },
               { key: 'batch_complete', label: 'Batch Complete' },
+              { key: 'manual_interaction', label: 'Manual Interaction Needed' },
             ].map(({ key, label }) => (
               <div key={key} className="flex items-center justify-between rounded-lg border border-slate-800/60 bg-slate-950/30 px-4 py-2.5">
                 <span className="text-sm text-slate-200">{label}</span>

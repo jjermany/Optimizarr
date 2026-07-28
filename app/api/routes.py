@@ -862,6 +862,7 @@ class NotificationTriggerSettings(BaseModel):
     low_disk_pause: bool = True
     recovery_ran: bool = True
     batch_complete: bool = True
+    manual_interaction: bool = True
 
 
 class NotificationSettingsResponse(BaseModel):

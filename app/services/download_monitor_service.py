@@ -4101,6 +4101,7 @@ def _assess_download_for_import(
 
 
 def _hold_download_for_review(db: Session, dj: DownloadJob, review: dict) -> None:
+    already_awaiting_review = dj.status == DownloadJobStatus.needs_review.value
     dj.status = DownloadJobStatus.needs_review.value
     dj.progress_percent = 100
     dj.eta_seconds = None
@@ -4112,6 +4113,8 @@ def _hold_download_for_review(db: Session, dj: DownloadJob, review: dict) -> Non
     db.refresh(dj)
     _publish_download_job(dj)
     logger.warning('Download job %s held for manual import review: %s', dj.id, '; '.join(reasons))
+    if not already_awaiting_review:
+        notification_service.enqueue_download_needs_review(dj, review)
 
 
 def _import_file(

@@ -191,6 +191,12 @@ def init_db() -> None:
             'notify_on_recovery_ran',
             'notify_on_recovery_ran BOOLEAN NOT NULL DEFAULT 1',
         )
+        _add_column_if_missing(
+            connection,
+            'notification_settings',
+            'notify_on_manual_interaction',
+            'notify_on_manual_interaction BOOLEAN NOT NULL DEFAULT 1',
+        )
         # Default to enabled for existing installs so already-configured SMTP
         # notifications keep flowing after the toggle is introduced; new
         # installs create the column from the model default (disabled).

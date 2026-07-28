@@ -359,6 +359,63 @@ def test_enqueue_download_job_complete_marks_download_type(monkeypatch):
     ]
 
 
+def test_enqueue_download_needs_review_includes_reasons_and_actions(monkeypatch):
+    queued = []
+    monkeypatch.setattr(
+        notification_service,
+        'enqueue_notification',
+        lambda subject, body, kind=None: queued.append((subject, body, kind)),
+    )
+    with SessionLocal() as db:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_manual_interaction = True
+        db.commit()
+
+    download_job = type(
+        'DownloadJobStub',
+        (),
+        {
+            'source_file_path': '/movies/When Harry Met Sally (1989).mkv',
+            'release_name': 'When.Harry.Met.Sally.1989.1080p.WEB-DL',
+            'library_id': None,
+        },
+    )
+    notification_service.enqueue_download_needs_review(
+        download_job,
+        {
+            'confidence': 'low',
+            'reasons': ['Actual video resolution is 720p; expected 1080p'],
+            'candidates': [{'path': '/downloads/movie.mkv'}],
+        },
+    )
+
+    assert len(queued) == 1
+    subject, body, kind = queued[0]
+    assert subject == 'Optimizarr manual interaction required'
+    assert kind == 'manual_interaction'
+    assert 'When Harry Met Sally (1989)' in body
+    assert 'Actual video resolution is 720p; expected 1080p' in body
+    assert 'Import Selected, Reject & Retry, or Encode Source' in body
+
+
+def test_enqueue_download_needs_review_respects_disabled_preference(monkeypatch):
+    queued = []
+    monkeypatch.setattr(notification_service, 'enqueue_notification', lambda *args, **kwargs: queued.append(args))
+    with SessionLocal() as db:
+        settings = notification_service.get_or_create_notification_settings(db)
+        settings.notify_on_manual_interaction = False
+        db.commit()
+
+    download_job = type(
+        'DownloadJobStub',
+        (),
+        {'source_file_path': '/movies/Movie (2024).mkv', 'release_name': None, 'library_id': None},
+    )
+    notification_service.enqueue_download_needs_review(download_job, {})
+
+    assert queued == []
+
+
 def test_handle_job_terminal_state_marks_waiting_encode_as_fallback_queued(monkeypatch):
     monkeypatch.setattr(notification_service.broker, 'publish', lambda *_args, **_kwargs: None)
 
