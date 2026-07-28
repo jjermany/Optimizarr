@@ -21,6 +21,7 @@ import {
   buildPaginationItems,
   mergeDownloadJobsWithUpdate,
   mergeJobsWithUpdate,
+  mergeLibraryScanProgress,
   normalizeDownloadJob,
   removeJobById,
   shouldShowDownloadElapsed,
@@ -123,6 +124,51 @@ describe('compact pagination', () => {
 describe('realtime refresh cadence', () => {
   it('keeps active queue polling fast enough for progress bars', () => {
     expect(ACTIVE_QUEUE_POLL_MS).toBeLessThanOrEqual(1000);
+  });
+});
+
+describe('manual library scan progress', () => {
+  it('creates a measured pinned operation and never moves backward', () => {
+    const started = mergeLibraryScanProgress(null, {
+      library_id: 7,
+      library_name: 'Movies',
+      progress_percent: 25,
+      message: 'Evaluating media files (5/20)...',
+    });
+    const stale = mergeLibraryScanProgress(started, {
+      library_id: 7,
+      library_name: 'Movies',
+      progress_percent: 20,
+      message: 'Delayed update',
+    });
+    const completed = mergeLibraryScanProgress(stale, {
+      library_id: 7,
+      library_name: 'Movies',
+      progress_percent: 100,
+      message: 'Scan complete.',
+    });
+
+    expect(started).toMatchObject({
+      operation: 'library_scan',
+      title: 'Library Scan: Movies',
+      progress: 25,
+      tone: 'running',
+    });
+    expect(stale.progress).toBe(25);
+    expect(completed).toMatchObject({ progress: 100, tone: 'success' });
+  });
+
+  it('does not replace another running pinned operation', () => {
+    const cleanup = {
+      operation: 'duplicate_cleanup',
+      title: 'Duplicate Output Cleanup',
+      progress: 40,
+      tone: 'running',
+    };
+    expect(mergeLibraryScanProgress(cleanup, {
+      library_id: 7,
+      progress_percent: 50,
+    })).toBe(cleanup);
   });
 });
 

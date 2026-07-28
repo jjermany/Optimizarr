@@ -104,6 +104,7 @@ import {
   libraryProfileHasChanges,
   buildLibraryProfileOverview,
   buildDashboardOperationalStatus,
+  mergeLibraryScanProgress,
 } from './lib/appUtils';
 export * from './lib/appUtils';
 
@@ -782,9 +783,10 @@ export default function App() {
     }
   }
 
-  function startPinnedOperation({ title, detail, autoProgress = true }) {
+  function startPinnedOperation({ title, detail, autoProgress = true, ...metadata }) {
     clearPinnedOperationTimer();
     setPinnedOperation({
+      ...metadata,
       title,
       detail,
       progress: 1,
@@ -804,9 +806,11 @@ export default function App() {
     }, 1200);
   }
 
-  function updatePinnedOperation(detail, progress, { force = false } = {}) {
+  function updatePinnedOperation(detail, progress, { force = false, operation, libraryId } = {}) {
     setPinnedOperation((prev) => {
       if (!prev) return prev;
+      if (operation && prev.operation !== operation) return prev;
+      if (libraryId != null && String(prev.libraryId) !== String(libraryId)) return prev;
       return {
         ...prev,
         detail,
@@ -815,16 +819,34 @@ export default function App() {
     });
   }
 
-  function completePinnedOperation(detail) {
+  function completePinnedOperation(detail, { operation, libraryId } = {}) {
     clearPinnedOperationTimer();
-    setPinnedOperation((prev) => prev ? { ...prev, detail, progress: 100, tone: 'success' } : null);
-    window.setTimeout(() => setPinnedOperation(null), 2200);
+    setPinnedOperation((prev) => {
+      if (!prev) return prev;
+      if (operation && prev.operation !== operation) return prev;
+      if (libraryId != null && String(prev.libraryId) !== String(libraryId)) return prev;
+      return { ...prev, detail, progress: 100, tone: 'success' };
+    });
+    window.setTimeout(() => setPinnedOperation((prev) => {
+      if (operation && prev?.operation !== operation) return prev;
+      if (libraryId != null && String(prev?.libraryId) !== String(libraryId)) return prev;
+      return null;
+    }), 2200);
   }
 
-  function failPinnedOperation(detail) {
+  function failPinnedOperation(detail, { operation, libraryId } = {}) {
     clearPinnedOperationTimer();
-    setPinnedOperation((prev) => prev ? { ...prev, detail, tone: 'error' } : null);
-    window.setTimeout(() => setPinnedOperation(null), 7000);
+    setPinnedOperation((prev) => {
+      if (!prev) return prev;
+      if (operation && prev.operation !== operation) return prev;
+      if (libraryId != null && String(prev.libraryId) !== String(libraryId)) return prev;
+      return { ...prev, detail, tone: 'error' };
+    });
+    window.setTimeout(() => setPinnedOperation((prev) => {
+      if (operation && prev?.operation !== operation) return prev;
+      if (libraryId != null && String(prev?.libraryId) !== String(libraryId)) return prev;
+      return null;
+    }), 7000);
   }
 
   function mergeJobUpdate(nextJob) {
@@ -1151,6 +1173,10 @@ export default function App() {
           }
           if (payload.type === 'system_event') {
             const systemEvent = payload.data?.event;
+            if (systemEvent === 'manual_library_scan_progress') {
+              setPinnedOperation((prev) => mergeLibraryScanProgress(prev, payload.data));
+              return;
+            }
             if (systemEvent === 'duplicate_optimized_cleanup_progress') {
               const progress = Number(payload.data?.progress_percent);
               const detail = payload.data?.message || 'Duplicate cleanup is running...';
@@ -1160,6 +1186,7 @@ export default function App() {
                   const previousProgress = prev?.title === 'Duplicate Output Cleanup' ? Number(prev.progress ?? 0) : 0;
                   const displayedProgress = Math.max(previousProgress, nextProgress);
                   return {
+                    operation: 'duplicate_cleanup',
                     title: 'Duplicate Output Cleanup',
                     detail,
                     progress: displayedProgress,
@@ -1441,10 +1468,32 @@ export default function App() {
   }
 
   async function handleLibraryScan(libraryId) {
+    const libraryName = libraries.find((library) => library.id === libraryId)?.name || 'Library';
+    startPinnedOperation({
+      operation: 'library_scan',
+      libraryId,
+      title: `Library Scan: ${libraryName}`,
+      detail: 'Starting library scan...',
+      autoProgress: false,
+    });
     try {
-      await scanLibrary(libraryId);
+      const result = await scanLibrary(libraryId);
+      updatePinnedOperation(
+        'Scan complete. Refreshing dashboard data...',
+        99,
+        { operation: 'library_scan', libraryId },
+      );
       await refreshAll();
+      const createdCount = result?.created_jobs?.length ?? 0;
+      completePinnedOperation(
+        `Complete. Created ${createdCount} job${createdCount === 1 ? '' : 's'}.`,
+        { operation: 'library_scan', libraryId },
+      );
     } catch (scanError) {
+      failPinnedOperation(
+        scanError.message || 'Library scan failed.',
+        { operation: 'library_scan', libraryId },
+      );
       pushToast(scanError.message || 'Failed to start library scan.', 'error');
     }
   }
@@ -1677,20 +1726,31 @@ export default function App() {
   async function handleDuplicateOptimizedCleanupRun() {
     if (pinnedOperation?.tone === 'running' && pinnedOperation.title === 'Duplicate Output Cleanup') return;
     startPinnedOperation({
+      operation: 'duplicate_cleanup',
       title: 'Duplicate Output Cleanup',
       detail: 'Scanning libraries for duplicate optimized outputs...',
       autoProgress: false,
     });
     try {
       const result = await runDuplicateOptimizedCleanup();
-      updatePinnedOperation('Cleanup finished. Refreshing dashboard data...', 94);
+      updatePinnedOperation(
+        'Cleanup finished. Refreshing dashboard data...',
+        94,
+        { operation: 'duplicate_cleanup' },
+      );
       pushToast(`Deleted ${result.deleted_files} duplicate optimized file(s) from ${result.affected_library_ids.length} librar${result.affected_library_ids.length === 1 ? 'y' : 'ies'}.`, 'success');
       await refreshAll();
-      updatePinnedOperation('Refreshing logs...', 98);
+      updatePinnedOperation('Refreshing logs...', 98, { operation: 'duplicate_cleanup' });
       await refreshLogs();
-      completePinnedOperation(`Complete. Removed ${result.deleted_files} duplicate file${result.deleted_files === 1 ? '' : 's'}.`);
+      completePinnedOperation(
+        `Complete. Removed ${result.deleted_files} duplicate file${result.deleted_files === 1 ? '' : 's'}.`,
+        { operation: 'duplicate_cleanup' },
+      );
     } catch (cleanupError) {
-      failPinnedOperation(cleanupError.message || 'Duplicate cleanup failed.');
+      failPinnedOperation(
+        cleanupError.message || 'Duplicate cleanup failed.',
+        { operation: 'duplicate_cleanup' },
+      );
       pushToast(cleanupError.message || 'Duplicate cleanup failed.', 'error');
     }
   }

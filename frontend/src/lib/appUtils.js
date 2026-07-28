@@ -105,6 +105,33 @@ export function progressFromJob(job) {
   return 0;
 }
 
+export function mergeLibraryScanProgress(previous, payload) {
+  const reportedProgress = Number(payload?.progress_percent);
+  if (!Number.isFinite(reportedProgress)) return previous;
+  if (previous?.tone === 'running' && previous.operation && previous.operation !== 'library_scan') {
+    return previous;
+  }
+
+  const libraryId = payload?.library_id;
+  const isSameScan = previous?.operation === 'library_scan'
+    && String(previous.libraryId) === String(libraryId);
+  const priorProgress = isSameScan ? Number(previous.progress ?? 0) : 0;
+  const progress = Math.max(
+    Number.isFinite(priorProgress) ? priorProgress : 0,
+    Math.max(0, Math.min(100, Math.round(reportedProgress))),
+  );
+  const libraryName = payload?.library_name || 'Library';
+
+  return {
+    operation: 'library_scan',
+    libraryId,
+    title: `Library Scan: ${libraryName}`,
+    detail: payload?.message || 'Scanning library...',
+    progress,
+    tone: progress >= 100 ? 'success' : 'running',
+  };
+}
+
 export function formatHour(hour) {
   return `${String(hour).padStart(2, '0')}:00`;
 }

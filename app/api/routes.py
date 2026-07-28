@@ -1754,6 +1754,16 @@ def delete_job_endpoint(job_id: int, _: None = Depends(require_ui_auth), db: Ses
 @router.post('/libraries/{library_id}/scan', response_model=ScanResponse)
 def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> ScanResponse:
     library = _get_library_or_404(db, library_id)
+
+    def publish_progress(progress_percent: int, message: str) -> None:
+        broker.publish_system_event(
+            'manual_library_scan_progress',
+            library_id=library.id,
+            library_name=library.name,
+            progress_percent=progress_percent,
+            message=message,
+        )
+
     _record_log_event(
         db,
         'library_scan_started',
@@ -1762,7 +1772,7 @@ def scan_library_jobs(library_id: int, _: None = Depends(require_ui_auth), db: S
     )
     worker_queue.pause_queue(reason='manual_scan')
     try:
-        jobs = scan_library(db, library, include_disabled=True)
+        jobs = scan_library(db, library, include_disabled=True, progress_callback=publish_progress)
         payload = [JobResponse.from_orm_job(job) for job in jobs]
         notification_service.register_scan_batch([job.id for job in jobs], library_name=library.name)
         _record_log_event(

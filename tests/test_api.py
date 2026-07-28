@@ -1502,7 +1502,11 @@ def test_scan_endpoints_pause_queue_before_queueing(monkeypatch, tmp_path):
     monkeypatch.setattr(worker_queue, 'pause_queue', lambda reason='manual': paused_reasons.append(reason))
     monkeypatch.setattr(worker_queue, 'resume_queue', lambda reason='manual': resumed_reasons.append(reason))
     monkeypatch.setattr(routes, 'scan_enabled_libraries', lambda db: [])
-    monkeypatch.setattr(routes, 'scan_library', lambda db, library, include_disabled=False: [])
+    monkeypatch.setattr(
+        routes,
+        'scan_library',
+        lambda db, library, include_disabled=False, progress_callback=None: [],
+    )
 
     with TestClient(app) as client:
         create_library = client.post('/libraries', json={'name': 'Scan Pause', 'path': str(library_path), 'enabled': True})

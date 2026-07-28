@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import threading
 import time
+from typing import Callable
 
 from sqlalchemy.orm import Session
 
@@ -41,6 +42,7 @@ STABILITY_WINDOW_SECONDS = 60
 _NEAR_4K_HEIGHT_FLOOR = 2000
 _active_library_scans: dict[int, int] = {}
 _active_library_scans_lock = threading.Lock()
+ScanProgressCallback = Callable[[int, str], None]
 
 
 @dataclass
@@ -346,10 +348,32 @@ class _LibraryScanTracker:
             broker.publish_system_event('library_scan_completed', library_id=self._library.id)
 
 
-def scan_library(db: Session, library: Library, include_disabled: bool = False) -> list:
+def scan_library(
+    db: Session,
+    library: Library,
+    include_disabled: bool = False,
+    progress_callback: ScanProgressCallback | None = None,
+) -> list:
     if not include_disabled and not library.enabled:
         return []
+
+    last_reported_progress = -1
+
+    def report_progress(progress_percent: int, message: str) -> None:
+        nonlocal last_reported_progress
+        if progress_callback is None:
+            return
+        progress = max(last_reported_progress, min(100, max(0, int(progress_percent))))
+        if progress == last_reported_progress:
+            return
+        last_reported_progress = progress
+        try:
+            progress_callback(progress, message)
+        except Exception:
+            logger.exception('Library scan progress callback failed for library %s', library.id)
+
     with _LibraryScanTracker(library):
+        report_progress(1, 'Reading library settings...')
         profile = _get_or_create_library_profile(db, library)
         created_jobs = []
         library_path = Path(library.path)
@@ -358,28 +382,59 @@ def scan_library(db: Session, library: Library, include_disabled: bool = False) 
         probe_plan = _build_probe_plan(profile)
         candidates: list[DiscoveryProbeCandidate] = []
         media_states = list(_iter_media_file_states(library_path))
+        total_files = len(media_states)
+        report_progress(5, f'Found {total_files} media file{"s" if total_files != 1 else ""}.')
 
-        for media_state in media_states:
+        for index, media_state in enumerate(media_states, start=1):
             candidate = _prepare_probe_candidate(db, media_state.path, library, profile)
             if candidate is not None:
                 candidates.append(candidate)
+            report_progress(
+                5 + int((index / max(1, total_files)) * 20),
+                f'Evaluating media files ({index}/{total_files})...',
+            )
 
+        total_candidates = len(candidates)
         if workers == 1:
-            probed_candidates = [
-                (candidate, _probe_candidate_metadata(candidate, probe_plan))
-                for candidate in candidates
-            ]
+            probed_candidates = []
+            for index, candidate in enumerate(candidates, start=1):
+                probed_candidates.append((candidate, _probe_candidate_metadata(candidate, probe_plan)))
+                report_progress(
+                    25 + int((index / max(1, total_candidates)) * 55),
+                    f'Probing media metadata ({index}/{total_candidates})...',
+                )
         else:
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix='scan-probe') as executor:
-                probe_results = list(executor.map(lambda candidate: _probe_candidate_metadata(candidate, probe_plan), candidates))
+                probe_results = []
+                for index, probe_result in enumerate(
+                    executor.map(lambda candidate: _probe_candidate_metadata(candidate, probe_plan), candidates),
+                    start=1,
+                ):
+                    probe_results.append(probe_result)
+                    report_progress(
+                        25 + int((index / max(1, total_candidates)) * 55),
+                        f'Probing media metadata ({index}/{total_candidates})...',
+                    )
             probed_candidates = list(zip(candidates, probe_results))
 
-        for candidate, probe_result in probed_candidates:
+        if total_candidates == 0:
+            report_progress(80, 'No media files require metadata probing.')
+
+        for index, (candidate, probe_result) in enumerate(probed_candidates, start=1):
             job = _finalize_candidate_with_probe(db, candidate, probe_result, library, profile)
             if job is not None:
                 created_jobs.append(job)
+            report_progress(
+                80 + int((index / max(1, total_candidates)) * 15),
+                f'Updating scan results ({index}/{total_candidates})...',
+            )
 
+        report_progress(98, 'Synchronizing the library index...')
         _sync_library_discovery_index(db, library, profile, media_states)
+        report_progress(
+            100,
+            f'Scan complete. Created {len(created_jobs)} job{"s" if len(created_jobs) != 1 else ""}.',
+        )
         return created_jobs
 
 

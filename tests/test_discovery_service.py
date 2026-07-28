@@ -641,6 +641,15 @@ def test_scan_library_tracks_active_scan_state(monkeypatch, tmp_path):
         'library_scan_started',
         'library_scan_completed',
     ]
+    progress_events = [data for event, data in events if event == 'manual_library_scan_progress']
+    assert progress_events
+    assert progress_events[0]['progress_percent'] == 1
+    assert progress_events[-1]['progress_percent'] == 100
+    assert all(
+        earlier['progress_percent'] < later['progress_percent']
+        for earlier, later in zip(progress_events, progress_events[1:])
+    )
+    assert all(event['library_id'] == library_id for event in progress_events)
 
 
 def test_scan_library_skips_disabled_library_by_default(monkeypatch, tmp_path):
