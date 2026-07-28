@@ -779,6 +779,50 @@ def test_integration_settings_reject_hosts_with_paths():
     assert smtp_response.status_code == 422
 
 
+def test_sab_retry_limit_defaults_and_clamps_on_save():
+    from app.core.database import SessionLocal
+    from app.models.sabnzbd_settings import SabnzbdSettings
+
+    with SessionLocal() as db:
+        db.query(SabnzbdSettings).delete()
+        db.commit()
+
+    with TestClient(app) as client:
+        default_response = client.get('/download-client/sabnzbd')
+        high_response = client.put('/download-client/sabnzbd', json={'max_download_retries': 25})
+        low_response = client.put('/download-client/sabnzbd', json={'max_download_retries': -4})
+        client.put('/download-client/sabnzbd', json={'max_download_retries': 10})
+
+    assert default_response.status_code == 200
+    assert default_response.json()['max_download_retries'] == 10
+    assert high_response.status_code == 200
+    assert high_response.json()['max_download_retries'] == 20
+    assert low_response.status_code == 200
+    assert low_response.json()['max_download_retries'] == 0
+
+
+def test_qbt_retry_limit_defaults_and_clamps_on_save():
+    from app.core.database import SessionLocal
+    from app.models.qbittorrent_settings import QBittorrentSettings
+
+    with SessionLocal() as db:
+        db.query(QBittorrentSettings).delete()
+        db.commit()
+
+    with TestClient(app) as client:
+        default_response = client.get('/download-client/qbittorrent')
+        high_response = client.put('/download-client/qbittorrent', json={'max_download_retries': 99})
+        low_response = client.put('/download-client/qbittorrent', json={'max_download_retries': -2})
+        client.put('/download-client/qbittorrent', json={'max_download_retries': 1})
+
+    assert default_response.status_code == 200
+    assert default_response.json()['max_download_retries'] == 1
+    assert high_response.status_code == 200
+    assert high_response.json()['max_download_retries'] == 20
+    assert low_response.status_code == 200
+    assert low_response.json()['max_download_retries'] == 0
+
+
 def test_create_and_fetch_job():
     with TestClient(app) as client:
         create_response = client.post('/jobs', json={'source_path': '/media/demo.mkv'})

@@ -13,3 +13,4 @@ class QBittorrentSettings(Base):
     port: Mapped[int] = mapped_column(Integer, default=8080, nullable=False)
     username: Mapped[str] = mapped_column(String(255), default='admin', nullable=False)
     password: Mapped[str] = mapped_column(Text, default='', nullable=False)
+    max_download_retries: Mapped[int] = mapped_column(Integer, default=1, nullable=False)

@@ -890,3 +890,43 @@ def test_get_sab_status_history_completed_entry_is_not_marked_failed(monkeypatch
     assert status['is_complete'] is True
     assert status['is_failed'] is False
     assert status['not_found'] is False
+
+
+def test_remove_qbt_torrent_refuses_completed_seed(monkeypatch):
+    posts = []
+
+    class FakeClient:
+        def get(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: [{'state': 'seeding', 'progress': 1.0}],
+            )
+
+        def post(self, *args, **kwargs):
+            posts.append((args, kwargs))
+            return SimpleNamespace(raise_for_status=lambda: None)
+
+    monkeypatch.setattr(download_client_service, '_qbt_session', lambda _settings: FakeClient())
+
+    assert download_client_service.remove_qbt_torrent(SimpleNamespace(), 'ABC123', delete_files=True) is False
+    assert posts == []
+
+
+def test_remove_qbt_torrent_allows_incomplete_transfer(monkeypatch):
+    posts = []
+
+    class FakeClient:
+        def get(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: [{'state': 'downloading', 'progress': 0.25}],
+            )
+
+        def post(self, *args, **kwargs):
+            posts.append((args, kwargs))
+            return SimpleNamespace(raise_for_status=lambda: None)
+
+    monkeypatch.setattr(download_client_service, '_qbt_session', lambda _settings: FakeClient())
+
+    assert download_client_service.remove_qbt_torrent(SimpleNamespace(), 'ABC123', delete_files=True) is True
+    assert posts[0][1]['data'] == {'hashes': 'abc123', 'deleteFiles': 'true'}

@@ -38,6 +38,7 @@ import {
   FallbackIndicator,
   HistoryTypeBadge,
   MobileActionMenu,
+  Modal,
   SelectInput,
   TextInput,
 } from './ui';
@@ -254,6 +255,7 @@ const QueueEncodeCard = memo(function QueueEncodeCard({ job, libName, actionPend
 });
 
 const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPending, nowMs, onCancel, onRetry, onDelete, onReview }) {
+  const [reviewOpen, setReviewOpen] = useState(false);
   const { year } = extractTitleYear(dj.source_file_path);
   const title = getDisplayTitle(dj.source_file_path);
   const statusColor =
@@ -288,7 +290,7 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
   ].filter(Boolean);
   return (
     <tr className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 xl:table-cell">{dj.id}</td>
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 2xl:table-cell">{dj.id}</td>
       <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{libName}</td>
@@ -310,12 +312,11 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
           </p>
         )}
         {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
-        {dj.status === 'needs_review' && <DownloadReviewActions dj={dj} actionPending={actionPending} onReview={onReview} />}
       </td>
-      <td className="hidden max-w-[180px] truncate px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell" title={dj.search_query}>
+      <td className="hidden max-w-[180px] truncate px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell" title={dj.search_query}>
         {dj.status === 'searching' && !dj.search_query ? <span className="italic text-slate-500">Building query…</span> : (dj.search_query ?? '—')}
       </td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-600 xl:table-cell">—</td>
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-600 2xl:table-cell">—</td>
       <td className="px-4 py-2.5 align-top">
         {['paused', 'downloading', 'repairing', 'unpacking', 'moving'].includes(dj.status) ? (
           <div>
@@ -328,6 +329,11 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
       </td>
       <td className="px-4 py-2.5 align-top">
         <div className="flex flex-wrap gap-1.5">
+          {dj.status === 'needs_review' && (
+            <Btn size="sm" variant="warning" disabled={Boolean(actionPending)} onClick={() => setReviewOpen(true)}>
+              Review Match
+            </Btn>
+          )}
           {['checking', 'searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
             <Btn size="sm" variant="danger" disabled={Boolean(actionPending)} onClick={() => onCancel(dj.id)}>
               {actionPending === 'remove_reset' ? 'Working…' : 'Reset Search'}
@@ -344,6 +350,16 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
           </Btn>
           )}
         </div>
+        <Modal open={reviewOpen} title={`Review download match: ${title}`} onClose={() => setReviewOpen(false)}>
+          <DownloadReviewActions
+            dj={dj}
+            actionPending={actionPending}
+            onReview={(...args) => {
+              setReviewOpen(false);
+              onReview(...args);
+            }}
+          />
+        </Modal>
       </td>
     </tr>
   );
@@ -365,7 +381,7 @@ const QueueEncodeRow = memo(function QueueEncodeRow({ job, libName, actionPendin
   const jobStatusLabel = queueWaitingForRoute ? 'awaiting download route' : job.status;
   return (
     <tr className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 xl:table-cell">{job.id}</td>
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 2xl:table-cell">{job.id}</td>
       <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={job.source_path}>{title}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{libName}</td>
@@ -431,12 +447,12 @@ const QueueEncodeRow = memo(function QueueEncodeRow({ job, libName, actionPendin
           </p>
         )}
       </td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">
         <span>{formatResolution(job.source_resolution)}</span>
         <span className="mx-1.5 text-slate-600">·</span>
         <span>{formatHdrIndicator(job.source_is_hdr)}</span>
       </td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">
         {job.encoder_used ? (
           <>
             <span className={job.hwaccel_used ? 'font-medium text-cyan-400' : ''}>{job.encoder_used}</span>
@@ -589,7 +605,7 @@ const HistoryDownloadRow = memo(function HistoryDownloadRow({ dj, libName, actio
   return (
     <tr className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
       <td className="px-4 py-2.5 align-top text-sm"><HistoryTypeBadge type="download" /></td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 xl:table-cell">{dj.id}</td>
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 2xl:table-cell">{dj.id}</td>
       <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{libName}</td>
@@ -597,12 +613,12 @@ const HistoryDownloadRow = memo(function HistoryDownloadRow({ dj, libName, actio
         <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${dj.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'failed' || dj.status === 'timed_out' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
         {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
       </td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">{clientLabel ? `Client: ${clientLabel}` : '—'}</td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">—</td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">—</td>
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">{clientLabel ? `Client: ${clientLabel}` : '—'}</td>
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">—</td>
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">—</td>
       <td className="whitespace-nowrap px-4 py-2.5 align-top text-xs text-slate-400">{completedDate}</td>
-      <td className="whitespace-nowrap px-4 py-2.5 align-top">
-        <div className="flex flex-wrap gap-1.5">
+      <td className="px-4 py-2.5 align-top">
+        <MobileActionMenu label="Manage">
           {dj.status === 'complete' && dj.imported_file_path && (
             <>
               <Btn size="sm" variant="danger" disabled={Boolean(actionPending)} onClick={() => onDeleteFile(dj.id, false)}>
@@ -626,7 +642,7 @@ const HistoryDownloadRow = memo(function HistoryDownloadRow({ dj, libName, actio
           <Btn size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => onDelete(dj.id)}>
             {actionPending === 'delete' ? 'Working…' : 'Remove'}
           </Btn>
-        </div>
+        </MobileActionMenu>
       </td>
     </tr>
   );
@@ -640,7 +656,7 @@ const HistoryEncodeRow = memo(function HistoryEncodeRow({ job, libName, actionPe
   return (
     <tr className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
       <td className="px-4 py-2.5 align-top text-sm"><HistoryTypeBadge type="encode" /></td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 xl:table-cell">{job.id}</td>
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 2xl:table-cell">{job.id}</td>
       <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={job.source_path}>{title}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{libName}</td>
@@ -650,7 +666,7 @@ const HistoryEncodeRow = memo(function HistoryEncodeRow({ job, libName, actionPe
           <p className="mt-0.5 text-xs text-red-400">{job.error_message}</p>
         )}
       </td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             {hasFallback && <FallbackIndicator />}
@@ -660,7 +676,7 @@ const HistoryEncodeRow = memo(function HistoryEncodeRow({ job, libName, actionPe
           </div>
         </div>
       </td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">
         {job.encoder_used ? (
           <>
             <span className={job.hwaccel_used ? 'font-medium text-cyan-400' : ''}>{job.encoder_used}</span>
@@ -672,7 +688,7 @@ const HistoryEncodeRow = memo(function HistoryEncodeRow({ job, libName, actionPe
           <span className="text-slate-600">—</span>
         )}
       </td>
-      <td className="hidden whitespace-nowrap px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell">{encodeDuration}</td>
+      <td className="hidden whitespace-nowrap px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">{encodeDuration}</td>
       <td className="whitespace-nowrap px-4 py-2.5 align-top text-xs text-slate-400">{completedDate}</td>
       <td className="whitespace-nowrap px-4 py-2.5 align-top">
         <div className="flex flex-wrap gap-1.5">
@@ -1112,7 +1128,7 @@ function JobsPage({
         {/* Queue tab content */}
         {jobsView === 'queue' && (
           <>
-            <div className="space-y-3 p-3 md:hidden">
+            <div className="space-y-3 p-3 xl:hidden">
               {pagedJobs.length === 0 && (
                 <div className="rounded-xl border border-slate-700/70 bg-slate-900/60 px-4 py-10 text-center text-sm text-slate-500">
                   {queueEmptyMessage}
@@ -1144,17 +1160,17 @@ function JobsPage({
                 )
               ))}
             </div>
-            <div className="hidden overflow-x-auto [scrollbar-gutter:stable] md:block">
-              <table className="min-w-[1024px] divide-y divide-slate-800">
+            <div className="hidden xl:block">
+              <table className="w-full table-fixed divide-y divide-slate-800">
                 <thead className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur-sm">
                   <tr>
-                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">ID</th>
+                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 2xl:table-cell">ID</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Title</th>
                     <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Year</th>
                     <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Library</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
-                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Details</th>
-                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Encoder</th>
+                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 2xl:table-cell">Details</th>
+                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 2xl:table-cell">Encoder</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Progress</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
                   </tr>
@@ -1222,7 +1238,7 @@ function JobsPage({
         {/* History tab content */}
         {jobsView === 'history' && (
           <>
-            <div className="space-y-3 p-3 md:hidden">
+            <div className="space-y-3 p-3 xl:hidden">
               {pagedHistoryItems.length === 0 && (
                 <div className="rounded-xl border border-slate-700/70 bg-slate-900/60 px-4 py-10 text-center text-sm text-slate-500">
                   {historySearch ? 'No matching history.' : 'No completed jobs yet.'}
@@ -1252,19 +1268,19 @@ function JobsPage({
                 )
               ))}
             </div>
-            <div className="hidden overflow-x-auto [scrollbar-gutter:stable] md:block">
-              <table className="min-w-[1200px] divide-y divide-slate-800">
+            <div className="hidden xl:block">
+              <table className="w-full table-fixed divide-y divide-slate-800">
                 <thead className="sticky top-0 z-10 bg-slate-900/95 backdrop-blur-sm">
                   <tr>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Type</th>
-                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">ID</th>
+                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 2xl:table-cell">ID</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Title</th>
                     <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Year</th>
                     <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 lg:table-cell">Library</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Status</th>
-                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Details</th>
-                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Encoder</th>
-                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 xl:table-cell">Encode Time</th>
+                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 2xl:table-cell">Details</th>
+                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 2xl:table-cell">Encoder</th>
+                    <th className="hidden px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400 2xl:table-cell">Encode Time</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Completed</th>
                     <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">Actions</th>
                   </tr>

@@ -1066,6 +1066,21 @@ function SettingsPage({
                 placeholder="••••••••"
               />
             </FormField>
+            <FormField
+              label="Automatic Download Retries"
+              hint="Number of alternative torrent releases to try after an incomplete download fails. 0 disables retries; maximum 20. Completed seeds are never removed."
+            >
+              <TextInput
+                type="number"
+                min={0}
+                max={20}
+                value={qbtSettings.max_download_retries ?? 1}
+                onChange={(e) => setQbtSettings((prev) => ({
+                  ...prev,
+                  max_download_retries: Number(e.target.value),
+                }))}
+              />
+            </FormField>
           </div>
           <div className="mt-5 flex flex-wrap gap-3">
             <Btn variant="violet" disabled={savingQbtSettings || !dirtySections.qbittorrent} onClick={saveQbtSettings}>
@@ -1116,6 +1131,21 @@ function SettingsPage({
                 value={sabSettings.api_key}
                 onChange={(e) => setSabSettings((prev) => ({ ...prev, api_key: e.target.value }))}
                 placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+              />
+            </FormField>
+            <FormField
+              label="Automatic Download Retries"
+              hint="Number of alternative SAB releases to try after a failed or rejected download. 0 disables retries; maximum 20."
+            >
+              <TextInput
+                type="number"
+                min={0}
+                max={20}
+                value={sabSettings.max_download_retries ?? 10}
+                onChange={(e) => setSabSettings((prev) => ({
+                  ...prev,
+                  max_download_retries: Number(e.target.value),
+                }))}
               />
             </FormField>
           </div>

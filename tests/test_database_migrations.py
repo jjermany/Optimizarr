@@ -41,6 +41,25 @@ def test_auto_migration_persists_long_preferred_video_encoder_values(tmp_path):
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         '''))
+        connection.execute(text('''
+            CREATE TABLE sabnzbd_settings (
+                id INTEGER NOT NULL PRIMARY KEY,
+                enabled BOOLEAN NOT NULL DEFAULT 0,
+                host VARCHAR(255) NOT NULL DEFAULT 'http://localhost',
+                port INTEGER NOT NULL DEFAULT 8080,
+                api_key TEXT NOT NULL DEFAULT ''
+            )
+        '''))
+        connection.execute(text('''
+            CREATE TABLE qbittorrent_settings (
+                id INTEGER NOT NULL PRIMARY KEY,
+                enabled BOOLEAN NOT NULL DEFAULT 0,
+                host VARCHAR(255) NOT NULL DEFAULT 'http://localhost',
+                port INTEGER NOT NULL DEFAULT 8080,
+                username VARCHAR(255) NOT NULL DEFAULT 'admin',
+                password TEXT NOT NULL DEFAULT ''
+            )
+        '''))
 
     original_engine = database.engine
     original_bind = database.SessionLocal.kw.get('bind')
@@ -55,6 +74,18 @@ def test_auto_migration_persists_long_preferred_video_encoder_values(tmp_path):
                 if row[1] == 'preferred_video_encoder'
             )
             assert preferred_column[2] == 'VARCHAR(32)'
+            sab_retry_column = next(
+                row for row in connection.execute(text('PRAGMA table_info(sabnzbd_settings)'))
+                if row[1] == 'max_download_retries'
+            )
+            assert sab_retry_column[2] == 'INTEGER'
+            assert sab_retry_column[4] == '10'
+            qbt_retry_column = next(
+                row for row in connection.execute(text('PRAGMA table_info(qbittorrent_settings)'))
+                if row[1] == 'max_download_retries'
+            )
+            assert qbt_retry_column[2] == 'INTEGER'
+            assert qbt_retry_column[4] == '1'
 
             connection.execute(text(
                 "INSERT INTO libraries (id, name, path, enabled, created_at, updated_at) "

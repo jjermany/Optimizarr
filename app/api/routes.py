@@ -954,6 +954,7 @@ class QBittorrentSettingsResponse(BaseModel):
     port: int
     username: str
     password: str
+    max_download_retries: int = 1
 
 
 class QBittorrentSettingsUpdateRequest(BaseModel):
@@ -962,6 +963,14 @@ class QBittorrentSettingsUpdateRequest(BaseModel):
     port: int | None = Field(default=None, ge=1, le=65535)
     username: str | None = None
     password: str | None = None
+    max_download_retries: int | None = None
+
+    @field_validator('max_download_retries', mode='before')
+    @classmethod
+    def clamp_max_download_retries(cls, value):
+        if value is None:
+            return None
+        return max(0, min(20, int(value)))
 
     @field_validator('host')
     @classmethod
@@ -976,6 +985,7 @@ class SabnzbdSettingsResponse(BaseModel):
     host: str
     port: int
     api_key: str
+    max_download_retries: int = 10
 
 
 class SabnzbdSettingsUpdateRequest(BaseModel):
@@ -983,6 +993,14 @@ class SabnzbdSettingsUpdateRequest(BaseModel):
     host: str | None = None
     port: int | None = Field(default=None, ge=1, le=65535)
     api_key: str | None = None
+    max_download_retries: int | None = None
+
+    @field_validator('max_download_retries', mode='before')
+    @classmethod
+    def clamp_max_download_retries(cls, value):
+        if value is None:
+            return None
+        return max(0, min(20, int(value)))
 
     @field_validator('host')
     @classmethod

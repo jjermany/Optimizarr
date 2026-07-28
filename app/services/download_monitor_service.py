@@ -63,6 +63,7 @@ _tagged_job_ids: set[int] = set()
 # In-memory only; entries are retried on restart/progress checks as needed.
 _categorized_sab_job_ids: set[int] = set()
 _DEFAULT_DOWNLOAD_MAX_RETRIES = 5
+_QBT_MIN_AUTOMATIC_CONFIDENCE = 75
 _CLIENT_TRACKING_GRACE_SECONDS = 10
 _QBT_STRIKE_CHECK_INTERVAL_SECONDS = 60
 _QBT_METADATA_MAX_STRIKES = 3
@@ -2514,10 +2515,38 @@ def _is_unwanted_variant_release(title: str, source_path: str = '') -> bool:
     return False
 
 
+def _release_match_confidence_score(release_title: str, source_path: str) -> int:
+    """Score identity evidence separately from availability and file quality."""
+    source_title, source_year = _extract_source_title_and_year(source_path)
+    source_tokens = set(_title_tokens_for_matching(source_title))
+    release_tokens = set(_title_tokens_for_matching(release_title))
+    if not source_tokens or not release_tokens:
+        return 0
+
+    coverage = len(source_tokens & release_tokens) / len(source_tokens)
+    score = int(round(45 * coverage))
+    normalized_source = _normalize_release_title(source_title).strip()
+    normalized_release = _normalize_release_title(release_title).strip()
+    if normalized_source and normalized_release.startswith(normalized_source):
+        score += 20
+
+    release_years = {int(value) for value in re.findall(r'\b(?:19|20)\d{2}\b', release_title)}
+    if source_year is not None:
+        if source_year in release_years:
+            score += 25
+        elif not release_years:
+            score += 8
+    else:
+        score += 10
+
+    return max(0, min(100, score))
+
+
 def _rank_candidates(releases: list[dict]) -> list[dict]:
     """
-    Sort releases by Prowlarr indexer priority (lower wins), then seeders
-    descending, then size ascending.
+    Prefer identity confidence first. Within comparable matches, prefer SAB
+    (its payload can be safely discarded), then indexer quality/availability.
+    File size is the final quality signal and is deliberately descending.
     """
     def _safe_int(value: object, default: int = 0) -> int:
         try:
@@ -2528,9 +2557,11 @@ def _rank_candidates(releases: list[dict]) -> list[dict]:
     return sorted(
         releases,
         key=lambda r: (
+            -_safe_int(r.get('_match_confidence', 0), 0),
+            0 if str(r.get('protocol') or '').lower() == 'usenet' else 1,
             _safe_int(r.get('_indexer_priority', 10_000_000), 10_000_000),
             -_safe_int(r.get('seeders', 0), 0),
-            _safe_int(r.get('size', 0), 0),
+            -_safe_int(r.get('size', 0), 0),
         ),
     )
 
@@ -2626,6 +2657,7 @@ def _select_best_release(
                 '_indexer_id': indexer_id,
                 '_indexer_name': indexer_name,
                 '_indexer_priority': indexer_priority,
+                '_match_confidence': _release_match_confidence_score(title, source_path),
             }
         )
 
@@ -2901,9 +2933,20 @@ def _retry_failed_download(
     *,
     reason: str,
     failed_release_key: str = '',
+    attempted_client_type: str | None = None,
 ) -> bool:
-    max_retries = int(getattr(dj, 'max_retries', _DEFAULT_DOWNLOAD_MAX_RETRIES) or _DEFAULT_DOWNLOAD_MAX_RETRIES)
+    client_type = str(attempted_client_type or dj.client_type or '').strip().lower()
+    configured_max = int(getattr(dj, 'max_retries', _DEFAULT_DOWNLOAD_MAX_RETRIES) or _DEFAULT_DOWNLOAD_MAX_RETRIES)
+    if client_type == 'sabnzbd':
+        sab_settings = download_client_service.get_or_create_sab_settings(db)
+        max_retries = max(0, min(20, int(getattr(sab_settings, 'max_download_retries', 10) or 0)))
+    elif client_type == 'qbittorrent':
+        qbt_settings = download_client_service.get_or_create_qbt_settings(db)
+        max_retries = max(0, min(20, int(getattr(qbt_settings, 'max_download_retries', 1) or 0)))
+    else:
+        max_retries = configured_max
     retry_next = int(getattr(dj, 'retry_count', 0) or 0) + 1
+    dj.max_retries = max_retries
 
     if failed_release_key:
         keys = _load_failed_release_keys(dj)
@@ -2912,7 +2955,6 @@ def _retry_failed_download(
 
     if retry_next <= max_retries:
         dj.retry_count = retry_next
-        dj.max_retries = max_retries
         dj.status = DownloadJobStatus.searching.value
         dj.error_message = f'{reason}; retrying {retry_next}/{max_retries}'
         dj.release_name = None
@@ -2933,7 +2975,7 @@ def _retry_failed_download(
         logger.warning('Download job %s: %s (auto-retry %s/%s)', dj.id, reason, retry_next, max_retries)
         return True
 
-    if str(dj.client_type or '').lower() == 'sabnzbd':
+    if client_type == 'sabnzbd':
         qbt = download_client_service.get_or_create_qbt_settings(db)
         excluded_protocols = _load_excluded_protocols(dj)
         if qbt.enabled and 'usenet' not in excluded_protocols:
@@ -2969,7 +3011,7 @@ def _retry_failed_download(
             return True
 
     logger.warning('Download job %s: %s; retries exhausted (%s/%s)', dj.id, reason, retry_next - 1, max_retries)
-    _mark_failed(db, dj, f'{reason}; retries exhausted after {max_retries} attempts')
+    _mark_failed(db, dj, f'{reason}; retries exhausted after {max_retries} retries')
     _fallback_to_encode(db, dj, library, profile)
     return False
 
@@ -3140,6 +3182,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     excluded_protocols = _load_excluded_protocols(dj)
     best = None
     matched_query = dj.search_query
+    candidate_pool_by_key: dict[str, dict] = {}
+    successful_passes = 0
     for pass_index, search_pass in enumerate(search_passes, start=1):
         query = str(search_pass['query'])
         categories = search_pass.get('categories')
@@ -3167,7 +3211,8 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         # monitor retries on the next poll cycle instead of immediately failing.
         if releases is None:
             logger.warning('Download job %s: Prowlarr search failed on pass %d (connection error); will retry', dj.id, pass_index)
-            return
+            continue
+        successful_passes += 1
 
         protocol_counts = Counter(
             str(release.get('protocol', '') or '').strip().lower() or 'unknown'
@@ -3223,20 +3268,57 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
                 len(releases),
             )
 
-        best = _select_best_release(
-            releases,
+        for release in releases:
+            release_key = _release_selection_key_from_release(release)
+            if not release_key:
+                release_key = f"title:{_normalize_release_key(str(release.get('title') or ''))}"
+            candidate_pool_by_key.setdefault(
+                release_key,
+                {**release, '_matched_query': query},
+            )
+
+        # A high-confidence identity match already satisfies the safeguard.
+        # Continue broader passes only while the best available match remains
+        # uncertain; this avoids noisy/redundant indexer traffic on obvious hits.
+        provisional_best = _select_best_release(
+            list(candidate_pool_by_key.values()),
             profile,
             qbt_enabled=qbt.enabled,
             sab_enabled=sab.enabled,
             indexer_by_id=indexer_by_id,
             source_path=dj.source_file_path,
         )
-        if best is not None:
-            matched_query = query
+        if int((provisional_best or {}).get('_match_confidence', 0) or 0) >= 90:
             break
+
+    if successful_passes == 0:
+        return
+
+    best = _select_best_release(
+        list(candidate_pool_by_key.values()),
+        profile,
+        qbt_enabled=qbt.enabled,
+        sab_enabled=sab.enabled,
+        indexer_by_id=indexer_by_id,
+        source_path=dj.source_file_path,
+    )
+    if best is not None:
+        matched_query = str(best.get('_matched_query') or dj.search_query or '')
 
     if best is None:
         logger.info('Download job %s: no matching release found; skipping grab and falling back to encode', dj.id)
+        _fallback_to_encode(db, dj, library, profile)
+        return
+    best_protocol = str(best.get('protocol') or '').strip().lower()
+    best_confidence = int(best.get('_match_confidence', 0) or 0)
+    if best_protocol == 'torrent' and best_confidence < _QBT_MIN_AUTOMATIC_CONFIDENCE:
+        logger.warning(
+            'Download job %s: best qBit candidate confidence=%s is below automatic threshold=%s; '
+            'skipping torrent grab and falling back to encode',
+            dj.id,
+            best_confidence,
+            _QBT_MIN_AUTOMATIC_CONFIDENCE,
+        )
         _fallback_to_encode(db, dj, library, profile)
         return
     if dj.search_query != matched_query:
@@ -3339,6 +3421,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
             profile,
             reason='Prowlarr grab failed',
             failed_release_key=_release_selection_key_from_release(best),
+            attempted_client_type=_client_type_for_protocol(str(best.get('protocol') or '')),
         )
         return
 
@@ -4165,6 +4248,40 @@ def _import_file(
                     failed_release_key=_release_selection_key_from_job(dj),
                 )
                 return
+            client_type = str(dj.client_type or '').strip().lower()
+            if client_type == 'sabnzbd':
+                reasons = '; '.join(str(reason) for reason in review.get('reasons', []))
+                _cleanup_download_client(dj, qbt, sab, save_path=save_path, delete_files=True)
+                _retry_failed_download(
+                    db,
+                    dj,
+                    library,
+                    profile,
+                    reason=f'Completed SAB payload failed import validation: {reasons}',
+                    failed_release_key=_release_selection_key_from_job(dj),
+                    attempted_client_type='sabnzbd',
+                )
+                return
+            if client_type == 'qbittorrent' and review.get('confidence') == 'low':
+                reasons = '; '.join(str(reason) for reason in review.get('reasons', []))
+                logger.warning(
+                    'Download job %s: qBittorrent payload definitively failed validation; '
+                    'torrent and payload retained for seeding before applying retry policy: %s',
+                    dj.id,
+                    reasons,
+                )
+                dj.error_message = f'qBittorrent payload rejected; retained for seeding: {reasons}'
+                db.commit()
+                _retry_failed_download(
+                    db,
+                    dj,
+                    library,
+                    profile,
+                    reason=f'Completed qBittorrent payload failed import validation: {reasons}',
+                    failed_release_key=_release_selection_key_from_job(dj),
+                    attempted_client_type='qbittorrent',
+                )
+                return
             _hold_download_for_review(db, dj, review)
             return
 
@@ -4339,7 +4456,8 @@ def _cleanup_download_client(
     """
     Post-import client cleanup:
     - SABnzbd: remove the queue/history entry and optionally request file deletion.
-    - qBittorrent: leave untouched so it can follow its own seeding rules.
+    - qBittorrent: completed seeds remain untouched; incomplete failed transfers
+      may be removed when a retry explicitly requests deletion.
     """
     if dj.client_type == 'sabnzbd' and sab is not None and dj.download_hash:
         if delete_files:
@@ -4348,6 +4466,11 @@ def _cleanup_download_client(
                 download_client_service.delete_sab_history(sab, dj.download_hash)
         else:
             download_client_service.delete_sab_history(sab, dj.download_hash)
+
+    if dj.client_type == 'qbittorrent' and qbt is not None and dj.download_hash and delete_files:
+        # The client service refuses this operation for completed/seeding
+        # torrents, so retries can discard only an incomplete failed transfer.
+        download_client_service.remove_qbt_torrent(qbt, dj.download_hash, delete_files=True)
 
     if delete_files and dj.client_type == 'sabnzbd' and save_path:
         _purge_sab_completed_path(save_path)
@@ -4795,6 +4918,8 @@ def run_download_startup_recovery(db: Session) -> dict:
         DownloadJobStatus.needs_review.value,
         DownloadJobStatus.importing.value,     # already covered by in_flight_jobs loop
         DownloadJobStatus.pending.value,       # not yet started — nothing to recover
+        DownloadJobStatus.fallback_queued.value,
+        DownloadJobStatus.file_deleted.value,
     }
     qbt_candidate_jobs = (
         db.query(DownloadJob)
@@ -5207,6 +5332,8 @@ def run_scan_recovery(db: Session) -> dict:
             DownloadJobStatus.moving.value,
             DownloadJobStatus.needs_review.value,
             DownloadJobStatus.importing.value,
+            DownloadJobStatus.fallback_queued.value,
+            DownloadJobStatus.file_deleted.value,
         }
         candidate_jobs = (
             db.query(DownloadJob)
@@ -5254,7 +5381,10 @@ def run_scan_recovery(db: Session) -> dict:
         imported += _recover_completed_root_for_waiting_queue_jobs(db, qbt, sab, qbt_completed_root)
         imported += _recover_sab_completed_for_waiting_queue_jobs(db, qbt, sab)
         imported += _recover_sab_completed_for_existing_download_jobs(db, qbt, sab, context='scan')
-        logger.info('Scan recovery complete: imported=%s', imported)
+        if imported:
+            logger.info('Scan recovery complete: imported=%s', imported)
+        else:
+            logger.debug('Scan recovery complete: no completed downloads imported')
         return {'imported': imported}
     except Exception:
         logger.exception('Scan recovery failed')

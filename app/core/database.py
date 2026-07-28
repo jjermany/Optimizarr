@@ -175,6 +175,18 @@ def init_db() -> None:
         )
         _add_column_if_missing(
             connection,
+            'sabnzbd_settings',
+            'max_download_retries',
+            'max_download_retries INTEGER NOT NULL DEFAULT 10',
+        )
+        _add_column_if_missing(
+            connection,
+            'qbittorrent_settings',
+            'max_download_retries',
+            'max_download_retries INTEGER NOT NULL DEFAULT 1',
+        )
+        _add_column_if_missing(
+            connection,
             'notification_settings',
             'notify_on_job_interrupted',
             'notify_on_job_interrupted BOOLEAN NOT NULL DEFAULT 1',

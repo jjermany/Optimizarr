@@ -3005,7 +3005,7 @@ def test_cleanup_stale_qbt_torrents_uses_database_settings(monkeypatch):
         assert removed == [('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', False)]
 
 
-def test_cleanup_stale_qbt_torrents_retries_tracked_job_after_strikes(monkeypatch):
+def test_cleanup_stale_qbt_torrents_retries_once_by_default(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -3056,6 +3056,7 @@ def test_cleanup_stale_qbt_torrents_retries_tracked_job_after_strikes(monkeypatc
         assert dj.status == DownloadJobStatus.searching.value
         assert dj.download_hash is None
         assert dj.retry_count == 1
+        assert dj.max_retries == 1
         assert 'stuck downloading metadata' in (dj.error_message or '')
 
 
@@ -3417,7 +3418,7 @@ def test_scan_recovery_skips_active_downloading_jobs(monkeypatch):
         assert not import_called
 
 
-def test_check_download_progress_missing_client_item_retries_without_fallback(monkeypatch):
+def test_check_download_progress_missing_qbit_item_retries_once_by_default(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -3463,8 +3464,64 @@ def test_check_download_progress_missing_client_item_retries_without_fallback(mo
 
         assert dj.status == DownloadJobStatus.searching.value
         assert 'removed from qbittorrent' in (dj.error_message or '').lower()
-        assert 'retrying 1/5' in (dj.error_message or '').lower()
+        assert 'retrying 1/1' in (dj.error_message or '').lower()
+        assert dj.retry_count == 1
         assert fallback_calls == []
+
+
+def test_check_download_progress_qbit_zero_retry_limit_falls_back(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Qbit.Zero.Retries.mkv',
+            release_name='Qbit.Zero.Retries.2025.1080p.WEB-DL',
+            download_hash='dddddddddddddddddddddddddddddddddddddddd',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.downloading.value,
+            download_started_at=datetime.now(UTC) - timedelta(seconds=15),
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'is_complete': False,
+            'is_stalled': False,
+            'save_path': None,
+            'not_found': True,
+        })
+        monkeypatch.setattr(download_client_service, 'get_all_qbt_torrents', lambda _q: [])
+        monkeypatch.setattr(
+            download_client_service,
+            'get_or_create_qbt_settings',
+            lambda _db: SimpleNamespace(enabled=True, max_download_retries=0),
+        )
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(
+            db,
+            dj,
+            SimpleNamespace(enabled=True),
+            SimpleNamespace(enabled=False),
+        )
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.failed.value
+        assert dj.retry_count == 0
+        assert dj.max_retries == 0
+        assert fallback_calls == [True]
 
 
 def test_check_download_progress_missing_qbit_item_recovers_existing_torrent_before_retry(monkeypatch):
@@ -3822,7 +3879,7 @@ def test_check_download_progress_sab_history_failed_retries_immediately(monkeypa
         assert 'Download failed in sabnzbd' in (dj.error_message or '')
 
 
-def test_check_download_progress_qbit_error_state_retries_immediately(monkeypatch):
+def test_check_download_progress_qbit_error_state_retries_once_by_default(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -4315,7 +4372,7 @@ def test_check_download_progress_qbt_unlinks_mismatched_tv_episode_hash(monkeypa
         assert status_calls == []
 
 
-def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatch):
+def test_check_download_progress_sab_continues_until_extended_attempt_cap(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -4351,7 +4408,12 @@ def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatc
             'not_found': False,
         })
         monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
-        # Force exhausted SAB flow to fallback-to-encode rather than switch to torrents.
+        monkeypatch.setattr(
+            download_client_service,
+            'get_or_create_sab_settings',
+            lambda _db: SimpleNamespace(enabled=True, max_download_retries=10),
+        )
+        # SAB should keep seeking alternatives beyond the old five-attempt cap.
         monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
 
         fallback_calls = []
@@ -4363,12 +4425,75 @@ def test_check_download_progress_stalled_exhausted_retries_falls_back(monkeypatc
         _check_download_progress(db, dj, qbt, sab)
         db.refresh(dj)
 
+        assert dj.status == DownloadJobStatus.searching.value
+        assert dj.retry_count == 6
+        assert dj.max_retries == 10
+        assert 'retrying 6/10' in (dj.error_message or '')
+        assert fallback_calls == []
+
+
+def test_check_download_progress_sab_zero_retry_limit_falls_back(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Sab.Zero.Retries.mkv',
+            release_name='Sab.Zero.Retries.2025.1080p.WEB-DL',
+            download_hash='SAB_ZERO_RETRIES',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+            retry_count=0,
+            download_started_at=datetime.now(UTC) - timedelta(minutes=61),
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_download_status', lambda *_args: {
+            'progress_percent': 0,
+            'eta_seconds': None,
+            'is_complete': False,
+            'is_stalled': True,
+            'save_path': None,
+            'not_found': False,
+        })
+        monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            download_client_service,
+            'get_or_create_sab_settings',
+            lambda _db: SimpleNamespace(enabled=True, max_download_retries=0),
+        )
+        monkeypatch.setattr(
+            download_client_service,
+            'get_or_create_qbt_settings',
+            lambda _db: SimpleNamespace(enabled=False),
+        )
+        fallback_calls = []
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._fallback_to_encode',
+            lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+
+        _check_download_progress(
+            db,
+            dj,
+            SimpleNamespace(enabled=False),
+            SimpleNamespace(enabled=True),
+        )
+        db.refresh(dj)
+
         assert dj.status == DownloadJobStatus.failed.value
-        assert 'retries exhausted' in (dj.error_message or '')
+        assert dj.retry_count == 0
+        assert dj.max_retries == 0
         assert fallback_calls == [True]
 
 
-def test_check_download_progress_stalled_exhausted_usenet_retries_switches_to_torrent_search(monkeypatch):
+def test_check_download_progress_sab_does_not_switch_to_torrent_before_attempt_cap(monkeypatch):
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -4404,6 +4529,11 @@ def test_check_download_progress_stalled_exhausted_usenet_retries_switches_to_to
             'not_found': False,
         })
         monkeypatch.setattr(download_client_service, 'set_sab_category_and_priority', lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            download_client_service,
+            'get_or_create_sab_settings',
+            lambda _db: SimpleNamespace(enabled=True, max_download_retries=10),
+        )
         monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=True))
 
         fallback_calls = []
@@ -4416,10 +4546,11 @@ def test_check_download_progress_stalled_exhausted_usenet_retries_switches_to_to
         db.refresh(dj)
 
         assert dj.status == DownloadJobStatus.searching.value
-        assert dj.retry_count == 0
-        assert 'switching to torrent search' in (dj.error_message or '')
+        assert dj.retry_count == 6
+        assert dj.max_retries == 10
+        assert 'retrying 6/10' in (dj.error_message or '')
         failed_keys = set(json.loads(dj.failed_release_keys or '[]'))
-        assert 'protocol:usenet' in failed_keys
+        assert 'protocol:usenet' not in failed_keys
         assert fallback_calls == []
 
 

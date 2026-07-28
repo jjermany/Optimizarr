@@ -889,7 +889,7 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
                 continue
             if job.source_path in active_download_sources:
                 dj_id, dj_status = active_download_by_source.get(job.source_path, (None, None))
-                logger.info(
+                logger.debug(
                     'Queue hold: encode job %s for %r is waiting on download job %s (%s)',
                     job.id,
                     job.source_path,
@@ -944,7 +944,7 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
                 else:
                     continue
             elif download_job_exists_for_source(db, job.source_path):
-                logger.info(
+                logger.debug(
                     'Queue hold: encode job %s for %r skipped because a download job already exists',
                     job.id,
                     job.source_path,

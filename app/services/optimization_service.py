@@ -245,6 +245,44 @@ def _commit_output_file(partial_output_path: Path, final_output_path: Path, job_
         return False
 
 
+def _encoded_output_passes_size_floor(
+    output_path: Path,
+    duration_seconds: float | None,
+    profile: dict[str, Any],
+) -> tuple[bool, str | None]:
+    """Reject only implausibly small long-form outputs.
+
+    File size is not a direct quality measurement (codec and content complexity
+    matter), so this is intentionally a low corruption/misconfiguration floor,
+    not a target bitrate. Candidate ranking applies the stronger preference for
+    larger source releases.
+    """
+    if not duration_seconds or duration_seconds < 600:
+        return True, None
+    try:
+        size_bytes = output_path.stat().st_size
+    except OSError:
+        return False, 'encoded output is missing'
+
+    target_height = int(profile.get('target_resolution') or 1080)
+    if target_height >= 2160:
+        minimum_mbps = 0.75
+    elif target_height >= 1080:
+        minimum_mbps = 0.30
+    elif target_height >= 720:
+        minimum_mbps = 0.18
+    else:
+        minimum_mbps = 0.10
+    actual_mbps = (size_bytes * 8) / (float(duration_seconds) * 1_000_000)
+    if actual_mbps < minimum_mbps:
+        return (
+            False,
+            f'encoded output bitrate {actual_mbps:.2f} Mbps is below the '
+            f'{minimum_mbps:.2f} Mbps safety floor for {target_height}p',
+        )
+    return True, None
+
+
 def refresh_encoder_cache() -> None:
     for name in _SUPPORTED_ENCODERS:
         _ENCODER_CACHE.setdefault(name, False)
@@ -2149,22 +2187,34 @@ def optimize_video(
                 metrics.skipped_reason = 'concat_failed'
                 metrics.error_message = 'concat_failed'
             else:
-                committed = _commit_output_file(combined_path, final_output_path, job_id)
+                size_ok, size_error = _encoded_output_passes_size_floor(combined_path, duration, profile)
+                committed = size_ok and _commit_output_file(combined_path, final_output_path, job_id)
                 if committed:
                     logger.info('[%s] Resume encode complete; output committed to %r', job_tag, str(final_output_path))
                     metrics.status = 'complete'
                     shutil.rmtree(workspace_path, ignore_errors=True)
+                elif not size_ok:
+                    logger.error('[%s] Refusing implausibly small encoded output: %s', job_tag, size_error)
+                    metrics.status = 'failed'
+                    metrics.skipped_reason = 'output_bitrate_too_low'
+                    metrics.error_message = size_error
                 else:
                     logger.error('[%s] Failed to commit concat output %r -> %r', job_tag, str(combined_path), str(final_output_path))
                     metrics.status = 'failed'
                     metrics.skipped_reason = 'commit_failed'
                     metrics.error_message = 'commit_failed'
         else:
-            committed = _commit_output_file(partial_output_path, final_output_path, job_id)
+            size_ok, size_error = _encoded_output_passes_size_floor(partial_output_path, duration, profile)
+            committed = size_ok and _commit_output_file(partial_output_path, final_output_path, job_id)
             if committed:
                 logger.info('[%s] Encoding complete; output committed to %r', job_tag, str(final_output_path))
                 metrics.status = 'complete'
                 shutil.rmtree(workspace_path, ignore_errors=True)
+            elif not size_ok:
+                logger.error('[%s] Refusing implausibly small encoded output: %s', job_tag, size_error)
+                metrics.status = 'failed'
+                metrics.skipped_reason = 'output_bitrate_too_low'
+                metrics.error_message = size_error
             else:
                 logger.error('[%s] Failed to commit output file %r -> %r', job_tag, str(partial_output_path), str(final_output_path))
                 metrics.status = 'failed'

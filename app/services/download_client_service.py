@@ -78,6 +78,8 @@ def update_qbt_settings(db: Session, data: dict) -> QBittorrentSettings:
             value = secrets_store.encrypt_secret(value or '')
         elif key == 'host' and value is not None:
             value = normalize_http_host_without_port(value)
+        elif key == 'max_download_retries':
+            value = max(0, min(20, int(value)))
         setattr(settings, key, value)
     db.commit()
     db.refresh(settings)
@@ -91,6 +93,7 @@ def qbt_settings_to_payload(s: QBittorrentSettings) -> dict:
         'port': s.port,
         'username': s.username,
         'password': secrets_store.mask_secret(s.password),
+        'max_download_retries': max(0, min(20, int(getattr(s, 'max_download_retries', 1) or 0))),
     }
 
 
@@ -321,9 +324,30 @@ def get_qbt_status(s: QBittorrentSettings, torrent_hash: str) -> dict:
 
 
 def remove_qbt_torrent(s: QBittorrentSettings, torrent_hash: str, *, delete_files: bool = False) -> bool:
-    """Remove a torrent from qBittorrent. Returns True on success."""
+    """Remove an incomplete torrent from qBittorrent.
+
+    Completed torrents are deliberately immutable here: removing either the
+    torrent or its payload would stop seeding and can violate tracker rules.
+    """
     try:
         client = _qbt_session(s)
+        info = _qbt_torrent_info(client, torrent_hash)
+        if info is None:
+            return True
+        state = str(info.get('state') or '')
+        try:
+            progress = float(info.get('progress') or 0)
+        except (TypeError, ValueError):
+            progress = 0.0
+        if state in _QBT_COMPLETE_STATES or progress >= 1.0:
+            logger.warning(
+                'qBittorrent: refusing to remove completed torrent %s '
+                '(state=%s, delete_files=%s); seeding must be preserved',
+                torrent_hash,
+                state or 'unknown',
+                delete_files,
+            )
+            return False
         resp = client.post(
             '/api/v2/torrents/delete',
             data={
@@ -396,6 +420,8 @@ def update_sab_settings(db: Session, data: dict) -> SabnzbdSettings:
             value = secrets_store.encrypt_secret(value or '')
         elif key == 'host' and value is not None:
             value = normalize_http_host_without_port(value)
+        elif key == 'max_download_retries':
+            value = max(0, min(20, int(value)))
         setattr(settings, key, value)
     db.commit()
     db.refresh(settings)
@@ -408,6 +434,7 @@ def sab_settings_to_payload(s: SabnzbdSettings) -> dict:
         'host': s.host,
         'port': s.port,
         'api_key': secrets_store.mask_secret(s.api_key),
+        'max_download_retries': max(0, min(20, int(getattr(s, 'max_download_retries', 10) or 0))),
     }
 
 

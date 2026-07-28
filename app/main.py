@@ -46,24 +46,28 @@ def _cleanup_loop(stop_event: Event) -> None:
         with SessionLocal() as db:
             summary = run_workspace_cleanup(db)
             cleaned_workspaces = summary.get('cleaned_workspaces', 0)
-            event_log_service.record_event(
-                db,
-                'cleanup_summary',
-                'Scheduled workspace cleanup completed',
-                details={
-                    'trigger': 'scheduled',
-                    'cleaned_workspaces': cleaned_workspaces,
-                },
+            if cleaned_workspaces:
+                event_log_service.record_event(
+                    db,
+                    'cleanup_summary',
+                    'Scheduled workspace cleanup completed',
+                    details={
+                        'trigger': 'scheduled',
+                        'cleaned_workspaces': cleaned_workspaces,
+                    },
+                )
+        if cleaned_workspaces:
+            logger.info(
+                'Workspace cleanup completed; cleaned_workspaces=%s',
+                cleaned_workspaces,
             )
-        logger.info(
-            'Workspace cleanup completed; cleaned_workspaces=%s',
-            cleaned_workspaces,
-        )
-        broker.publish_system_event(
-            'cleanup_summary',
-            trigger='scheduled',
-            cleaned_workspaces=cleaned_workspaces,
-        )
+            broker.publish_system_event(
+                'cleanup_summary',
+                trigger='scheduled',
+                cleaned_workspaces=cleaned_workspaces,
+            )
+        else:
+            logger.debug('Workspace cleanup completed; nothing to remove')
 
     logger.info('Workspace cleanup worker stopped')
 

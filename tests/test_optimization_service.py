@@ -1065,6 +1065,31 @@ def test_commit_output_file_cross_filesystem_path(monkeypatch, tmp_path):
     assert all('partial' not in p.name and 'temp' not in p.name for p in destination_dir.iterdir())
 
 
+def test_encoded_output_size_floor_rejects_implausibly_tiny_movie(tmp_path):
+    output = tmp_path / 'tiny.mkv'
+    output.write_bytes(b'x' * 1024)
+
+    accepted, reason = optimization_service._encoded_output_passes_size_floor(
+        output,
+        7200,
+        {'target_resolution': 1080},
+    )
+
+    assert accepted is False
+    assert 'safety floor' in reason
+
+
+def test_encoded_output_size_floor_does_not_judge_short_clips(tmp_path):
+    output = tmp_path / 'clip.mkv'
+    output.write_bytes(b'x')
+
+    assert optimization_service._encoded_output_passes_size_floor(
+        output,
+        300,
+        {'target_resolution': 1080},
+    ) == (True, None)
+
+
 def test_select_encoder_uses_preferred_when_available(monkeypatch):
     monkeypatch.setattr(optimization_service, '_encoder_available', lambda name: name in {'libx264', 'h264_qsv'})
     selection = optimization_service._select_encoder({'codec': 'h264', 'preferred_video_encoder': 'libx264'})
