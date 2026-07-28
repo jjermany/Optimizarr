@@ -280,16 +280,69 @@ export function FallbackIndicator() {
   );
 }
 
-export function HistoryTypeBadge({ type }) {
+function historyBadgeDetail({ type, clientType, encoderUsed, hwaccelUsed }) {
+  if (type === 'download') {
+    if (clientType === 'qbittorrent') {
+      return {
+        label: 'qBIT',
+        title: 'Downloaded via qBittorrent',
+        className: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+      };
+    }
+    if (clientType === 'sabnzbd') {
+      return {
+        label: 'SAB',
+        title: 'Downloaded via SABnzbd',
+        className: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+      };
+    }
+    return null;
+  }
+
+  const encoder = String(encoderUsed ?? '').trim().toLowerCase();
+  if (!encoder) return null;
+  if (encoder.includes('vaapi')) {
+    return { label: 'VAAPI', title: `Encoded with ${encoderUsed} via VAAPI`, className: 'border-violet-500/30 bg-violet-500/10 text-violet-300' };
+  }
+  if (encoder.includes('qsv')) {
+    return { label: 'QSV', title: `Encoded with ${encoderUsed} via Intel Quick Sync`, className: 'border-sky-500/30 bg-sky-500/10 text-sky-300' };
+  }
+  if (encoder.includes('nvenc') || encoder.includes('cuda')) {
+    return { label: 'NVENC', title: `Encoded with ${encoderUsed} via NVIDIA NVENC`, className: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' };
+  }
+  if (encoder.includes('videotoolbox')) {
+    return { label: 'VT', title: `Encoded with ${encoderUsed} via VideoToolbox`, className: 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300' };
+  }
+  if (encoder.includes('amf')) {
+    return { label: 'AMF', title: `Encoded with ${encoderUsed} via AMD AMF`, className: 'border-rose-500/30 bg-rose-500/10 text-rose-300' };
+  }
+  return {
+    label: hwaccelUsed ? 'HW' : 'CPU',
+    title: `Encoded with ${encoderUsed}${hwaccelUsed ? ' using hardware acceleration' : ' in software'}`,
+    className: 'border-slate-500/30 bg-slate-500/10 text-slate-300',
+  };
+}
+
+export function HistoryTypeBadge({ type, clientType = null, encoderUsed = null, hwaccelUsed = false }) {
   const isEncode = type === 'encode';
+  const detail = historyBadgeDetail({ type, clientType, encoderUsed, hwaccelUsed });
+  const title = detail?.title ?? (isEncode ? 'Encoded job' : 'Downloaded job');
   return (
-    <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${
+    <span
+      title={title}
+      aria-label={title}
+      className={`inline-flex overflow-hidden rounded-full border text-[10px] font-semibold uppercase tracking-[0.14em] ${
       isEncode
         ? 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300'
         : 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300'
     }`}
     >
-      {isEncode ? 'Encode' : 'Download'}
+      <span className="px-2 py-0.5">{isEncode ? 'Encode' : 'Download'}</span>
+      {detail && (
+        <span className={`border-l px-1.5 py-0.5 tracking-[0.1em] ${detail.className}`}>
+          {detail.label}
+        </span>
+      )}
     </span>
   );
 }

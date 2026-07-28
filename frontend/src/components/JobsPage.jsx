@@ -505,11 +505,10 @@ const HistoryDownloadCard = memo(function HistoryDownloadCard({ dj, libName, act
   const { year } = extractTitleYear(dj.source_file_path);
   const title = getDisplayTitle(dj.source_file_path);
   const completedDate = formatHistoryCompletedAt(dj.completed_at);
-  const clientLabel = formatDownloadClient(dj.client_type);
   return (
     <div className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
       <div className="mb-2 flex items-center justify-between">
-        <HistoryTypeBadge type="download" />
+        <HistoryTypeBadge type="download" clientType={dj.client_type} />
         <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-400">ID {dj.id}</span>
       </div>
       <div className="flex items-start justify-between gap-2">
@@ -519,9 +518,6 @@ const HistoryDownloadCard = memo(function HistoryDownloadCard({ dj, libName, act
       <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-400">
         <span>{year ?? '—'}</span>
         <span>{libName}</span>
-      </div>
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
-        <span>{clientLabel ? `Client: ${clientLabel}` : '—'}</span>
       </div>
       <p className="mt-2.5 text-xs text-slate-500">{completedDate}</p>
       {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
@@ -562,7 +558,11 @@ const HistoryEncodeCard = memo(function HistoryEncodeCard({ job, libName, action
   return (
     <div className="rounded-2xl border border-slate-700/80 bg-gradient-to-br from-slate-900/90 to-slate-900/65 p-3.5 shadow-lg shadow-slate-950/30">
       <div className="mb-2 flex items-center justify-between">
-        <HistoryTypeBadge type="encode" />
+        <HistoryTypeBadge
+          type="encode"
+          encoderUsed={job.encoder_used}
+          hwaccelUsed={job.hwaccel_used}
+        />
         <span className="rounded-full border border-slate-700 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-400">ID {job.id}</span>
       </div>
       <div className="flex items-start justify-between gap-2">
@@ -600,11 +600,10 @@ const HistoryEncodeCard = memo(function HistoryEncodeCard({ job, libName, action
 const HistoryDownloadRow = memo(function HistoryDownloadRow({ dj, libName, actionPending, onRetry, onDelete, onDeleteFile }) {
   const { year } = extractTitleYear(dj.source_file_path);
   const title = getDisplayTitle(dj.source_file_path);
-  const clientLabel = formatDownloadClient(dj.client_type);
   const completedDate = formatHistoryCompletedAt(dj.completed_at);
   return (
     <tr className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
-      <td className="px-4 py-2.5 align-top text-sm"><HistoryTypeBadge type="download" /></td>
+      <td className="px-4 py-2.5 align-top text-sm"><HistoryTypeBadge type="download" clientType={dj.client_type} /></td>
       <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 2xl:table-cell">{dj.id}</td>
       <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
@@ -613,7 +612,7 @@ const HistoryDownloadRow = memo(function HistoryDownloadRow({ dj, libName, actio
         <span className={`rounded-full border px-2 py-0.5 text-xs font-medium capitalize ${dj.status === 'complete' ? 'border-emerald-500/40 bg-emerald-950/30 text-emerald-300' : dj.status === 'failed' || dj.status === 'timed_out' ? 'border-red-500/40 bg-red-950/30 text-red-300' : 'border-slate-700 bg-slate-800/60 text-slate-300'}`}>{dj.status.replace(/_/g, ' ')}</span>
         {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
       </td>
-      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">{clientLabel ? `Client: ${clientLabel}` : '—'}</td>
+      <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">—</td>
       <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">—</td>
       <td className="hidden px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell">—</td>
       <td className="whitespace-nowrap px-4 py-2.5 align-top text-xs text-slate-400">{completedDate}</td>
@@ -655,7 +654,13 @@ const HistoryEncodeRow = memo(function HistoryEncodeRow({ job, libName, actionPe
   const encodeDuration = formatElapsed(job.encode_duration_seconds);
   return (
     <tr className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
-      <td className="px-4 py-2.5 align-top text-sm"><HistoryTypeBadge type="encode" /></td>
+      <td className="px-4 py-2.5 align-top text-sm">
+        <HistoryTypeBadge
+          type="encode"
+          encoderUsed={job.encoder_used}
+          hwaccelUsed={job.hwaccel_used}
+        />
+      </td>
       <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 2xl:table-cell">{job.id}</td>
       <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={job.source_path}>{title}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
