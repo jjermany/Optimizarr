@@ -947,6 +947,15 @@ def probe_video_height(input_path: str) -> int | None:
     return _probe_height(input_path)
 
 
+def probe_video_codec(input_path: str) -> str | None:
+    value = _run_ffprobe_value(input_path, 'stream=codec_name')
+    return value.lower() if value else None
+
+
+def probe_video_duration(input_path: str) -> float | None:
+    return _probe_duration_seconds(input_path)
+
+
 def _probe_duration_seconds(input_path: str) -> float | None:
     value = _run_ffprobe_value(input_path, 'format=duration')
     if not value:

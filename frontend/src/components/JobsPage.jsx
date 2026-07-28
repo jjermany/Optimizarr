@@ -47,7 +47,49 @@ import {
 // whose job object changed, and the 1s elapsed-time tick only touches
 // download rows (encode rows never receive nowMs).
 
-const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionPending, nowMs, onCancel, onRetry, onDelete }) {
+function DownloadReviewActions({ dj, actionPending, onReview }) {
+  const candidates = Array.isArray(dj.review_data?.candidates) ? dj.review_data.candidates : [];
+  const [selectedPath, setSelectedPath] = useState(candidates[0]?.path ?? '');
+  const reasons = Array.isArray(dj.review_data?.reasons) ? dj.review_data.reasons : [];
+  return (
+    <div className="mt-3 rounded-xl border border-amber-500/30 bg-amber-950/20 p-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-amber-300">
+        {String(dj.review_data?.confidence ?? 'low')} confidence — approval required
+      </p>
+      {reasons.length > 0 && (
+        <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-amber-100/80">
+          {reasons.map((reason) => <li key={reason}>{reason}</li>)}
+        </ul>
+      )}
+      {candidates.length > 0 && (
+        <select
+          className="mt-2 w-full rounded-lg border border-slate-600 bg-slate-900 px-2 py-1.5 text-xs text-slate-200"
+          value={selectedPath}
+          onChange={(event) => setSelectedPath(event.target.value)}
+        >
+          {candidates.map((candidate) => (
+            <option key={candidate.path} value={candidate.path}>
+              {candidate.name} · {candidate.height ? `${candidate.height}p` : 'resolution unknown'} · {candidate.codec ?? 'codec unknown'} · {candidate.duration_seconds ? formatElapsed(candidate.duration_seconds) : 'duration unknown'} · {candidate.size_bytes ? `${(candidate.size_bytes / 1073741824).toFixed(2)} GB` : 'size unknown'}
+            </option>
+          ))}
+        </select>
+      )}
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        <Btn size="sm" variant="warning" disabled={Boolean(actionPending) || !selectedPath} onClick={() => onReview('import', dj.id, selectedPath)}>
+          {actionPending === 'review_import' ? 'Importing…' : 'Import Selected'}
+        </Btn>
+        <Btn size="sm" variant="primary" disabled={Boolean(actionPending)} onClick={() => onReview('retry', dj.id)}>
+          {actionPending === 'review_retry' ? 'Working…' : 'Reject & Retry'}
+        </Btn>
+        <Btn size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => onReview('fallback', dj.id)}>
+          {actionPending === 'review_fallback' ? 'Working…' : 'Encode Source'}
+        </Btn>
+      </div>
+    </div>
+  );
+}
+
+const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionPending, nowMs, onCancel, onRetry, onDelete, onReview }) {
   const { year } = extractTitleYear(dj.source_file_path);
   const title = getDisplayTitle(dj.source_file_path);
   const elapsedStart = dj.download_started_at ?? dj.created_at;
@@ -96,6 +138,7 @@ const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionP
         </div>
       )}
       {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
+      {dj.status === 'needs_review' && <DownloadReviewActions dj={dj} actionPending={actionPending} onReview={onReview} />}
       <MobileActionMenu>
         {['checking', 'searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing', 'waiting_encode'].includes(dj.status) && (
           <Btn size="sm" variant="danger" disabled={Boolean(actionPending)} onClick={() => onCancel(dj.id)}>
@@ -107,9 +150,11 @@ const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionP
             {actionPending === 'retry' ? 'Working…' : 'Retry Search'}
           </Btn>
         )}
+        {dj.status !== 'needs_review' && (
         <Btn size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => onDelete(dj.id)}>
           {actionPending === 'delete' ? 'Working…' : 'Delete'}
         </Btn>
+        )}
       </MobileActionMenu>
     </div>
   );
@@ -208,7 +253,7 @@ const QueueEncodeCard = memo(function QueueEncodeCard({ job, libName, actionPend
   );
 });
 
-const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPending, nowMs, onCancel, onRetry, onDelete }) {
+const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPending, nowMs, onCancel, onRetry, onDelete, onReview }) {
   const { year } = extractTitleYear(dj.source_file_path);
   const title = getDisplayTitle(dj.source_file_path);
   const statusColor =
@@ -218,6 +263,7 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
     dj.status === 'unpacking' ? 'text-teal-400' :
     dj.status === 'moving' ? 'text-indigo-400' :
     dj.status === 'importing' ? 'text-violet-400' :
+    dj.status === 'needs_review' ? 'text-amber-400' :
     ['checking', 'searching'].includes(dj.status) ? 'text-sky-400' :
     dj.status === 'stalled' ? 'text-amber-400' :
     dj.status === 'waiting_encode' ? 'text-fuchsia-400' :
@@ -264,6 +310,7 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
           </p>
         )}
         {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
+        {dj.status === 'needs_review' && <DownloadReviewActions dj={dj} actionPending={actionPending} onReview={onReview} />}
       </td>
       <td className="hidden max-w-[180px] truncate px-4 py-2.5 align-top text-xs text-slate-400 xl:table-cell" title={dj.search_query}>
         {dj.status === 'searching' && !dj.search_query ? <span className="italic text-slate-500">Building query…</span> : (dj.search_query ?? '—')}
@@ -291,9 +338,11 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
               {actionPending === 'retry' ? 'Working…' : 'Retry Search'}
             </Btn>
           )}
+          {dj.status !== 'needs_review' && (
           <Btn size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => onDelete(dj.id)}>
             {actionPending === 'delete' ? 'Working…' : 'Delete'}
           </Btn>
+          )}
         </div>
       </td>
     </tr>
@@ -436,7 +485,7 @@ const QueueEncodeRow = memo(function QueueEncodeRow({ job, libName, actionPendin
 
 // ── History rows ─────────────────────────────────────────────────────────────
 
-const HistoryDownloadCard = memo(function HistoryDownloadCard({ dj, libName, actionPending, onRetry, onDelete }) {
+const HistoryDownloadCard = memo(function HistoryDownloadCard({ dj, libName, actionPending, onRetry, onDelete, onDeleteFile }) {
   const { year } = extractTitleYear(dj.source_file_path);
   const title = getDisplayTitle(dj.source_file_path);
   const completedDate = formatHistoryCompletedAt(dj.completed_at);
@@ -461,6 +510,21 @@ const HistoryDownloadCard = memo(function HistoryDownloadCard({ dj, libName, act
       <p className="mt-2.5 text-xs text-slate-500">{completedDate}</p>
       {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
       <MobileActionMenu>
+        {dj.status === 'complete' && dj.imported_file_path && (
+          <>
+            <Btn size="sm" variant="danger" disabled={Boolean(actionPending)} onClick={() => onDeleteFile(dj.id, false)}>
+              {actionPending === 'delete_file' ? 'Deleting…' : 'Delete File'}
+            </Btn>
+            <Btn size="sm" variant="warning" disabled={Boolean(actionPending)} onClick={() => onDeleteFile(dj.id, true)}>
+              {actionPending === 'delete_retry' ? 'Working…' : 'Delete & Retry'}
+            </Btn>
+          </>
+        )}
+        {dj.status === 'file_deleted' && (
+          <Btn size="sm" variant="primary" disabled={Boolean(actionPending)} onClick={() => onDeleteFile(dj.id, true)}>
+            {actionPending === 'delete_retry' ? 'Working…' : 'Retry Search'}
+          </Btn>
+        )}
         {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
           <Btn size="sm" variant="primary" disabled={Boolean(actionPending)} onClick={() => onRetry(dj.id)}>
             {actionPending === 'retry' ? 'Working…' : 'Retry Search'}
@@ -517,7 +581,7 @@ const HistoryEncodeCard = memo(function HistoryEncodeCard({ job, libName, action
   );
 });
 
-const HistoryDownloadRow = memo(function HistoryDownloadRow({ dj, libName, actionPending, onRetry, onDelete }) {
+const HistoryDownloadRow = memo(function HistoryDownloadRow({ dj, libName, actionPending, onRetry, onDelete, onDeleteFile }) {
   const { year } = extractTitleYear(dj.source_file_path);
   const title = getDisplayTitle(dj.source_file_path);
   const clientLabel = formatDownloadClient(dj.client_type);
@@ -539,6 +603,21 @@ const HistoryDownloadRow = memo(function HistoryDownloadRow({ dj, libName, actio
       <td className="whitespace-nowrap px-4 py-2.5 align-top text-xs text-slate-400">{completedDate}</td>
       <td className="whitespace-nowrap px-4 py-2.5 align-top">
         <div className="flex flex-wrap gap-1.5">
+          {dj.status === 'complete' && dj.imported_file_path && (
+            <>
+              <Btn size="sm" variant="danger" disabled={Boolean(actionPending)} onClick={() => onDeleteFile(dj.id, false)}>
+                {actionPending === 'delete_file' ? 'Deleting…' : 'Delete File'}
+              </Btn>
+              <Btn size="sm" variant="warning" disabled={Boolean(actionPending)} onClick={() => onDeleteFile(dj.id, true)}>
+                {actionPending === 'delete_retry' ? 'Working…' : 'Delete & Retry'}
+              </Btn>
+            </>
+          )}
+          {dj.status === 'file_deleted' && (
+            <Btn size="sm" variant="primary" disabled={Boolean(actionPending)} onClick={() => onDeleteFile(dj.id, true)}>
+              {actionPending === 'delete_retry' ? 'Working…' : 'Retry Search'}
+            </Btn>
+          )}
           {['failed', 'timed_out', 'stalled'].includes(dj.status) && (
             <Btn size="sm" variant="primary" disabled={Boolean(actionPending)} onClick={() => onRetry(dj.id)}>
               {actionPending === 'retry' ? 'Working…' : 'Retry Search'}
@@ -626,7 +705,9 @@ function JobsPage({
   onJobAction,
   onCancelDownloadJob,
   onRetryDownloadJob,
+  onReviewDownloadJob,
   onDeleteDownloadJob,
+  onDeleteDownloadedFile,
   onCancelAllQueued,
   onClearQueue,
   onAbortAllJobs,
@@ -1048,6 +1129,7 @@ function JobsPage({
                     onCancel={onCancelDownloadJob}
                     onRetry={onRetryDownloadJob}
                     onDelete={onDeleteDownloadJob}
+                    onReview={onReviewDownloadJob}
                   />
                 ) : (
                   <QueueEncodeCard
@@ -1095,7 +1177,8 @@ function JobsPage({
                         nowMs={nowMs}
                         onCancel={onCancelDownloadJob}
                         onRetry={onRetryDownloadJob}
-                        onDelete={onDeleteDownloadJob}
+                      onDelete={onDeleteDownloadJob}
+                        onReview={onReviewDownloadJob}
                       />
                     ) : (
                       <QueueEncodeRow
@@ -1154,6 +1237,7 @@ function JobsPage({
                     actionPending={pendingDownloadActions[item.id]}
                     onRetry={onRetryDownloadJob}
                     onDelete={onDeleteDownloadJob}
+                    onDeleteFile={onDeleteDownloadedFile}
                   />
                 ) : (
                   <HistoryEncodeCard
@@ -1202,6 +1286,7 @@ function JobsPage({
                         actionPending={pendingDownloadActions[item.id]}
                         onRetry={onRetryDownloadJob}
                         onDelete={onDeleteDownloadJob}
+                        onDeleteFile={onDeleteDownloadedFile}
                       />
                     ) : (
                       <HistoryEncodeRow

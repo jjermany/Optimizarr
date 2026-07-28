@@ -28,7 +28,13 @@ from app.services.job_service import (
     find_existing_target_artifact_for_identity,
     media_identity_key,
 )
-from app.services.optimization_service import is_hdr_video, probe_video_height, stop_active_ffmpeg
+from app.services.optimization_service import (
+    is_hdr_video,
+    probe_video_codec,
+    probe_video_duration,
+    probe_video_height,
+    stop_active_ffmpeg,
+)
 from app.services.realtime_service import broker
 
 logger = logging.getLogger(__name__)
@@ -80,6 +86,7 @@ _CLIENT_TRACKED_DOWNLOAD_STATUSES = {
     DownloadJobStatus.moving.value,
     DownloadJobStatus.stalled.value,
     DownloadJobStatus.importing.value,
+    DownloadJobStatus.needs_review.value,
 }
 _qbt_strike_state: dict[str, dict[str, object]] = {}
 _last_qbt_strike_cleanup_monotonic = 0.0
@@ -283,8 +290,10 @@ def download_job_exists_for_source(db: Session, source_path: str, library_id: in
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
+        DownloadJobStatus.needs_review.value,
         DownloadJobStatus.waiting_encode.value,
         DownloadJobStatus.complete.value,
+        DownloadJobStatus.file_deleted.value,
     }
     rows = (
         db.query(DownloadJob)
@@ -337,6 +346,7 @@ _IDENTITY_BLOCKING_DOWNLOAD_STATUSES = {
     DownloadJobStatus.moving.value,
     DownloadJobStatus.stalled.value,
     DownloadJobStatus.importing.value,
+    DownloadJobStatus.needs_review.value,
     DownloadJobStatus.waiting_encode.value,
     DownloadJobStatus.complete.value,
 }
@@ -712,6 +722,7 @@ def _active_download_identity_keys(db: Session) -> set[str]:
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
+        DownloadJobStatus.needs_review.value,
     }
     keys: set[str] = set()
     rows = db.query(DownloadJob).filter(DownloadJob.status.in_(active_statuses)).all()
@@ -753,6 +764,7 @@ def _active_download_jobs_for_identity(db: Session, identity_key: str) -> list[D
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
+        DownloadJobStatus.needs_review.value,
     }
     rows = (
         db.query(DownloadJob)
@@ -1145,8 +1157,10 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
                 DownloadJobStatus.moving.value,
                 DownloadJobStatus.stalled.value,
                 DownloadJobStatus.importing.value,
+                DownloadJobStatus.needs_review.value,
                 DownloadJobStatus.waiting_encode.value,
                 DownloadJobStatus.complete.value,
+                DownloadJobStatus.file_deleted.value,
             }),
         )
         .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
@@ -1226,6 +1240,7 @@ def download_job_to_dict(dj: DownloadJob, *, client_queue_position: int | None =
         'client_queue_position': client_queue_position,
         'downloaded_file_path': dj.downloaded_file_path,
         'imported_file_path': dj.imported_file_path,
+        'review_data': json.loads(dj.review_data) if dj.review_data else None,
         'error_message': dj.error_message,
         'encode_job_id': dj.encode_job_id,
         'created_at': _iso_utc(dj.created_at),
@@ -1712,6 +1727,7 @@ def _recover_sab_completed_for_existing_download_jobs(
             DownloadJob.imported_file_path.is_(None),
             DownloadJob.status != DownloadJobStatus.complete.value,
             DownloadJob.status != DownloadJobStatus.importing.value,
+            DownloadJob.status != DownloadJobStatus.needs_review.value,
             DownloadJob.status != DownloadJobStatus.pending.value,
         )
         .all()
@@ -3985,7 +4001,131 @@ def _cleanup_replaced_after_download_import(db: Session, dj: DownloadJob) -> tup
     return removed_files, affected_download_job_ids
 
 
-def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library, profile: LibraryProfile, qbt, sab) -> None:
+def _video_candidates_in_path(save_path: str) -> list[Path]:
+    root = Path(save_path)
+    if root.is_file():
+        return [root] if root.suffix.lower() in download_client_service.MEDIA_SUFFIXES else []
+    if not root.is_dir():
+        return []
+    try:
+        return sorted(
+            (
+                candidate
+                for candidate in root.rglob('*')
+                if candidate.is_file() and candidate.suffix.lower() in download_client_service.MEDIA_SUFFIXES
+            ),
+            key=lambda candidate: (-candidate.stat().st_size, str(candidate).lower()),
+        )
+    except OSError:
+        return []
+
+
+def _assess_download_for_import(
+    dj: DownloadJob,
+    save_path: str,
+    profile: LibraryProfile,
+) -> tuple[Path | None, dict]:
+    """Inspect a completed payload without modifying it.
+
+    Automatic import requires independent agreement from the selected release,
+    payload filename, actual probed resolution, and candidate count. Anything
+    weaker is retained in the download directory for explicit review.
+    """
+    candidates = _video_candidates_in_path(save_path)
+    target_resolution = int(getattr(profile, 'target_resolution', 1080) or 1080)
+    release_title = str(dj.release_name or Path(save_path).name or '').strip()
+    release_matches = _release_matches_source_title(release_title, dj.source_file_path)
+    inspected: list[dict] = []
+    for candidate in candidates:
+        try:
+            size_bytes = candidate.stat().st_size
+        except OSError:
+            size_bytes = None
+        height = probe_video_height(str(candidate))
+        codec = probe_video_codec(str(candidate))
+        duration_seconds = probe_video_duration(str(candidate))
+        inspected.append(
+            {
+                'path': str(candidate),
+                'name': candidate.name,
+                'size_bytes': size_bytes,
+                'height': height,
+                'codec': codec,
+                'duration_seconds': round(duration_seconds, 1) if duration_seconds is not None else None,
+                'title_matches': _release_matches_source_title(candidate.name, dj.source_file_path),
+                'resolution_matches': height is not None and abs(int(height) - target_resolution) <= 32,
+            }
+        )
+
+    reasons: list[str] = []
+    if not inspected:
+        reasons.append('No supported video file was found')
+    if len(inspected) > 1:
+        reasons.append(f'{len(inspected)} video files require a selection')
+    if not release_matches:
+        reasons.append('The completed release title does not confidently match the source title/year')
+
+    selected = inspected[0] if inspected else None
+    if selected is not None:
+        if not selected['title_matches']:
+            reasons.append('The downloaded video filename does not confidently match the source title/year')
+        if selected['height'] is None:
+            reasons.append('The downloaded video resolution could not be verified')
+        elif not selected['resolution_matches']:
+            reasons.append(
+                f"Actual video resolution is {selected['height']}p; expected {target_resolution}p"
+            )
+
+    high_confidence = bool(
+        len(inspected) == 1
+        and release_matches
+        and selected
+        and selected['title_matches']
+        and selected['resolution_matches']
+    )
+    review = {
+        'confidence': 'high' if high_confidence else ('low' if any(
+            'does not confidently match' in reason or 'Actual video resolution' in reason
+            for reason in reasons
+        ) else 'medium'),
+        'source_file_path': dj.source_file_path,
+        'expected_title': _extract_source_title_and_year(dj.source_file_path)[0],
+        'expected_year': _extract_source_title_and_year(dj.source_file_path)[1],
+        'target_resolution': target_resolution,
+        'release_name': release_title or None,
+        'save_path': save_path,
+        'reasons': reasons,
+        'candidates': inspected,
+    }
+    return (Path(selected['path']) if high_confidence and selected else None), review
+
+
+def _hold_download_for_review(db: Session, dj: DownloadJob, review: dict) -> None:
+    dj.status = DownloadJobStatus.needs_review.value
+    dj.progress_percent = 100
+    dj.eta_seconds = None
+    dj.download_speed_bps = None
+    dj.review_data = json.dumps(review, separators=(',', ':'))
+    reasons = review.get('reasons') or []
+    dj.error_message = 'Manual import review required: ' + '; '.join(str(reason) for reason in reasons)
+    db.commit()
+    db.refresh(dj)
+    _publish_download_job(dj)
+    logger.warning('Download job %s held for manual import review: %s', dj.id, '; '.join(reasons))
+
+
+def _import_file(
+    db: Session,
+    dj: DownloadJob,
+    save_path: str,
+    library: Library,
+    profile: LibraryProfile,
+    qbt,
+    sab,
+    *,
+    selected_file_path: str | None = None,
+    manual_approval: bool = False,
+) -> None:
     """
     Import a completed download into the library.
 
@@ -3994,25 +4134,44 @@ def _import_file(db: Session, dj: DownloadJob, save_path: str, library: Library,
     complete directory; it reads the video file from there and moves/copies
     it to the library's media folder.
     """
+    if manual_approval:
+        video_file = Path(str(selected_file_path or ''))
+        try:
+            review = json.loads(dj.review_data or '{}')
+        except (TypeError, ValueError, json.JSONDecodeError):
+            review = {}
+        allowed_paths = {
+            str(candidate.get('path') or '')
+            for candidate in review.get('candidates', [])
+            if isinstance(candidate, dict)
+        }
+        if str(video_file) not in allowed_paths or not video_file.is_file():
+            raise ValueError('Selected review candidate is missing or is not part of this download')
+    else:
+        video_file, review = _assess_download_for_import(dj, save_path, profile)
+        if video_file is None:
+            if not review.get('candidates'):
+                logger.error('Download job %s: no video file found in %r', dj.id, save_path)
+                _cleanup_download_client(dj, qbt, sab, save_path=save_path, delete_files=True)
+                _retry_failed_download(
+                    db,
+                    dj,
+                    library,
+                    profile,
+                    reason=f'No video file found in {save_path}',
+                    failed_release_key=_release_selection_key_from_job(dj),
+                )
+                return
+            _hold_download_for_review(db, dj, review)
+            return
+
     dj.status = DownloadJobStatus.importing.value
+    dj.review_data = None
+    dj.error_message = None
     dj.eta_seconds = None
     dj.download_speed_bps = None
     db.commit()
     _publish_download_job(dj)
-
-    video_file = download_client_service.find_video_in_path(save_path)
-    if video_file is None:
-        logger.error('Download job %s: no video file found in %r', dj.id, save_path)
-        _cleanup_download_client(dj, qbt, sab, save_path=save_path, delete_files=True)
-        _retry_failed_download(
-            db,
-            dj,
-            library,
-            profile,
-            reason=f'No video file found in {save_path}',
-            failed_release_key=_release_selection_key_from_job(dj),
-        )
-        return
 
     dj.downloaded_file_path = str(video_file)
     db.commit()
@@ -4630,6 +4789,7 @@ def run_download_startup_recovery(db: Session) -> dict:
         DownloadJobStatus.queued.value,
         DownloadJobStatus.paused.value,
         DownloadJobStatus.moving.value,
+        DownloadJobStatus.needs_review.value,
         DownloadJobStatus.importing.value,     # already covered by in_flight_jobs loop
         DownloadJobStatus.pending.value,       # not yet started — nothing to recover
     }
@@ -5042,6 +5202,7 @@ def run_scan_recovery(db: Session) -> dict:
             DownloadJobStatus.repairing.value,
             DownloadJobStatus.unpacking.value,
             DownloadJobStatus.moving.value,
+            DownloadJobStatus.needs_review.value,
             DownloadJobStatus.importing.value,
         }
         candidate_jobs = (

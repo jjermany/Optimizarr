@@ -795,6 +795,7 @@ def _claim_next_queued_job(db: Session, settings: Settings, now: datetime) -> in
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
+        DownloadJobStatus.needs_review.value,
     )
     active_download_rows = (
         db.query(DownloadJob.id, DownloadJob.source_file_path, DownloadJob.status)

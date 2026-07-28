@@ -23,7 +23,9 @@ class DownloadJobStatus(str, Enum):
     moving = 'moving'
     stalled = 'stalled'
     importing = 'importing'
+    needs_review = 'needs_review' # downloaded payload needs manual import confirmation
     complete = 'complete'
+    file_deleted = 'file_deleted' # library link/file removed manually; client payload may remain for seeding
     failed = 'failed'
     timed_out = 'timed_out'
     waiting_encode = 'waiting_encode'
@@ -52,6 +54,7 @@ class DownloadJob(Base):
     download_speed_bps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     downloaded_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
     imported_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    review_data: Mapped[str | None] = mapped_column(Text, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     encode_job_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, nullable=False)

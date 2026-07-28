@@ -359,6 +359,12 @@ def init_db() -> None:
         _add_column_if_missing(
             connection,
             'download_jobs',
+            'review_data',
+            'review_data TEXT',
+        )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
             'failed_release_keys',
             'failed_release_keys TEXT',
         )

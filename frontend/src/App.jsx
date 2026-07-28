@@ -9,6 +9,7 @@ import {
   clearQueue,
   removeAndResetDownloadJob,
   deleteDownloadJob,
+  deleteDownloadedFile,
   discardJobProgress,
   createLibrary,
   deleteJob,
@@ -30,6 +31,8 @@ import {
   fetchProwlarrSettings,
   fetchQueueStatus,
   fetchSettings,
+  fallbackReviewedDownload,
+  importReviewedDownload,
   login as loginRequest,
   logout as logoutRequest,
   pauseJob,
@@ -39,6 +42,7 @@ import {
   resumeJob,
   resumeQueue,
   retryDownloadJob,
+  retryReviewedDownload,
   retryJob,
   startJob,
   runCleanup,
@@ -233,7 +237,9 @@ export default function App() {
   const onJobAction = useEventCallback((action, jobId) => handleJobAction(action, jobId));
   const onCancelDownloadJob = useEventCallback((jobId) => handleCancelDownloadJob(jobId));
   const onRetryDownloadJob = useEventCallback((jobId) => handleRetryDownloadJob(jobId));
+  const onReviewDownloadJob = useEventCallback((action, jobId, selectedFilePath) => handleReviewDownloadJob(action, jobId, selectedFilePath));
   const onDeleteDownloadJob = useEventCallback((jobId) => handleDeleteDownloadJob(jobId));
+  const onDeleteDownloadedFile = useEventCallback((jobId, retry) => handleDeleteDownloadedFile(jobId, retry));
   const onCancelAllQueued = useEventCallback(() => handleCancelAllQueued());
   const onClearQueue = useEventCallback(() => handleClearQueue());
   const onAbortAllJobs = useEventCallback(() => handleAbortAllJobs());
@@ -1554,6 +1560,35 @@ export default function App() {
     }
   }
 
+  async function handleReviewDownloadJob(action, jobId, selectedFilePath) {
+    if (pendingDownloadActions[jobId]) return;
+    setPendingDownloadActions((prev) => ({ ...prev, [jobId]: `review_${action}` }));
+    try {
+      if (action === 'import') await importReviewedDownload(jobId, selectedFilePath);
+      else if (action === 'retry') await retryReviewedDownload(jobId);
+      else if (action === 'fallback') await fallbackReviewedDownload(jobId);
+      else throw new Error('Unknown review action');
+      const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
+      setJobs(nextJobs ?? []);
+      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      await refreshLogs();
+      pushToast(
+        action === 'import' ? 'Reviewed file imported.' :
+          action === 'retry' ? 'Release rejected and a new search was queued.' :
+            'Download rejected and source encode queued.',
+        'success',
+      );
+    } catch (err) {
+      pushToast(err.message || 'Could not complete the review action.', 'error');
+    } finally {
+      setPendingDownloadActions((prev) => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
+    }
+  }
+
   async function handleDeleteDownloadJob(jobId) {
     if (pendingDownloadActions[jobId]) return;
     setPendingDownloadActions((prev) => ({ ...prev, [jobId]: 'delete' }));
@@ -1566,6 +1601,37 @@ export default function App() {
       pushToast('Download job removed.', 'success');
     } catch (err) {
       pushToast(err.message || 'Could not remove download job.', 'error');
+    } finally {
+      setPendingDownloadActions((prev) => {
+        const next = { ...prev };
+        delete next[jobId];
+        return next;
+      });
+    }
+  }
+
+  async function handleDeleteDownloadedFile(jobId, retry) {
+    if (pendingDownloadActions[jobId]) return;
+    const isQbit = downloadJobs.some((job) => job.id === jobId && job.client_type === 'qbittorrent');
+    const seedNotice = isQbit ? ' The qBittorrent payload will remain available for seeding.' : '';
+    const prompt = retry
+      ? `Delete the imported library file and search for a different release?${seedNotice}`
+      : `Delete the imported library file?${seedNotice}`;
+    if (!window.confirm(prompt)) return;
+    setPendingDownloadActions((prev) => ({ ...prev, [jobId]: retry ? 'delete_retry' : 'delete_file' }));
+    try {
+      await deleteDownloadedFile(jobId, retry);
+      const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
+      setJobs(nextJobs ?? []);
+      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      await refreshLogs();
+      pushToast(
+        retry ? 'Library file deleted and a new search was queued.' :
+          isQbit ? 'Library file deleted; seed payload retained.' : 'Library file deleted.',
+        'success',
+      );
+    } catch (err) {
+      pushToast(err.message || 'Could not delete the imported file.', 'error');
     } finally {
       setPendingDownloadActions((prev) => {
         const next = { ...prev };
@@ -2603,7 +2669,9 @@ export default function App() {
             onJobAction={onJobAction}
             onCancelDownloadJob={onCancelDownloadJob}
             onRetryDownloadJob={onRetryDownloadJob}
+            onReviewDownloadJob={onReviewDownloadJob}
             onDeleteDownloadJob={onDeleteDownloadJob}
+            onDeleteDownloadedFile={onDeleteDownloadedFile}
             onCancelAllQueued={onCancelAllQueued}
             onClearQueue={onClearQueue}
             onAbortAllJobs={onAbortAllJobs}

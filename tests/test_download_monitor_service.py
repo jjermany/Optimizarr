@@ -12,6 +12,7 @@ from app.models.library import DownloadQualityProfileEnum, Library, LibraryProfi
 from app.models.settings import QueueSortEnum, Settings
 from app.services import download_client_service, notification_service
 from app.services.download_monitor_service import (
+    _assess_download_for_import,
     _build_generic_movie_search_query,
     _build_prowlarr_query,
     _build_second_pass_search_query,
@@ -40,6 +41,70 @@ from app.services.download_monitor_service import (
     run_download_startup_recovery,
     run_scan_recovery,
 )
+
+
+def test_import_assessment_accepts_single_matching_verified_movie(monkeypatch, tmp_path):
+    video = tmp_path / 'When.Harry.Met.Sally.1989.1080p.WEB-DL.mkv'
+    video.write_bytes(b'video')
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 1080)
+    dj = DownloadJob(
+        source_file_path='/movies/When Harry Met Sally (1989).mkv',
+        release_name='When.Harry.Met.Sally.1989.1080p.WEB-DL',
+    )
+
+    selected, review = _assess_download_for_import(dj, str(tmp_path), _profile(DownloadQualityProfileEnum.web_dl))
+
+    assert selected == video
+    assert review['confidence'] == 'high'
+    assert review['reasons'] == []
+
+
+def test_import_assessment_holds_actual_720p_payload(monkeypatch, tmp_path):
+    video = tmp_path / 'When.Harry.Met.Sally.1989.1080p.WEB-DL.mkv'
+    video.write_bytes(b'video')
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 720)
+    dj = DownloadJob(
+        source_file_path='/movies/When Harry Met Sally (1989).mkv',
+        release_name='When.Harry.Met.Sally.1989.1080p.WEB-DL',
+    )
+
+    selected, review = _assess_download_for_import(dj, str(tmp_path), _profile(DownloadQualityProfileEnum.web_dl))
+
+    assert selected is None
+    assert review['confidence'] == 'low'
+    assert 'Actual video resolution is 720p; expected 1080p' in review['reasons']
+
+
+def test_import_assessment_holds_wrong_movie_payload(monkeypatch, tmp_path):
+    video = tmp_path / 'Sleepless.In.Seattle.1993.1080p.WEB-DL.mkv'
+    video.write_bytes(b'video')
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 1080)
+    dj = DownloadJob(
+        source_file_path='/movies/When Harry Met Sally (1989).mkv',
+        release_name='When.Harry.Met.Sally.1989.1080p.WEB-DL',
+    )
+
+    selected, review = _assess_download_for_import(dj, str(tmp_path), _profile(DownloadQualityProfileEnum.web_dl))
+
+    assert selected is None
+    assert review['confidence'] == 'low'
+    assert any('video filename' in reason for reason in review['reasons'])
+
+
+def test_import_assessment_holds_ambiguous_multiple_video_payload(monkeypatch, tmp_path):
+    (tmp_path / 'When.Harry.Met.Sally.1989.1080p.WEB-DL.mkv').write_bytes(b'main')
+    (tmp_path / 'When.Harry.Met.Sally.1989.Interview.1080p.mkv').write_bytes(b'extra')
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 1080)
+    dj = DownloadJob(
+        source_file_path='/movies/When Harry Met Sally (1989).mkv',
+        release_name='When.Harry.Met.Sally.1989.1080p.WEB-DL',
+    )
+
+    selected, review = _assess_download_for_import(dj, str(tmp_path), _profile(DownloadQualityProfileEnum.web_dl))
+
+    assert selected is None
+    assert review['confidence'] == 'medium'
+    assert '2 video files require a selection' in review['reasons']
 
 
 
@@ -5269,6 +5334,7 @@ def test_do_search_rejects_unrelated_episode_title_for_single_word_movie(monkeyp
 
 
 def test_import_file_sab_removes_source_video_from_completed_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 1080)
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -5324,6 +5390,7 @@ def test_import_file_sab_removes_source_video_from_completed_directory(monkeypat
 
 
 def test_import_file_refuses_destination_matching_source(monkeypatch, tmp_path):
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 1080)
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -5393,6 +5460,7 @@ def test_import_file_refuses_destination_matching_source(monkeypatch, tmp_path):
 
 
 def test_import_file_sab_falls_back_to_copy_when_rename_hits_cross_device(monkeypatch, tmp_path):
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 1080)
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(LibraryProfile).delete()
@@ -5461,6 +5529,7 @@ def test_import_file_sab_falls_back_to_copy_when_rename_hits_cross_device(monkey
 
 
 def test_import_file_removes_prior_download_import_after_movie_upgrade(monkeypatch, tmp_path):
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 1080)
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         db.query(Job).delete()
@@ -5532,6 +5601,7 @@ def test_import_file_removes_prior_download_import_after_movie_upgrade(monkeypat
 
 
 def test_import_file_sends_completion_notification(monkeypatch, tmp_path):
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 1080)
     with SessionLocal() as db:
         db.query(DownloadJob).delete()
         settings = notification_service.get_or_create_notification_settings(db)

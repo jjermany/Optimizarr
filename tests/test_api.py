@@ -1,4 +1,5 @@
 import os
+import json
 import time
 from pathlib import Path
 
@@ -2268,3 +2269,115 @@ def test_cleanup_duplicate_optimized_endpoint_deletes_recorded_duplicate_artifac
     assert source_file.exists()
     assert not encoded_2k.exists()
     assert downloaded_1080p.exists()
+
+
+def test_download_history_delete_file_preserves_qbit_seed(tmp_path, monkeypatch):
+    from app.models.download_job import DownloadJob, DownloadJobStatus
+    from app.services import download_client_service
+
+    library_dir = tmp_path / 'library'
+    seed_dir = tmp_path / 'qbit'
+    library_dir.mkdir()
+    seed_dir.mkdir()
+    source = library_dir / 'When Harry Met Sally (1989).mkv'
+    source.write_bytes(b'original')
+    seed_file = seed_dir / 'When.Harry.Met.Sally.1989.1080p.mkv'
+    seed_file.write_bytes(b'download')
+    imported = library_dir / 'When Harry Met Sally (1989)-1080p.mkv'
+    os.link(seed_file, imported)
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+        library = Library(name='Movies', path=str(library_dir), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+        db.add(LibraryProfile(library_id=library.id))
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path=str(source),
+            imported_file_path=str(imported),
+            downloaded_file_path=str(seed_file),
+            download_hash='seed-me',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.complete.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+        job_id = dj.id
+
+    monkeypatch.setattr(
+        download_client_service,
+        'remove_qbt_torrent',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('qBit torrent must be retained')),
+    )
+    with TestClient(app) as client:
+        response = client.post(f'/download-jobs/{job_id}/delete-file', json={'retry': False})
+
+    assert response.status_code == 200
+    assert response.json()['status'] == DownloadJobStatus.file_deleted.value
+    assert not imported.exists()
+    assert seed_file.exists()
+    assert seed_file.read_bytes() == b'download'
+
+
+def test_download_history_delete_and_retry_keeps_seed_and_queues_search(tmp_path, monkeypatch):
+    from app.models.download_job import DownloadJob, DownloadJobStatus
+    from app.services import download_client_service
+
+    library_dir = tmp_path / 'library'
+    seed_dir = tmp_path / 'qbit'
+    library_dir.mkdir()
+    seed_dir.mkdir()
+    source = library_dir / 'When Harry Met Sally (1989).mkv'
+    source.write_bytes(b'original')
+    seed_file = seed_dir / 'When.Harry.Met.Sally.1989.1080p.mkv'
+    seed_file.write_bytes(b'download')
+    imported = library_dir / 'When Harry Met Sally (1989)-1080p.mkv'
+    os.link(seed_file, imported)
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+        library = Library(name='Movies', path=str(library_dir), enabled=True)
+        db.add(library)
+        db.commit()
+        db.refresh(library)
+        db.add(LibraryProfile(library_id=library.id))
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path=str(source),
+            imported_file_path=str(imported),
+            downloaded_file_path=str(seed_file),
+            release_name='When.Harry.Met.Sally.1989.1080p.WEB-DL',
+            selected_release_key='guid:first-release',
+            download_hash='seed-me',
+            client_type='qbittorrent',
+            status=DownloadJobStatus.complete.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+        job_id = dj.id
+
+    monkeypatch.setattr(
+        download_client_service,
+        'remove_qbt_torrent',
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('qBit torrent must be retained')),
+    )
+    with TestClient(app) as client:
+        response = client.post(f'/download-jobs/{job_id}/delete-file', json={'retry': True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['status'] == DownloadJobStatus.pending.value
+    assert payload['download_hash'] is None
+    assert 'guid:first-release' in json.loads(payload['failed_release_keys'])
+    assert not imported.exists()
+    assert seed_file.exists()

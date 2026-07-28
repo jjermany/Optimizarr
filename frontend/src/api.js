@@ -365,3 +365,25 @@ export function deleteAllDownloadJobs() {
 export function retryDownloadJob(jobId) {
   return request(`/download-jobs/${jobId}/retry`, { method: 'POST' });
 }
+
+export function importReviewedDownload(jobId, selectedFilePath) {
+  return request(`/download-jobs/${jobId}/review/import`, {
+    method: 'POST',
+    body: JSON.stringify({ selected_file_path: selectedFilePath }),
+  });
+}
+
+export function retryReviewedDownload(jobId) {
+  return request(`/download-jobs/${jobId}/review/retry`, { method: 'POST' });
+}
+
+export function fallbackReviewedDownload(jobId) {
+  return request(`/download-jobs/${jobId}/review/fallback`, { method: 'POST' });
+}
+
+export function deleteDownloadedFile(jobId, retry = false) {
+  return request(`/download-jobs/${jobId}/delete-file`, {
+    method: 'POST',
+    body: JSON.stringify({ retry }),
+  });
+}

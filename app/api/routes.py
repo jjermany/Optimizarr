@@ -1,5 +1,6 @@
 import os
 import logging
+import json
 from datetime import timezone
 from pathlib import Path
 from threading import Lock
@@ -1011,6 +1012,7 @@ class DownloadJobResponse(BaseModel):
     client_queue_position: int | None = None
     downloaded_file_path: str | None = None
     imported_file_path: str | None = None
+    review_data: dict | None = None
     error_message: str | None = None
     encode_job_id: int | None = None
     created_at: str | None = None
@@ -1056,6 +1058,7 @@ class DownloadJobResponse(BaseModel):
             client_queue_position=client_queue_position,
             downloaded_file_path=dj.downloaded_file_path,
             imported_file_path=dj.imported_file_path,
+            review_data=json.loads(dj.review_data) if dj.review_data else None,
             error_message=dj.error_message,
             encode_job_id=dj.encode_job_id,
             created_at=dj.created_at.replace(tzinfo=timezone.utc).isoformat() if dj.created_at else None,
@@ -1833,6 +1836,7 @@ def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = Fa
         DownloadJobStatus.moving.value,
         DownloadJobStatus.stalled.value,
         DownloadJobStatus.importing.value,
+        DownloadJobStatus.needs_review.value,
         DownloadJobStatus.complete.value,
     }
     reusable_statuses = {
@@ -2070,6 +2074,7 @@ def remove_all_jobs_endpoint(_: None = Depends(require_ui_auth), db: Session = D
     # history list — both encode and download entries.
     _TERMINAL_DL = {
         DownloadJobStatus.complete.value,
+        DownloadJobStatus.file_deleted.value,
         DownloadJobStatus.failed.value,
         DownloadJobStatus.timed_out.value,
         DownloadJobStatus.fallback_queued.value,
@@ -2524,6 +2529,151 @@ def get_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sessio
     )
 
 
+class DownloadReviewImportRequest(BaseModel):
+    selected_file_path: str = Field(..., min_length=1)
+
+
+@router.post('/download-jobs/{job_id}/review/import', response_model=DownloadJobResponse)
+def import_reviewed_download(
+    job_id: int,
+    payload: DownloadReviewImportRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> DownloadJobResponse:
+    from app.services.download_monitor_service import _import_file
+
+    row = (
+        db.query(DownloadJob, Library, LibraryProfile)
+        .join(Library, DownloadJob.library_id == Library.id)
+        .join(LibraryProfile, LibraryProfile.library_id == Library.id)
+        .filter(DownloadJob.id == job_id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail='Download job not found')
+    dj, library, profile = row
+    if dj.status != DownloadJobStatus.needs_review.value:
+        raise HTTPException(status_code=409, detail='Download job is not awaiting review')
+    try:
+        review = json.loads(dj.review_data or '{}')
+    except (TypeError, ValueError, json.JSONDecodeError):
+        review = {}
+    save_path = str(review.get('save_path') or '').strip()
+    if not save_path:
+        raise HTTPException(status_code=409, detail='Review data does not contain a completed download path')
+    qbt = download_client_service.get_or_create_qbt_settings(db)
+    sab = download_client_service.get_or_create_sab_settings(db)
+    try:
+        _import_file(
+            db,
+            dj,
+            save_path,
+            library,
+            profile,
+            qbt,
+            sab,
+            selected_file_path=payload.selected_file_path,
+            manual_approval=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return DownloadJobResponse.from_orm(dj)
+
+
+@router.post('/download-jobs/{job_id}/review/retry', response_model=DownloadJobResponse)
+def retry_reviewed_download(
+    job_id: int,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> DownloadJobResponse:
+    from app.services.download_monitor_service import (
+        _cleanup_download_client,
+        _publish_download_job,
+        _release_selection_key_from_job,
+    )
+    from datetime import datetime as _dt
+
+    dj = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+    if dj is None:
+        raise HTTPException(status_code=404, detail='Download job not found')
+    if dj.status != DownloadJobStatus.needs_review.value:
+        raise HTTPException(status_code=409, detail='Download job is not awaiting review')
+    try:
+        review = json.loads(dj.review_data or '{}')
+    except (TypeError, ValueError, json.JSONDecodeError):
+        review = {}
+    failed_key = _release_selection_key_from_job(dj)
+    qbt = download_client_service.get_or_create_qbt_settings(db)
+    sab = download_client_service.get_or_create_sab_settings(db)
+    _cleanup_download_client(
+        dj,
+        qbt,
+        sab,
+        save_path=str(review.get('save_path') or '') or None,
+        delete_files=True,
+    )
+    failed = set(json.loads(dj.failed_release_keys or '[]'))
+    if failed_key:
+        failed.add(failed_key)
+    dj.failed_release_keys = json.dumps(sorted(failed)) if failed else None
+    dj.status = DownloadJobStatus.pending.value
+    dj.error_message = None
+    dj.review_data = None
+    dj.release_name = None
+    dj.selected_release_key = None
+    dj.download_hash = None
+    dj.client_type = None
+    dj.progress_percent = 0
+    dj.eta_seconds = None
+    dj.download_speed_bps = None
+    dj.downloaded_file_path = None
+    dj.download_started_at = None
+    dj.completed_at = None
+    dj.created_at = _dt.now(timezone.utc)
+    db.commit()
+    db.refresh(dj)
+    _publish_download_job(dj)
+    return DownloadJobResponse.from_orm(dj)
+
+
+@router.post('/download-jobs/{job_id}/review/fallback', response_model=DownloadJobResponse)
+def fallback_reviewed_download(
+    job_id: int,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> DownloadJobResponse:
+    from app.services.download_monitor_service import _cleanup_download_client, _fallback_to_encode
+
+    row = (
+        db.query(DownloadJob, Library, LibraryProfile)
+        .join(Library, DownloadJob.library_id == Library.id)
+        .join(LibraryProfile, LibraryProfile.library_id == Library.id)
+        .filter(DownloadJob.id == job_id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail='Download job not found')
+    dj, library, profile = row
+    if dj.status != DownloadJobStatus.needs_review.value:
+        raise HTTPException(status_code=409, detail='Download job is not awaiting review')
+    try:
+        review = json.loads(dj.review_data or '{}')
+    except (TypeError, ValueError, json.JSONDecodeError):
+        review = {}
+    qbt = download_client_service.get_or_create_qbt_settings(db)
+    sab = download_client_service.get_or_create_sab_settings(db)
+    _cleanup_download_client(
+        dj,
+        qbt,
+        sab,
+        save_path=str(review.get('save_path') or '') or None,
+        delete_files=True,
+    )
+    dj.review_data = None
+    _fallback_to_encode(db, dj, library, profile)
+    return DownloadJobResponse.from_orm(dj)
+
+
 @router.post('/download-jobs/{job_id}/cancel', response_model=DownloadJobResponse)
 def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> DownloadJobResponse:
     from datetime import datetime as _dt
@@ -2564,6 +2714,7 @@ def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     dj.download_speed_bps = None
     dj.downloaded_file_path = None
     dj.imported_file_path = None
+    dj.review_data = None
     dj.encode_job_id = None
     dj.download_started_at = None
     dj.completed_at = None
@@ -2640,6 +2791,7 @@ def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     dj.progress_percent = 0
     dj.eta_seconds = None
     dj.download_speed_bps = None
+    dj.review_data = None
     dj.completed_at = None
     dj.encode_job_id = None
     dj.created_at = _dt.now(timezone.utc)
@@ -2654,6 +2806,122 @@ def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sess
         details={'download_job_id': dj.id, 'status': dj.status, 'source_file_path': dj.source_file_path},
     )
     broker.publish_system_event('download_job_retried', download_job_id=dj.id)
+    return DownloadJobResponse.from_orm(dj)
+
+
+class DeleteDownloadedFileRequest(BaseModel):
+    retry: bool = False
+
+
+@router.post('/download-jobs/{job_id}/delete-file', response_model=DownloadJobResponse)
+def delete_downloaded_file(
+    job_id: int,
+    payload: DeleteDownloadedFileRequest,
+    _: None = Depends(require_ui_auth),
+    db: Session = Depends(get_db),
+) -> DownloadJobResponse:
+    """Delete only the library copy/link; never remove a qBittorrent seed payload."""
+    from app.services.download_monitor_service import (
+        _load_failed_release_keys,
+        _publish_download_job,
+        _release_selection_key_from_job,
+        _wake_event,
+    )
+    from datetime import datetime as _dt
+
+    row = (
+        db.query(DownloadJob, Library)
+        .join(Library, DownloadJob.library_id == Library.id)
+        .filter(DownloadJob.id == job_id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail='Download job not found')
+    dj, library = row
+    if dj.status not in {DownloadJobStatus.complete.value, DownloadJobStatus.file_deleted.value}:
+        raise HTTPException(status_code=409, detail='Only completed download files can be deleted from history')
+    was_qbit = dj.client_type == 'qbittorrent'
+
+    deleted_path: str | None = None
+    if dj.imported_file_path:
+        candidate = Path(dj.imported_file_path)
+        source = Path(dj.source_file_path)
+        library_root = Path(library.path)
+        try:
+            resolved_candidate = candidate.resolve(strict=True)
+            resolved_source = source.resolve(strict=False)
+            resolved_library_root = library_root.resolve(strict=False)
+        except OSError as exc:
+            raise HTTPException(status_code=409, detail=f'Could not validate imported file path: {exc}') from exc
+        if not resolved_candidate.is_file():
+            raise HTTPException(status_code=409, detail='Imported file no longer exists')
+        if resolved_candidate == resolved_source:
+            raise HTTPException(status_code=409, detail='Refusing to delete the original source file')
+        if resolved_candidate.suffix.lower() not in download_client_service.MEDIA_SUFFIXES:
+            raise HTTPException(status_code=409, detail='Imported path is not a supported video file')
+        try:
+            resolved_candidate.relative_to(resolved_library_root)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail='Imported file is outside the configured library') from exc
+        try:
+            candidate.unlink()
+        except OSError as exc:
+            raise HTTPException(status_code=409, detail=f'Could not delete imported file: {exc}') from exc
+        deleted_path = str(candidate)
+
+    if payload.retry:
+        failed = _load_failed_release_keys(dj)
+        failed_key = _release_selection_key_from_job(dj)
+        if failed_key:
+            failed.add(failed_key)
+        dj.failed_release_keys = json.dumps(sorted(failed)) if failed else None
+        dj.status = DownloadJobStatus.pending.value
+        dj.error_message = None
+        dj.search_query = None
+        dj.release_name = None
+        dj.indexer_id = None
+        dj.indexer_name = None
+        dj.selected_release_key = None
+        # Intentionally detach from qBittorrent without removing the torrent:
+        # its original payload remains in the client for tracker seeding.
+        dj.download_hash = None
+        dj.client_type = None
+        dj.progress_percent = 0
+        dj.eta_seconds = None
+        dj.download_speed_bps = None
+        dj.downloaded_file_path = None
+        dj.imported_file_path = None
+        dj.review_data = None
+        dj.encode_job_id = None
+        dj.download_started_at = None
+        dj.completed_at = None
+        dj.created_at = _dt.now(timezone.utc)
+    else:
+        dj.status = DownloadJobStatus.file_deleted.value
+        dj.imported_file_path = None
+        dj.error_message = (
+            'Imported library file deleted manually; qBittorrent payload retained for seeding'
+            if was_qbit
+            else 'Imported library file deleted manually'
+        )
+
+    db.commit()
+    db.refresh(dj)
+    _publish_download_job(dj)
+    _record_log_event(
+        db,
+        'download_file_deleted',
+        f'Download job {dj.id} library file was deleted' + (' and queued for retry' if payload.retry else ''),
+        severity='warning',
+        details={
+            'download_job_id': dj.id,
+            'deleted_path': deleted_path,
+            'retry': payload.retry,
+            'qbit_seed_retained': was_qbit,
+        },
+    )
+    if payload.retry:
+        _wake_event.set()
     return DownloadJobResponse.from_orm(dj)
 
 
