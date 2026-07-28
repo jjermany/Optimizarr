@@ -786,8 +786,8 @@ export function validateLibraryDraft(draft, libraryEnabled) {
     errors.minimum_source_resolution = 'Minimum source resolution must be higher than target resolution.';
   }
   if (draft.bitrate_mode === 'vbr_crf') {
-    if (!Number.isInteger(draft.crf) || draft.crf < 1) {
-      errors.crf = 'CRF must be a positive integer.';
+    if (!Number.isInteger(draft.crf) || draft.crf < 18 || draft.crf > 30) {
+      errors.crf = 'CRF must be between 18 and 30.';
     }
   }
   if (draft.bitrate_mode === 'cbr') {

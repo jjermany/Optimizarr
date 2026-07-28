@@ -248,7 +248,7 @@ def init_db() -> None:
             connection,
             'library_profiles',
             'preferred_video_encoder',
-            "preferred_video_encoder VARCHAR(8) NOT NULL DEFAULT 'auto'",
+            "preferred_video_encoder VARCHAR(32) NOT NULL DEFAULT 'auto'",
         )
         _add_column_if_missing(
             connection,
