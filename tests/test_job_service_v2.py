@@ -56,6 +56,23 @@ def test_find_existing_target_artifact_probes_unlabelled_same_identity(monkeypat
     assert find_existing_target_artifact_for_identity(str(source), 1080, '-1080p') == existing
 
 
+def test_find_existing_target_artifact_accepts_scope_cropped_target(monkeypatch, tmp_path):
+    existing = tmp_path / 'Roommates (2026) downloaded.mkv'
+    source = tmp_path / 'Roommates (2026) source.mkv'
+    existing.touch()
+    source.touch()
+    monkeypatch.setattr(
+        'app.services.job_service.optimization_service.probe_video_height',
+        lambda path: 800 if path == str(existing) else 2160,
+    )
+    monkeypatch.setattr(
+        'app.services.job_service.optimization_service.probe_video_width',
+        lambda path: 1920 if path == str(existing) else 3840,
+    )
+
+    assert find_existing_target_artifact_for_identity(str(source), 1080, '-1080p') == existing
+
+
 def test_has_completed_job_for_identity(tmp_path):
     with SessionLocal() as db:
         db.query(Job).delete()

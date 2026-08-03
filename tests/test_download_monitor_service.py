@@ -20,6 +20,7 @@ from app.services.download_monitor_service import (
     _extract_qbt_info_hash,
     _find_completed_download_match,
     _find_sab_queue_item_for_download_job,
+    _fallback_to_encode,
     _hold_download_for_review,
     _build_search_query,
     _check_download_progress,
@@ -60,6 +61,23 @@ def test_import_assessment_accepts_single_matching_verified_movie(monkeypatch, t
     assert review['reasons'] == []
 
 
+def test_import_assessment_accepts_scope_cropped_1080p_payload(monkeypatch, tmp_path):
+    video = tmp_path / 'When.Harry.Met.Sally.1989.1080p.WEB-DL.mkv'
+    video.write_bytes(b'video')
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 800)
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_width', lambda _path: 1920)
+    dj = DownloadJob(
+        source_file_path='/movies/When Harry Met Sally (1989).mkv',
+        release_name='When.Harry.Met.Sally.1989.1080p.WEB-DL',
+    )
+
+    selected, review = _assess_download_for_import(dj, str(tmp_path), _profile(DownloadQualityProfileEnum.web_dl))
+
+    assert selected == video
+    assert review['confidence'] == 'high'
+    assert review['reasons'] == []
+
+
 def test_import_assessment_holds_actual_720p_payload(monkeypatch, tmp_path):
     video = tmp_path / 'When.Harry.Met.Sally.1989.1080p.WEB-DL.mkv'
     video.write_bytes(b'video')
@@ -73,7 +91,7 @@ def test_import_assessment_holds_actual_720p_payload(monkeypatch, tmp_path):
 
     assert selected is None
     assert review['confidence'] == 'low'
-    assert 'Actual video resolution is 720p; expected 1080p' in review['reasons']
+    assert 'Actual video resolution is 720p; expected the 1080p target box' in review['reasons']
 
 
 def test_import_assessment_holds_wrong_movie_payload(monkeypatch, tmp_path):
@@ -132,6 +150,46 @@ def test_hold_for_review_notifies_only_on_first_transition(monkeypatch):
         _hold_download_for_review(db, dj, review)
 
     assert notifications == [(dj.id, 'low')]
+
+
+def test_fallback_claim_stops_all_further_download_attempts(monkeypatch):
+    encode_creations = []
+    notices = []
+    monkeypatch.setattr('app.services.download_monitor_service.probe_video_height', lambda _path: 2160)
+    monkeypatch.setattr('app.services.download_monitor_service.is_hdr_video', lambda _path: False)
+    monkeypatch.setattr(
+        'app.services.download_monitor_service.create_job',
+        lambda *_args, **_kwargs: encode_creations.append(True) or SimpleNamespace(id=777),
+    )
+    monkeypatch.setattr('app.services.download_monitor_service._publish_download_job', lambda _job: None)
+    monkeypatch.setattr(
+        'app.services.download_monitor_service.broker.publish_notification',
+        lambda message: notices.append(message),
+    )
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/movies/Attempts.Exhausted.2026.mkv',
+            status=DownloadJobStatus.searching.value,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        _fallback_to_encode(db, dj, library, library.profile)
+        _fallback_to_encode(db, dj, library, library.profile)
+        db.refresh(dj)
+
+        assert dj.status == DownloadJobStatus.waiting_encode.value
+        assert dj.encode_job_id == 777
+        assert encode_creations == [True]
+        assert len(notices) == 1
 
 
 
@@ -796,6 +854,25 @@ def test_download_job_exists_for_source_treats_pending_as_active_non_terminal():
 
         assert download_job_exists_for_source(db, source_path) is True
         assert download_job_exists_for_source(db, '/media/download-failed.mkv') is False
+
+
+def test_download_job_exists_for_source_blocks_exhausted_fallback_after_encode_failure():
+    source_path = '/media/download-exhausted.mkv'
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+
+        exhausted = DownloadJob(
+            source_file_path=source_path,
+            status=DownloadJobStatus.failed.value,
+            encode_job_id=777,
+            retry_count=5,
+            max_retries=5,
+        )
+        db.add(exhausted)
+        db.commit()
+
+        assert download_job_exists_for_source(db, source_path) is True
 
 
 def test_download_job_exists_for_source_treats_moving_as_active_non_terminal():
@@ -2076,6 +2153,105 @@ def test_startup_recovery_removes_waiting_encode_placeholder_for_completed_downl
         assert summary['reset_to_searching'] == 0
         assert summary['linked_jobs'] == 1
         assert removed is None
+
+
+def test_startup_recovery_never_reconsiders_waiting_encode_download(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Attempts Exhausted (2026).mkv',
+            release_name='Attempts.Exhausted.2026.1080p.WEB-DL',
+            status=DownloadJobStatus.waiting_encode.value,
+            encode_job_id=777,
+        )
+        db.add(dj)
+        db.commit()
+        db.refresh(dj)
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._import_completed_qbt_candidates',
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('waiting_encode must not be recovered')),
+        )
+
+        summary = run_download_startup_recovery(db)
+        db.refresh(dj)
+
+        assert summary['imported'] == 0
+        assert dj.status == DownloadJobStatus.waiting_encode.value
+
+
+def test_scan_recovery_never_reconsiders_failed_fallback_download(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        dj = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Failed Fallback (2026).mkv',
+            status=DownloadJobStatus.failed.value,
+            encode_job_id=777,
+        )
+        db.add(dj)
+        db.commit()
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(
+            'app.services.download_monitor_service._import_completed_qbt_candidates',
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('closed fallback must not be recovered')),
+        )
+
+        summary = run_scan_recovery(db)
+        db.refresh(dj)
+
+        assert summary['imported'] == 0
+        assert dj.status == DownloadJobStatus.failed.value
+
+
+def test_completed_download_removes_interrupted_encode_placeholder(monkeypatch):
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+
+        library = _seed_library_with_profile(db)
+        placeholder = Job(
+            input_path='/media/Already Optimized (2026).mkv',
+            status='interrupted',
+            library_id=library.id,
+            progress_percent=0,
+        )
+        completed = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Already Optimized (2026).mkv',
+            status=DownloadJobStatus.complete.value,
+            imported_file_path='/media/Already Optimized (2026)-1080p.mkv',
+        )
+        db.add_all([placeholder, completed])
+        db.commit()
+
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: SimpleNamespace(enabled=False))
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: SimpleNamespace(enabled=False))
+
+        summary = run_download_startup_recovery(db)
+
+        assert summary['linked_jobs'] == 1
+        assert db.query(Job).filter(Job.id == placeholder.id).first() is None
 
 
 def test_startup_recovery_adopts_queue_when_stale_complete_download_row_exists(monkeypatch):
@@ -3505,9 +3681,15 @@ def test_check_download_progress_qbit_zero_retry_limit_falls_back(monkeypatch):
             lambda _db: SimpleNamespace(enabled=True, max_download_retries=0),
         )
         fallback_calls = []
+        failure_notifications = []
         monkeypatch.setattr(
             'app.services.download_monitor_service._fallback_to_encode',
             lambda *_args, **_kwargs: fallback_calls.append(True),
+        )
+        monkeypatch.setattr(
+            notification_service,
+            'enqueue_download_job_failed',
+            lambda job: failure_notifications.append(job.id),
         )
 
         _check_download_progress(
@@ -3518,10 +3700,10 @@ def test_check_download_progress_qbit_zero_retry_limit_falls_back(monkeypatch):
         )
         db.refresh(dj)
 
-        assert dj.status == DownloadJobStatus.failed.value
         assert dj.retry_count == 0
         assert dj.max_retries == 0
         assert fallback_calls == [True]
+        assert failure_notifications == []
 
 
 def test_check_download_progress_missing_qbit_item_recovers_existing_torrent_before_retry(monkeypatch):
@@ -4487,7 +4669,6 @@ def test_check_download_progress_sab_zero_retry_limit_falls_back(monkeypatch):
         )
         db.refresh(dj)
 
-        assert dj.status == DownloadJobStatus.failed.value
         assert dj.retry_count == 0
         assert dj.max_retries == 0
         assert fallback_calls == [True]

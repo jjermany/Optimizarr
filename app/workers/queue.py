@@ -22,11 +22,13 @@ from app.services.notification_service import enqueue_job_complete, enqueue_job_
 from app.services.job_timing_service import start_encode_timing, stop_encode_timing, touch_encode_timing
 from app.services.plex_service import trigger_scan_after_job
 from app.services.optimization_service import (
+    dimensions_match_target_box,
     delete_partial_output,
     get_active_position,
     is_hdr_video,
     optimize_video,
     probe_video_height,
+    probe_video_width,
     stop_active_ffmpeg,
 )
 from app.services.realtime_service import broker
@@ -699,7 +701,12 @@ def _has_existing_target_sdr_sibling(media_file: Path, target_resolution: int) -
         matches_target = _release_matches_target_resolution_label(sibling, target_resolution)
         if not matches_target:
             sibling_height = probe_video_height(str(sibling))
-            matches_target = sibling_height is not None and abs(int(sibling_height) - int(target_resolution)) <= 32
+            sibling_width = probe_video_width(str(sibling))
+            matches_target = dimensions_match_target_box(
+                sibling_width,
+                sibling_height,
+                target_resolution,
+            )
         if not matches_target:
             continue
 

@@ -29,10 +29,12 @@ from app.services.job_service import (
     media_identity_key,
 )
 from app.services.optimization_service import (
+    dimensions_match_target_box,
     is_hdr_video,
     probe_video_codec,
     probe_video_duration,
     probe_video_height,
+    probe_video_width,
     stop_active_ffmpeg,
 )
 from app.services.realtime_service import broker
@@ -111,6 +113,24 @@ _UNWANTED_RELEASE_VARIANT_REQUIRED_TOKENS: dict[re.Pattern[str], tuple[str, ...]
     _UNWANTED_RELEASE_VARIANT_PATTERNS[6]: ('unrated',),
     _UNWANTED_RELEASE_VARIANT_PATTERNS[7]: ('uncut',),
 }
+
+_DOWNLOAD_ATTEMPTS_CLOSED_STATUSES = {
+    DownloadJobStatus.waiting_encode.value,
+    DownloadJobStatus.fallback_queued.value,
+}
+
+
+def _download_attempts_are_closed(dj: DownloadJob) -> bool:
+    """Return whether automatic download work must never resume for this row."""
+    if dj.status in _DOWNLOAD_ATTEMPTS_CLOSED_STATUSES:
+        return True
+    return bool(
+        dj.encode_job_id is not None
+        and dj.status in {
+            DownloadJobStatus.failed.value,
+            DownloadJobStatus.timed_out.value,
+        }
+    )
 
 
 def is_download_queue_stopped() -> bool:
@@ -295,6 +315,9 @@ def download_job_exists_for_source(db: Session, source_path: str, library_id: in
         DownloadJobStatus.waiting_encode.value,
         DownloadJobStatus.complete.value,
         DownloadJobStatus.file_deleted.value,
+        DownloadJobStatus.fallback_queued.value,
+        DownloadJobStatus.failed.value,
+        DownloadJobStatus.timed_out.value,
     }
     rows = (
         db.query(DownloadJob)
@@ -305,6 +328,10 @@ def download_job_exists_for_source(db: Session, source_path: str, library_id: in
         .all()
     )
     for dj in rows:
+        if _download_attempts_are_closed(dj):
+            return True
+        if dj.status in {DownloadJobStatus.failed.value, DownloadJobStatus.timed_out.value}:
+            continue
         if dj.status != DownloadJobStatus.complete.value:
             return True
         imported = Path(dj.imported_file_path) if dj.imported_file_path else None
@@ -328,6 +355,10 @@ def download_job_exists_for_source(db: Session, source_path: str, library_id: in
     for dj in identity_rows:
         if media_identity_key(dj.source_file_path) != identity_key:
             continue
+        if _download_attempts_are_closed(dj):
+            return True
+        if dj.status in {DownloadJobStatus.failed.value, DownloadJobStatus.timed_out.value}:
+            continue
         if dj.status != DownloadJobStatus.complete.value:
             return True
         imported = Path(dj.imported_file_path) if dj.imported_file_path else None
@@ -349,6 +380,9 @@ _IDENTITY_BLOCKING_DOWNLOAD_STATUSES = {
     DownloadJobStatus.importing.value,
     DownloadJobStatus.needs_review.value,
     DownloadJobStatus.waiting_encode.value,
+    DownloadJobStatus.fallback_queued.value,
+    DownloadJobStatus.failed.value,
+    DownloadJobStatus.timed_out.value,
     DownloadJobStatus.complete.value,
 }
 
@@ -374,6 +408,10 @@ def _download_job_identity_blocker(db: Session, dj: DownloadJob) -> DownloadJob 
         if not same_identity:
             continue
 
+        if _download_attempts_are_closed(other):
+            return other
+        if other.status in {DownloadJobStatus.failed.value, DownloadJobStatus.timed_out.value}:
+            continue
         if other.status != DownloadJobStatus.complete.value:
             return other
         imported = Path(other.imported_file_path) if other.imported_file_path else None
@@ -1162,15 +1200,37 @@ def create_download_job(db: Session, source_path: str, library: Library, profile
                 DownloadJobStatus.waiting_encode.value,
                 DownloadJobStatus.complete.value,
                 DownloadJobStatus.file_deleted.value,
+                DownloadJobStatus.fallback_queued.value,
+                DownloadJobStatus.failed.value,
+                DownloadJobStatus.timed_out.value,
             }),
         )
         .order_by(DownloadJob.created_at.asc(), DownloadJob.id.asc())
         .all()
     )
+    for dj in existing:
+        if dj.source_file_path != source_path:
+            continue
+        if _download_attempts_are_closed(dj):
+            return dj
+        if dj.status in {DownloadJobStatus.failed.value, DownloadJobStatus.timed_out.value}:
+            continue
+        if dj.status != DownloadJobStatus.complete.value:
+            return dj
+        imported = Path(dj.imported_file_path) if dj.imported_file_path else None
+        if imported and imported.exists():
+            return dj
+
     identity_key = media_identity_key(source_path)
     if identity_key:
         for dj in existing:
+            if dj.source_file_path == source_path:
+                continue
             if media_identity_key(dj.source_file_path) == identity_key:
+                if _download_attempts_are_closed(dj):
+                    return dj
+                if dj.status in {DownloadJobStatus.failed.value, DownloadJobStatus.timed_out.value}:
+                    continue
                 if dj.status != DownloadJobStatus.complete.value:
                     return dj
                 imported = Path(dj.imported_file_path) if dj.imported_file_path else None
@@ -1324,7 +1384,7 @@ def _link_completed_downloads_to_waiting_jobs(db: Session) -> int:
     placeholder should disappear rather than creating an "encoded complete"
     history record.
     """
-    terminal_waiting_statuses = ('queued', 'paused')
+    terminal_waiting_statuses = ('queued', 'paused', 'paused_schedule', 'interrupted')
     active_encode_statuses = ('starting', 'preflight', 'running', 'aborting')
     completed_downloads = (
         db.query(DownloadJob)
@@ -1738,6 +1798,8 @@ def _recover_sab_completed_for_existing_download_jobs(
 
     imported = 0
     for dj, library, profile in candidate_rows:
+        if _download_attempts_are_closed(dj):
+            continue
         # Respect explicit qBit jobs.  Unknown client_type can still be adopted.
         if dj.client_type and dj.client_type != 'sabnzbd':
             continue
@@ -3011,7 +3073,10 @@ def _retry_failed_download(
             return True
 
     logger.warning('Download job %s: %s; retries exhausted (%s/%s)', dj.id, reason, retry_next - 1, max_retries)
-    _mark_failed(db, dj, f'{reason}; retries exhausted after {max_retries} retries')
+    # Fallback encoding is the next active stage, not a terminal job failure.
+    # _fallback_to_encode atomically removes this row from download processing.
+    dj.error_message = f'{reason}; retries exhausted after {max_retries} retries'
+    db.commit()
     _fallback_to_encode(db, dj, library, profile)
     return False
 
@@ -4125,6 +4190,7 @@ def _assess_download_for_import(
         except OSError:
             size_bytes = None
         height = probe_video_height(str(candidate))
+        width = probe_video_width(str(candidate))
         codec = probe_video_codec(str(candidate))
         duration_seconds = probe_video_duration(str(candidate))
         inspected.append(
@@ -4132,11 +4198,12 @@ def _assess_download_for_import(
                 'path': str(candidate),
                 'name': candidate.name,
                 'size_bytes': size_bytes,
+                'width': width,
                 'height': height,
                 'codec': codec,
                 'duration_seconds': round(duration_seconds, 1) if duration_seconds is not None else None,
                 'title_matches': _release_matches_source_title(candidate.name, dj.source_file_path),
-                'resolution_matches': height is not None and abs(int(height) - target_resolution) <= 32,
+                'resolution_matches': dimensions_match_target_box(width, height, target_resolution),
             }
         )
 
@@ -4155,8 +4222,13 @@ def _assess_download_for_import(
         if selected['height'] is None:
             reasons.append('The downloaded video resolution could not be verified')
         elif not selected['resolution_matches']:
+            actual_resolution = (
+                f"{selected['width']}x{selected['height']}"
+                if selected.get('width') is not None
+                else f"{selected['height']}p"
+            )
             reasons.append(
-                f"Actual video resolution is {selected['height']}p; expected {target_resolution}p"
+                f"Actual video resolution is {actual_resolution}; expected the {target_resolution}p target box"
             )
 
     high_confidence = bool(
@@ -4774,7 +4846,48 @@ def _reset_download_job_to_searching(db: Session, dj: DownloadJob) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _fallback_to_encode(db: Session, dj: DownloadJob, library: Library, profile: LibraryProfile) -> None:
-    """Create a normal encode job for the original source file."""
+    """Atomically leave download processing and create the source encode job."""
+    claimable_statuses = {
+        DownloadJobStatus.pending.value,
+        DownloadJobStatus.checking.value,
+        DownloadJobStatus.searching.value,
+        DownloadJobStatus.queued.value,
+        DownloadJobStatus.paused.value,
+        DownloadJobStatus.downloading.value,
+        DownloadJobStatus.repairing.value,
+        DownloadJobStatus.unpacking.value,
+        DownloadJobStatus.moving.value,
+        DownloadJobStatus.stalled.value,
+        DownloadJobStatus.importing.value,
+        DownloadJobStatus.needs_review.value,
+        DownloadJobStatus.failed.value,
+        DownloadJobStatus.timed_out.value,
+    }
+    claimed = (
+        db.query(DownloadJob)
+        .filter(
+            DownloadJob.id == dj.id,
+            DownloadJob.status.in_(claimable_statuses),
+        )
+        .update(
+            {
+                DownloadJob.status: DownloadJobStatus.waiting_encode.value,
+                DownloadJob.error_message: None,
+                DownloadJob.eta_seconds: None,
+                DownloadJob.download_speed_bps: None,
+                DownloadJob.completed_at: None,
+            },
+            synchronize_session=False,
+        )
+    )
+    db.commit()
+    db.refresh(dj)
+    if claimed != 1:
+        return
+
+    # The status is committed first. Download polling/search queries do not
+    # include waiting_encode, so no further download attempt can begin.
+    _publish_download_job(dj)
     try:
         height = probe_video_height(dj.source_file_path)
         hdr = is_hdr_video(dj.source_file_path)
@@ -4788,15 +4901,11 @@ def _fallback_to_encode(db: Session, dj: DownloadJob, library: Library, profile:
         )
         if dj.encode_job_id is None:
             dj.encode_job_id = encode_job.id
-        dj.status = DownloadJobStatus.waiting_encode.value
-        dj.eta_seconds = None
-        dj.download_speed_bps = None
-        dj.completed_at = None
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj)
         broker.publish_notification(
-            f'Download failed for {Path(dj.source_file_path).name}; falling back to encode'
+            f'Download attempts exhausted for {Path(dj.source_file_path).name}; source encode queued'
         )
         logger.info('Download job %s: fallback encode job %s created', dj.id, encode_job.id)
         if _on_job_complete:
@@ -4806,6 +4915,7 @@ def _fallback_to_encode(db: Session, dj: DownloadJob, library: Library, profile:
                 pass
     except Exception as exc:
         logger.error('Download job %s: failed to create fallback encode job: %s', dj.id, exc)
+        _mark_failed(db, dj, f'Failed to queue fallback encode: {exc}')
 
 
 def _mark_failed(db: Session, dj: DownloadJob, reason: str) -> None:
@@ -4918,6 +5028,7 @@ def run_download_startup_recovery(db: Session) -> dict:
         DownloadJobStatus.needs_review.value,
         DownloadJobStatus.importing.value,     # already covered by in_flight_jobs loop
         DownloadJobStatus.pending.value,       # not yet started — nothing to recover
+        DownloadJobStatus.waiting_encode.value,
         DownloadJobStatus.fallback_queued.value,
         DownloadJobStatus.file_deleted.value,
     }
@@ -4929,6 +5040,7 @@ def run_download_startup_recovery(db: Session) -> dict:
         )
         .all()
     )
+    qbt_candidate_jobs = [dj for dj in qbt_candidate_jobs if not _download_attempts_are_closed(dj)]
     logger.info(
         'Download startup recovery: in_flight_jobs=%d candidate_jobs=%d',
         len(in_flight_jobs),
@@ -5332,6 +5444,7 @@ def run_scan_recovery(db: Session) -> dict:
             DownloadJobStatus.moving.value,
             DownloadJobStatus.needs_review.value,
             DownloadJobStatus.importing.value,
+            DownloadJobStatus.waiting_encode.value,
             DownloadJobStatus.fallback_queued.value,
             DownloadJobStatus.file_deleted.value,
         }
@@ -5343,6 +5456,8 @@ def run_scan_recovery(db: Session) -> dict:
             )
             .all()
         )
+
+        candidate_jobs = [dj for dj in candidate_jobs if not _download_attempts_are_closed(dj)]
 
         qbt = download_client_service.get_or_create_qbt_settings(db)
         sab = download_client_service.get_or_create_sab_settings(db)

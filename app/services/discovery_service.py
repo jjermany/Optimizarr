@@ -25,7 +25,12 @@ from app.services.job_service import (
     has_completed_job_for_identity,
     job_exists_for_source,
 )
-from app.services.optimization_service import is_hdr_video, probe_video_height
+from app.services.optimization_service import (
+    dimensions_match_target_box,
+    is_hdr_video,
+    probe_video_height,
+    probe_video_width,
+)
 from app.services.realtime_service import broker
 from app.workers.queue import is_queue_paused
 
@@ -652,7 +657,12 @@ def _has_existing_target_sdr_sibling(media_file: Path, target_resolution: int) -
         matches_target = _release_matches_target_resolution_label(sibling, target_resolution)
         if not matches_target:
             sibling_height = probe_video_height(str(sibling))
-            matches_target = sibling_height is not None and abs(int(sibling_height) - target_resolution) <= 32
+            sibling_width = probe_video_width(str(sibling))
+            matches_target = dimensions_match_target_box(
+                sibling_width,
+                sibling_height,
+                target_resolution,
+            )
         if not matches_target:
             continue
 

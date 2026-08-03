@@ -985,6 +985,36 @@ def probe_video_height(input_path: str) -> int | None:
     return _probe_height(input_path)
 
 
+def probe_video_width(input_path: str) -> int | None:
+    return _probe_width(input_path)
+
+
+def dimensions_match_target_box(
+    width: int | None,
+    height: int | None,
+    target_height: int,
+    *,
+    tolerance: int = 32,
+) -> bool:
+    """Return whether dimensions fill a standard target-resolution box.
+
+    Scope releases commonly omit encoded black bars (for example 1920x800 for
+    1080p). Either full target height or full target width therefore identifies
+    the resolution class, provided neither dimension exceeds the target box.
+    """
+    if height is None:
+        return False
+
+    target_height = int(target_height)
+    target_width = _target_max_width(target_height)
+    height_matches = abs(int(height) - target_height) <= tolerance
+    width_matches = width is not None and abs(int(width) - target_width) <= tolerance
+    fits_box = int(height) <= target_height + tolerance and (
+        width is None or int(width) <= target_width + tolerance
+    )
+    return fits_box and (height_matches or width_matches)
+
+
 def probe_video_codec(input_path: str) -> str | None:
     value = _run_ffprobe_value(input_path, 'stream=codec_name')
     return value.lower() if value else None

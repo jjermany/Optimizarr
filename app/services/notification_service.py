@@ -690,11 +690,16 @@ def _sync_linked_download_job_terminal_state(job_id: int, status: str) -> None:
     # don't show a stale active row.
     db = SessionLocal()
     try:
+        linked_statuses = [DownloadJobStatus.waiting_encode.value]
+        # A user may explicitly retry a failed fallback encode. Its linked
+        # download row must close successfully when that retry completes.
+        if status == 'complete':
+            linked_statuses.append(DownloadJobStatus.failed.value)
         waiting = (
             db.query(DownloadJob)
             .filter(
                 DownloadJob.encode_job_id == job_id,
-                DownloadJob.status == DownloadJobStatus.waiting_encode.value,
+                DownloadJob.status.in_(linked_statuses),
             )
             .all()
         )

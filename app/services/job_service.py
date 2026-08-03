@@ -779,8 +779,9 @@ def _is_optimized_cleanup_artifact(
     if _has_exact_resolution_label(path, target_resolution):
         return True
 
-    probed = optimization_service.probe_video_height(str(path))
-    return probed is not None and abs(int(probed) - int(target_resolution)) <= 32
+    height = optimization_service.probe_video_height(str(path))
+    width = optimization_service.probe_video_width(str(path))
+    return optimization_service.dimensions_match_target_box(width, height, target_resolution)
 
 
 def find_existing_target_artifact_for_identity(
@@ -836,7 +837,12 @@ def find_existing_target_artifact_for_identity(
         if _has_exact_resolution_label(candidate, target_resolution):
             return candidate
         candidate_height = optimization_service.probe_video_height(str(candidate))
-        if candidate_height is not None and abs(int(candidate_height) - int(target_resolution)) <= 32:
+        candidate_width = optimization_service.probe_video_width(str(candidate))
+        if optimization_service.dimensions_match_target_box(
+            candidate_width,
+            candidate_height,
+            target_resolution,
+        ):
             return candidate
     return None
 

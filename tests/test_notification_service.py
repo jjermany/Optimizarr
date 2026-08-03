@@ -483,6 +483,38 @@ def test_handle_job_terminal_state_marks_waiting_encode_as_failed_when_encode_fa
         assert updated.completed_at is not None
 
 
+def test_handle_job_terminal_state_closes_failed_fallback_after_explicit_encode_retry(monkeypatch):
+    monkeypatch.setattr(notification_service.broker, 'publish', lambda *_args, **_kwargs: None)
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.commit()
+
+        encode_job = Job(input_path='/media/Retried Fallback (2026).mkv', status='complete')
+        db.add(encode_job)
+        db.commit()
+        db.refresh(encode_job)
+        dj = DownloadJob(
+            source_file_path=encode_job.input_path,
+            status=DownloadJobStatus.failed.value,
+            error_message='Fallback encode failed',
+            encode_job_id=encode_job.id,
+        )
+        db.add(dj)
+        db.commit()
+        dj_id = dj.id
+        encode_job_id = encode_job.id
+
+    notification_service.handle_job_terminal_state(encode_job_id, 'complete')
+
+    with SessionLocal() as db:
+        updated = db.query(DownloadJob).filter(DownloadJob.id == dj_id).one()
+        assert updated.status == DownloadJobStatus.fallback_queued.value
+        assert updated.error_message is None
+        assert updated.completed_at is not None
+
+
 class FakePushoverResponse:
     def raise_for_status(self):
         return None
