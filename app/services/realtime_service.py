@@ -28,6 +28,9 @@ class RealtimeBroker:
         self._last_metrics_payload: dict[str, Any] | None = None
         self._job_progress_last_emit: dict[int, float] = {}
         self._job_last_signature: dict[int, str] = {}
+        # Microsecond epoch keeps revisions ordered across process restarts and
+        # remains within JavaScript's exact integer range for centuries.
+        self._revision = time.time_ns() // 1_000
 
     def start(self) -> None:
         if self._metrics_thread and self._metrics_thread.is_alive():
@@ -54,12 +57,14 @@ class RealtimeBroker:
             self._subscriptions.pop(client_id, None)
 
     def publish(self, event_type: str, data: dict[str, Any]) -> None:
-        envelope = {
-            'type': event_type,
-            'data': data,
-            'timestamp': time.time(),
-        }
         with self._lock:
+            self._revision += 1
+            envelope = {
+                'type': event_type,
+                'data': data,
+                'timestamp': time.time(),
+                'revision': self._revision,
+            }
             subscribers = list(self._subscriptions.values())
 
         for subscriber in subscribers:
@@ -67,6 +72,11 @@ class RealtimeBroker:
                 subscriber.put_nowait(envelope)
             except Exception:
                 continue
+
+    def current_revision(self) -> int:
+        """Return the ordering watermark used by queue snapshots and events."""
+        with self._lock:
+            return self._revision
 
     def publish_notification(self, message: str, level: str = 'info') -> None:
         self.publish('notification', {'message': message, 'level': level})

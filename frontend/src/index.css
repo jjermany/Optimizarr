@@ -105,3 +105,19 @@ input[type='range']::-webkit-slider-runnable-track {
 button, a, select, input[type='checkbox'], input[type='radio'] {
   @apply transition-all duration-150;
 }
+
+@keyframes progress-indeterminate {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(310%); }
+}
+
+.progress-indeterminate {
+  animation: progress-indeterminate 1.15s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-indeterminate {
+    animation: none;
+    transform: translateX(100%);
+  }
+}

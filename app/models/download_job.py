@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from enum import Enum
 
-from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -50,6 +50,7 @@ class DownloadJob(Base):
     client_type: Mapped[str | None] = mapped_column(String(16), nullable=True)  # 'qbittorrent' or 'sabnzbd'
     status: Mapped[str] = mapped_column(String(32), default='pending', nullable=False)
     progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    progress_observed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     eta_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     download_speed_bps: Mapped[int | None] = mapped_column(Integer, nullable=True)
     downloaded_file_path: Mapped[str | None] = mapped_column(Text, nullable=True)

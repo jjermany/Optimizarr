@@ -24,6 +24,7 @@ from app.services.download_monitor_service import (
     _hold_download_for_review,
     _build_search_query,
     _check_download_progress,
+    _cleanup_orphaned_sab_completed_downloads,
     _cleanup_stale_qbt_torrents,
     _do_search,
     _import_file,
@@ -6052,6 +6053,54 @@ def test_import_file_sab_no_video_retries_and_purges_completed_directory(monkeyp
         assert dj.client_type is None
         assert not completed_dir.exists()
         assert removed_sab == [('SABNZBD_NZO_monkey1', True)]
+
+
+def test_sab_orphan_cleanup_only_removes_owned_untracked_completions(monkeypatch, tmp_path):
+    orphan_dir = tmp_path / 'complete' / 'Orphan.Release'
+    active_dir = tmp_path / 'complete' / 'Active.Release'
+    unrelated_dir = tmp_path / 'complete' / 'Unrelated.Release'
+    for directory in (orphan_dir, active_dir, unrelated_dir):
+        directory.mkdir(parents=True)
+        (directory / 'payload.mkv').write_bytes(b'payload')
+
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.commit()
+        db.add(DownloadJob(
+            source_file_path='/media/Active Release.mkv',
+            download_hash='NZO-ACTIVE',
+            client_type='sabnzbd',
+            status=DownloadJobStatus.downloading.value,
+        ))
+        db.commit()
+
+        monkeypatch.setattr(
+            download_client_service,
+            'get_or_create_sab_settings',
+            lambda _db: SimpleNamespace(enabled=True),
+        )
+        monkeypatch.setattr(
+            download_client_service,
+            'get_sab_completed_history_items',
+            lambda _sab: [
+                {'nzo_id': 'NZO-ORPHAN', 'category': 'optimizarr', 'save_path': str(orphan_dir)},
+                {'nzo_id': 'NZO-ACTIVE', 'category': 'Optimizarr', 'save_path': str(active_dir)},
+                {'nzo_id': 'NZO-OTHER', 'category': 'movies', 'save_path': str(unrelated_dir)},
+            ],
+        )
+        removed = []
+        monkeypatch.setattr(
+            download_client_service,
+            'remove_sab_job',
+            lambda _sab, nzo_id, delete_files=False: removed.append((nzo_id, delete_files)) or True,
+        )
+
+        assert _cleanup_orphaned_sab_completed_downloads(db) == 1
+
+    assert removed == [('NZO-ORPHAN', True)]
+    assert not orphan_dir.exists()
+    assert active_dir.exists()
+    assert unrelated_dir.exists()
 
 
 def test_mark_failed_sends_failure_notification(monkeypatch):

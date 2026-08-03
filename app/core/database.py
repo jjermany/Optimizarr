@@ -416,3 +416,9 @@ def init_db() -> None:
             'download_speed_bps',
             'download_speed_bps INTEGER',
         )
+        _add_column_if_missing(
+            connection,
+            'download_jobs',
+            'progress_observed',
+            'progress_observed BOOLEAN NOT NULL DEFAULT 0',
+        )

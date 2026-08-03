@@ -1,7 +1,8 @@
 const ENCODE_WORKING_STATUSES = new Set(['starting', 'running', 'preflight', 'aborting']);
 const ENCODE_WAITING_STATUSES = new Set(['queued', 'paused', 'paused_schedule']);
-const DOWNLOAD_WORKING_STATUSES = new Set(['checking', 'searching', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing', 'needs_review']);
-const DOWNLOAD_WAITING_STATUSES = new Set(['pending', 'queued', 'paused']);
+// All client-side download phases share one rank. A row therefore keeps its
+// position as it moves from pending/queued into active transfer/post-processing.
+const DOWNLOAD_WORKING_STATUSES = new Set(['pending', 'checking', 'searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'stalled', 'importing', 'needs_review']);
 const DOWNLOAD_WAITING_ENCODE_STATUSES = new Set(['waiting_encode']);
 
 function queueItemPath(item) {
@@ -9,7 +10,7 @@ function queueItemPath(item) {
 }
 
 function normalizedPath(pathValue) {
-  return String(pathValue || '').trim().toLowerCase();
+  return String(pathValue || '').trim().replace(/\\/g, '/').replace(/\/+$/g, '').toLowerCase();
 }
 
 function normalizedTitle(titleValue) {
@@ -84,14 +85,27 @@ function encodeStatusRank(statusValue) {
   return 3;
 }
 
+function downloadPreferenceScore(item) {
+  const status = String(item.status || '').toLowerCase();
+  const phaseScore = ['importing', 'moving', 'repairing', 'unpacking'].includes(status)
+    ? 40
+    : status === 'downloading'
+      ? 30
+      : ['queued', 'paused', 'checking'].includes(status)
+        ? 20
+        : ['searching', 'pending'].includes(status)
+          ? 10
+          : 0;
+  return phaseScore + (item.progress_observed ? 4 : 0) + (item.download_hash ? 2 : 0);
+}
+
 function queuePinRank(item) {
   const status = String(item.status || '').toLowerCase();
   if (item._itemType === 'download' && DOWNLOAD_WORKING_STATUSES.has(status)) return 0;
   if (item._itemType === 'encode' && ENCODE_WORKING_STATUSES.has(status)) return 1;
-  if (item._itemType === 'download' && DOWNLOAD_WAITING_STATUSES.has(status)) return 2;
-  if (item._itemType === 'download' && DOWNLOAD_WAITING_ENCODE_STATUSES.has(status)) return 3;
-  if (item._itemType === 'encode' && ENCODE_WAITING_STATUSES.has(status)) return 4;
-  return 4;
+  if (item._itemType === 'download' && DOWNLOAD_WAITING_ENCODE_STATUSES.has(status)) return 2;
+  if (item._itemType === 'encode' && ENCODE_WAITING_STATUSES.has(status)) return 3;
+  return 3;
 }
 
 function comparePinnedDownloadItems(left, right) {
@@ -138,14 +152,37 @@ export function buildUnifiedQueueItems({
   pinActiveFirst = false,
   dedupeSourcePaths = undefined,
 }) {
+  // Multiple backend rows can briefly represent the same routed operation.
+  // Collapse them before rendering and prefer the row furthest through the
+  // client lifecycle, using the oldest id as a deterministic tie-breaker.
+  const preferredDownloadByPath = new Map();
+  for (const item of downloadItems) {
+    const pathKey = normalizedPath(item.source_file_path) || `download:${item.id}`;
+    const key = `${item.library_id ?? ''}:${pathKey}`;
+    const existing = preferredDownloadByPath.get(key);
+    if (
+      !existing
+      || downloadPreferenceScore(item) > downloadPreferenceScore(existing)
+      || (downloadPreferenceScore(item) === downloadPreferenceScore(existing) && item.id < existing.id)
+    ) {
+      preferredDownloadByPath.set(key, item);
+    }
+  }
+  const logicalDownloadItems = [...preferredDownloadByPath.values()];
+  const logicalDownloadByPath = new Map(
+    logicalDownloadItems.map((item) => [
+      `${item.library_id ?? ''}:${normalizedPath(item.source_file_path)}`,
+      item,
+    ]),
+  );
   const activeDownloadSources = new Set(
-    downloadItems
-      .map((item) => String(item.source_file_path || '').trim())
+    logicalDownloadItems
+      .map((item) => normalizedPath(item.source_file_path))
       .filter(Boolean),
   );
   const dedupeSources = new Set(activeDownloadSources);
   for (const sourcePath of dedupeSourcePaths ?? []) {
-    const normalized = String(sourcePath || '').trim();
+    const normalized = normalizedPath(sourcePath);
     if (normalized) dedupeSources.add(normalized);
   }
 
@@ -194,22 +231,33 @@ export function buildUnifiedQueueItems({
       const preferred = preferredEncodeByPath.get(normalizedPath(sourcePath));
       if (preferred && preferred.id !== item.id) return false;
     }
-    if (!sourcePath || !dedupeSources.has(sourcePath)) return true;
+    if (!sourcePath || !dedupeSources.has(normalizedPath(sourcePath))) return true;
     // Keep truly active encode rows visible even if a download row exists.
     return ENCODE_WORKING_STATUSES.has(String(item.status || '').toLowerCase());
   });
-  const dedupedDownloadItems = downloadItems.filter((item) => {
-    if (!DOWNLOAD_WAITING_ENCODE_STATUSES.has(String(item.status || '').toLowerCase())) return true;
+  const dedupedDownloadItems = logicalDownloadItems.filter((item) => {
     const sourcePath = String(item.source_file_path || '').trim();
     if (sourcePath && activeEncodePaths.has(normalizedPath(sourcePath))) return false;
+    if (!DOWNLOAD_WAITING_ENCODE_STATUSES.has(String(item.status || '').toLowerCase())) return true;
     const titleYearKey = titleYearKeyForPath(sourcePath, extractTitleYear);
     if (titleYearKey && activeEncodeTitleYearKeys.has(titleYearKey)) return false;
     return true;
   });
 
   const merged = [
-    ...dedupedEncodeItems.map((item) => ({ ...item, _itemType: 'encode' })),
-    ...dedupedDownloadItems.map((item) => ({ ...item, _itemType: 'download' })),
+    ...dedupedEncodeItems.map((item) => ({
+      ...item,
+      _itemType: 'encode',
+      _logicalKey: `queue:${item.library_id ?? ''}:${normalizedPath(item.source_path) || `encode:${item.id}`}`,
+      _routePhase: 'encoding',
+      _downloadJob: logicalDownloadByPath.get(`${item.library_id ?? ''}:${normalizedPath(item.source_path)}`),
+    })),
+    ...dedupedDownloadItems.map((item) => ({
+      ...item,
+      _itemType: 'download',
+      _logicalKey: `queue:${item.library_id ?? ''}:${normalizedPath(item.source_file_path) || `download:${item.id}`}`,
+      _routePhase: String(item.status || 'pending').toLowerCase(),
+    })),
   ];
 
   return merged.sort((left, right) => {
@@ -220,13 +268,13 @@ export function buildUnifiedQueueItems({
       if (pinRankDelta !== 0) return pinRankDelta;
       // Download rows within the same work/wait bucket stay stable FIFO so
       // status and progress refreshes do not reshuffle the visible queue.
-      if ([0, 2, 3].includes(leftPinRank) && leftPinRank === rightPinRank) {
+      if ([0, 2].includes(leftPinRank) && leftPinRank === rightPinRank) {
         if (left._itemType === 'download' && right._itemType === 'download') {
           return comparePinnedDownloadItems(left, right);
         }
         return compareByCreatedAt(left, right, 'asc');
       }
-      if ([1, 4].includes(leftPinRank) && leftPinRank === rightPinRank) {
+      if ([1, 3].includes(leftPinRank) && leftPinRank === rightPinRank) {
         return compareByCreatedAt(left, right, 'asc');
       }
     }

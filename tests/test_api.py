@@ -38,6 +38,21 @@ def test_api_prefixed_health_endpoint():
     assert response.json() == {'status': 'ok'}
 
 
+def test_queue_snapshot_has_realtime_revision_and_both_record_sets(monkeypatch):
+    _clear_auth_state()
+    monkeypatch.setattr(routes, '_sab_queue_positions_by_nzo', lambda db: {})
+
+    with TestClient(app) as client:
+        response = client.get('/queue/snapshot')
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert isinstance(payload['revision'], int)
+    assert isinstance(payload['jobs'], list)
+    assert isinstance(payload['download_jobs'], list)
+    assert payload['queue_status'] in {'running', 'paused'}
+
+
 def test_version_endpoint():
     with TestClient(app) as client:
         response = client.get('/version')

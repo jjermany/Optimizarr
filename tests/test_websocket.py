@@ -188,5 +188,21 @@ def test_realtime_broker_publish_system_event():
     assert event['type'] == 'system_event'
     assert event['data']['event'] == 'job_aborted'
     assert event['data']['job_id'] == 77
+    assert event['revision'] == broker.current_revision()
+
+    broker.unsubscribe(subscription.client_id)
+
+
+def test_realtime_broker_revisions_are_monotonic():
+    broker = RealtimeBroker()
+    subscription = broker.subscribe()
+
+    broker.publish_system_event('first')
+    broker.publish_system_event('second')
+    first = subscription.queue.get(timeout=1)
+    second = subscription.queue.get(timeout=1)
+
+    assert second['revision'] == first['revision'] + 1
+    assert broker.current_revision() == second['revision']
 
     broker.unsubscribe(subscription.client_id)

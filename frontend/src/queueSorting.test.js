@@ -66,7 +66,7 @@ describe('buildUnifiedQueueItems', () => {
     expect(items.map((item) => item.id)).toEqual([1, 50]);
   });
 
-  it('can optionally pin active work first before waiting rows', () => {
+  it('keeps routed download phases together ahead of encode rows', () => {
     const items = buildUnifiedQueueItems({
       encodeItems,
       downloadItems,
@@ -75,10 +75,10 @@ describe('buildUnifiedQueueItems', () => {
       pinActiveFirst: true,
     });
 
-    expect(items.map((item) => item.id)).toEqual([10, 14, 13, 16, 9, 11]);
+    expect(items.map((item) => item.id)).toEqual([10, 13, 16, 14, 9, 11]);
   });
 
-  it('pins active encode rows before pending download rows deterministically', () => {
+  it('keeps pending download routes ahead of encode work deterministically', () => {
     const items = buildUnifiedQueueItems({
       encodeItems: [
         { id: 5, status: 'running', source_path: '/media/Active.Encode.A.2020.mkv' },
@@ -93,8 +93,8 @@ describe('buildUnifiedQueueItems', () => {
     });
 
     expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
-      'encode-5',
       'download-5',
+      'encode-5',
       'encode-2',
     ]);
   });
@@ -172,13 +172,13 @@ describe('buildUnifiedQueueItems', () => {
     expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
       'download-294',
       'download-287',
-      'encode-10',
       'download-288',
+      'encode-10',
       'encode-11',
     ]);
   });
 
-  it('pins active qBittorrent work ahead of queued SAB rows with client positions', () => {
+  it('keeps client queue positions stable across download phases', () => {
     const items = buildUnifiedQueueItems({
       encodeItems: [],
       downloadItems: [
@@ -192,10 +192,10 @@ describe('buildUnifiedQueueItems', () => {
       pinActiveFirst: true,
     });
 
-    expect(items.map((item) => item.id)).toEqual([544, 602, 596, 604]);
+    expect(items.map((item) => item.id)).toEqual([596, 604, 544, 602]);
   });
 
-  it('pins checking downloads with active work above queued client rows', () => {
+  it('does not move an older queued row when another row enters checking', () => {
     const items = buildUnifiedQueueItems({
       encodeItems: [],
       downloadItems: [
@@ -207,7 +207,7 @@ describe('buildUnifiedQueueItems', () => {
       pinActiveFirst: true,
     });
 
-    expect(items.map((item) => item.id)).toEqual([8, 7]);
+    expect(items.map((item) => item.id)).toEqual([7, 8]);
   });
 
   it('does not move a download row when status progresses through the client lifecycle', () => {
@@ -306,6 +306,47 @@ describe('buildUnifiedQueueItems', () => {
     expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual([
       'encode-202',
     ]);
+  });
+
+  it('treats path case and separators as one routed queue item', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [{ id: 178, status: 'queued', source_path: 'C:\\Media\\Movie.2025.mkv' }],
+      downloadItems: [{ id: 16, status: 'downloading', source_file_path: 'c:/media/movie.2025.mkv' }],
+      sortOption: 'default',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual(['download-16']);
+  });
+
+  it('shows one logical item when download routing overlaps an active encode', () => {
+    const source = '/media/Movie.2025.mkv';
+    const items = buildUnifiedQueueItems({
+      encodeItems: [{ id: 178, status: 'running', source_path: source }],
+      downloadItems: [{ id: 16, status: 'downloading', source_file_path: source }],
+      sortOption: 'default',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual(['encode-178']);
+    expect(items[0]._routePhase).toBe('encoding');
+  });
+
+  it('collapses duplicate backend download rows into the most advanced logical item', () => {
+    const items = buildUnifiedQueueItems({
+      encodeItems: [],
+      downloadItems: [
+        { id: 20, library_id: 2, status: 'searching', source_file_path: '/media/Movie.2025.mkv' },
+        { id: 21, library_id: 2, status: 'downloading', progress_observed: true, source_file_path: '/MEDIA/movie.2025.mkv' },
+      ],
+      sortOption: 'default',
+      extractTitleYear,
+      pinActiveFirst: true,
+    });
+
+    expect(items.map((item) => `${item._itemType}-${item.id}`)).toEqual(['download-21']);
   });
 
   it('keeps an aborting encode visible and hides the waiting_encode placeholder', () => {

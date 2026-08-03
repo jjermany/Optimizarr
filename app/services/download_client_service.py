@@ -844,6 +844,9 @@ def get_sab_completed_history_items(s: SabnzbdSettings, limit: int = 500) -> lis
                 'nzo_id': nzo_id,
                 'name': name,
                 'save_path': save_path,
+                # Ownership marker used by Optimizarr's conservative orphan
+                # cleanup. Never infer ownership from a release name/path.
+                'category': str(slot.get('category') or slot.get('cat') or '').strip(),
             }
         )
     return items

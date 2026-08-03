@@ -119,6 +119,10 @@ export function fetchJobs() {
   return request('/jobs');
 }
 
+export function fetchQueueSnapshot() {
+  return request('/queue/snapshot');
+}
+
 export function fetchLibraries() {
   return request('/libraries');
 }

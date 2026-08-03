@@ -16,20 +16,18 @@ import {
   deleteLibrary,
   fetchQBittorrentSettings,
   fetchSabnzbdSettings,
-  fetchDownloadJobs,
   fetchLibraries,
   fetchEncoders,
   fetchAccountSettings,
   fetchAuthStatus,
   fetchLibraryProfile,
-  fetchJobs,
   fetchLogs,
   fetchMetrics,
   fetchNotificationSettings,
   fetchPlexLibraries,
   fetchPlexSettings,
   fetchProwlarrSettings,
-  fetchQueueStatus,
+  fetchQueueSnapshot,
   fetchSettings,
   fallbackReviewedDownload,
   importReviewedDownload,
@@ -86,9 +84,7 @@ import {
   QUEUE_DEDUPE_DL_STATUSES,
   LOG_REFRESH_SYSTEM_EVENTS,
   isActiveEncodeStatus,
-  mergeJobsWithUpdate,
-  mergeDownloadJobsWithUpdate,
-  removeJobById,
+  reconcileQueueState,
   libraryQueueCount,
   formatGpuPercent,
   buildQrCodeDataUrl,
@@ -134,7 +130,8 @@ function pageFromHash() {
 export default function App() {
   const [activePage, setActivePage] = useState(pageFromHash);
   const [metrics, setMetrics] = useState();
-  const [jobs, setJobs] = useState([]);
+  const [queueState, setQueueState] = useState({ jobs: [], downloadJobs: [], jobTombstones: {}, downloadTombstones: {} });
+  const { jobs, downloadJobs } = queueState;
   const [libraries, setLibraries] = useState([]);
   const [libraryBaselines, setLibraryBaselines] = useState({});
   const [libraryProfiles, setLibraryProfiles] = useState({});
@@ -148,7 +145,6 @@ export default function App() {
   const [prowlarrSettings, setProwlarrSettings] = useState();
   const [qbtSettings, setQbtSettings] = useState();
   const [sabSettings, setSabSettings] = useState();
-  const [downloadJobs, setDownloadJobs] = useState([]);
   const [dirBrowser, setDirBrowser] = useState({ open: false, target: null, initialPath: null });
   const [selectedLibraryId, setSelectedLibraryId] = useState(null);
   const [profileDraft, setProfileDraft] = useState(null);
@@ -205,14 +201,13 @@ export default function App() {
   const [hasUnsavedSettings, setHasUnsavedSettings] = useState(false);
 
   const wsRef = useRef();
-  const jobsStateRef = useRef([]);
+  const queueStateRef = useRef({ jobs: [], downloadJobs: [], jobTombstones: {}, downloadTombstones: {} });
   const pendingJobUpdatesRef = useRef([]);
   const pendingDownloadUpdatesRef = useRef([]);
   const realtimeFlushTimerRef = useRef();
   const lastRealtimeJobStatusRef = useRef(new Map());
   const lastRealtimeDownloadStatusRef = useRef(new Map());
   const logsRefreshTimerRef = useRef();
-  const downloadReconcileInFlightRef = useRef(false);
   const refreshAllRequestIdRef = useRef(0);
   const refreshAllInFlightCountRef = useRef(0);
   const liveRefreshInFlightRef = useRef(false);
@@ -224,11 +219,11 @@ export default function App() {
   const toastTimersRef = useRef({});
   const pinnedOperationTimerRef = useRef();
 
-  // Mirror of the jobs state for timer callbacks that need the latest list
+  // Mirror of queue state for timer callbacks that need the latest list
   // without re-subscribing (realtime batch flush).
   useEffect(() => {
-    jobsStateRef.current = jobs;
-  }, [jobs]);
+    queueStateRef.current = queueState;
+  }, [queueState]);
 
   // Stable-identity handler wrappers so memoized page components skip
   // re-renders caused by App re-creating functions each render.
@@ -270,6 +265,7 @@ export default function App() {
     () => downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())),
     [downloadJobs],
   );
+  const hasActiveQueueWork = activeJobs.length > 0 || activeDlQueueItems.length > 0;
 
   const queueDedupeSourcePaths = useMemo(() => {
     const paths = new Set();
@@ -531,24 +527,27 @@ export default function App() {
       setRefreshingData(true);
     }
     try {
-      const [nextMetrics, nextJobs, nextSettings, nextAccountSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextQueueStatus, nextProwlarrSettings, nextQbtSettings, nextSabSettings, nextDownloadJobs, nextLogs] = await Promise.all([
+      const [nextMetrics, nextQueueSnapshot, nextSettings, nextAccountSettings, nextNotificationSettings, nextPlexSettings, nextEncoders, nextProwlarrSettings, nextQbtSettings, nextSabSettings, nextLogs] = await Promise.all([
         fetchMetrics(),
-        fetchJobs(),
+        fetchQueueSnapshot(),
         fetchSettings(),
         fetchAccountSettings(),
         fetchNotificationSettings(),
         fetchPlexSettings(),
         fetchEncoders(),
-        fetchQueueStatus(),
         fetchProwlarrSettings().catch(() => null),
         fetchQBittorrentSettings().catch(() => null),
         fetchSabnzbdSettings().catch(() => null),
-        fetchDownloadJobs().catch(() => []),
         fetchLogs().catch(() => []),
       ]);
       if (requestId !== refreshAllRequestIdRef.current) return false;
       setMetrics(nextMetrics);
-      setJobs(nextJobs);
+      setQueueState((previous) => reconcileQueueState(previous, {
+        type: 'snapshot',
+        revision: nextQueueSnapshot?.revision,
+        jobs: nextQueueSnapshot?.jobs,
+        downloadJobs: nextQueueSnapshot?.download_jobs,
+      }));
       setSettings(nextSettings);
       setAccountSettings(nextAccountSettings);
       setNotificationSettings(nextNotificationSettings);
@@ -556,11 +555,10 @@ export default function App() {
       if (nextProwlarrSettings) setProwlarrSettings(nextProwlarrSettings);
       if (nextQbtSettings) setQbtSettings(nextQbtSettings);
       if (nextSabSettings) setSabSettings(nextSabSettings);
-      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
       setLogs(nextLogs ?? []);
       const encoderMap = Object.fromEntries((nextEncoders?.encoders ?? []).map((item) => [item.codec, item.available_encoders]));
       setAvailableEncodersByCodec(encoderMap);
-      setQueuePaused(nextQueueStatus?.status === 'paused');
+      setQueuePaused(nextQueueSnapshot?.queue_status === 'paused');
       setAuthStatus((prev) => ({
         ...prev,
         username: nextAccountSettings?.username ?? prev.username,
@@ -589,16 +587,18 @@ export default function App() {
     if (liveRefreshInFlightRef.current) return false;
     liveRefreshInFlightRef.current = true;
     try {
-      const [nextMetrics, nextJobs, nextQueueStatus, nextDownloadJobs] = await Promise.all([
+      const [nextMetrics, nextQueueSnapshot] = await Promise.all([
         fetchMetrics().catch(() => null),
-        fetchJobs(),
-        fetchQueueStatus(),
-        fetchDownloadJobs().catch(() => []),
+        fetchQueueSnapshot(),
       ]);
       if (nextMetrics) setMetrics(nextMetrics);
-      setJobs(nextJobs ?? []);
-      setQueuePaused(nextQueueStatus?.status === 'paused');
-      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      setQueueState((previous) => reconcileQueueState(previous, {
+        type: 'snapshot',
+        revision: nextQueueSnapshot?.revision,
+        jobs: nextQueueSnapshot?.jobs,
+        downloadJobs: nextQueueSnapshot?.download_jobs,
+      }));
+      setQueuePaused(nextQueueSnapshot?.queue_status === 'paused');
       return true;
     } catch (refreshError) {
       if (refreshError.status === 401) {
@@ -850,13 +850,11 @@ export default function App() {
   }
 
   function mergeJobUpdate(nextJob) {
-    let resetToFirstPage = false;
-    setJobs((prevJobs) => {
-      const merged = mergeJobsWithUpdate(prevJobs, nextJob);
-      resetToFirstPage = merged.resetToFirstPage;
-      return merged.jobs;
-    });
-    if (resetToFirstPage) setQueuePageResetSignal((n) => n + 1);
+    const previous = queueStateRef.current.jobs.find((job) => job.id === nextJob.id);
+    setQueueState((state) => reconcileQueueState(state, { type: 'job_update', job: nextJob }));
+    if (isActiveEncodeStatus(nextJob.status) && (!previous || !isActiveEncodeStatus(previous.status))) {
+      setQueuePageResetSignal((n) => n + 1);
+    }
   }
 
   // Realtime job/download events arrive one per row during bulk transitions
@@ -870,25 +868,32 @@ export default function App() {
     const downloadUpdates = pendingDownloadUpdatesRef.current;
     pendingDownloadUpdatesRef.current = [];
 
-    if (jobUpdates.length > 0) {
-      const prevById = new Map(jobsStateRef.current.map((job) => [job.id, job]));
-      const resetToFirstPage = jobUpdates.some((jobUpdate) => {
+    if (jobUpdates.length > 0 || downloadUpdates.length > 0) {
+      const prevById = new Map(queueStateRef.current.jobs.map((job) => [job.id, job]));
+      const resetToFirstPage = jobUpdates.some(({ data: jobUpdate }) => {
         if (!isActiveEncodeStatus(jobUpdate.status)) return false;
         const previous = prevById.get(jobUpdate.id);
         return !previous || !isActiveEncodeStatus(previous.status);
       });
-      setJobs((prevJobs) => jobUpdates.reduce(
-        (acc, jobUpdate) => mergeJobsWithUpdate(acc, jobUpdate).jobs,
-        prevJobs,
-      ));
+      setQueueState((previous) => {
+        const withJobs = jobUpdates.reduce(
+          (state, update) => reconcileQueueState(state, {
+            type: 'job_update',
+            job: update.data,
+            revision: update.revision,
+          }),
+          previous,
+        );
+        return downloadUpdates.reduce(
+          (state, update) => reconcileQueueState(state, {
+            type: 'download_update',
+            downloadJob: update.data,
+            revision: update.revision,
+          }),
+          withJobs,
+        );
+      });
       if (resetToFirstPage) setQueuePageResetSignal((n) => n + 1);
-    }
-
-    if (downloadUpdates.length > 0) {
-      setDownloadJobs((prevDownloadJobs) => downloadUpdates.reduce(
-        (acc, downloadUpdate) => mergeDownloadJobsWithUpdate(acc, downloadUpdate),
-        prevDownloadJobs,
-      ));
     }
   }
 
@@ -897,9 +902,9 @@ export default function App() {
     realtimeFlushTimerRef.current = window.setTimeout(flushRealtimeUpdates, REALTIME_BATCH_MS);
   }
 
-  function queueRealtimeJobUpdate(jobPayload) {
+  function queueRealtimeJobUpdate(jobPayload, revision) {
     if (jobPayload?.id == null) return;
-    pendingJobUpdatesRef.current.push(jobPayload);
+    pendingJobUpdatesRef.current.push({ data: jobPayload, revision });
     scheduleRealtimeFlush();
     // Reconcile with a full snapshot only when a status actually changes;
     // progress-only ticks are already merged locally.
@@ -910,10 +915,10 @@ export default function App() {
     }
   }
 
-  function queueRealtimeDownloadUpdate(downloadPayload) {
+  function queueRealtimeDownloadUpdate(downloadPayload, revision) {
     if (downloadPayload?.id == null) return;
     const next = normalizeDownloadJob(downloadPayload);
-    pendingDownloadUpdatesRef.current.push(next);
+    pendingDownloadUpdatesRef.current.push({ data: next, revision });
     scheduleRealtimeFlush();
     const status = String(next.status ?? '').toLowerCase();
     if (lastRealtimeDownloadStatusRef.current.get(next.id) !== status) {
@@ -1059,38 +1064,16 @@ export default function App() {
     refreshLogs();
   }, [activePage, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
-  useEffect(() => {
-    if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
-    const activeDownloadCount = downloadJobs.filter((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())).length;
-    if (activeDownloadCount <= 1) return undefined;
-    if (downloadReconcileInFlightRef.current) return undefined;
-
-    const timer = setTimeout(async () => {
-      if (downloadReconcileInFlightRef.current) return;
-      downloadReconcileInFlightRef.current = true;
-      try {
-        const updated = await fetchDownloadJobs();
-        setDownloadJobs((updated ?? []).map(normalizeDownloadJob));
-      } catch {
-        // Keep websocket-driven state; best-effort self-heal.
-      } finally {
-        downloadReconcileInFlightRef.current = false;
-      }
-    }, 300);
-
-    return () => clearTimeout(timer);
-  }, [downloadJobs, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
-
-  // When jobs or downloads are actively processing, poll every 5 s so status changes
+  // While work is active, reconcile once per second so missed realtime events
+  // self-heal without restarting the interval on every progress tick.
   // (e.g. queued → running) are visible quickly even if a WebSocket update
   // is missed or the connection is still establishing.
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
-    const hasActiveDownloads = downloadJobs.some((dj) => ACTIVE_DL_STATUSES.has(String(dj.status ?? '').toLowerCase()));
-    if (activeJobs.length === 0 && !hasActiveDownloads) return undefined;
+    if (!hasActiveQueueWork) return undefined;
     const timer = setInterval(refreshQueueSnapshot, ACTIVE_QUEUE_POLL_MS);
     return () => clearInterval(timer);
-  }, [activeJobs.length, downloadJobs, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
+  }, [hasActiveQueueWork, authStatus.loading, authStatus.setup_required, authStatus.authenticated]);
 
   useEffect(() => {
     if (authStatus.loading || authStatus.setup_required || !authStatus.authenticated) return undefined;
@@ -1154,11 +1137,11 @@ export default function App() {
           }
           if (!payload || typeof payload !== 'object') return;
           if (payload.type === 'job_update') {
-            queueRealtimeJobUpdate(payload.data);
+            queueRealtimeJobUpdate(payload.data, payload.revision);
             return;
           }
           if (payload.type === 'download_job_update') {
-            queueRealtimeDownloadUpdate(payload.data);
+            queueRealtimeDownloadUpdate(payload.data, payload.revision);
             return;
           }
           if (payload.type === 'metrics_update') { setMetrics(payload.data); return; }
@@ -1199,14 +1182,22 @@ export default function App() {
             if (LOG_REFRESH_SYSTEM_EVENTS.has(systemEvent)) scheduleLogsRefresh();
             if (systemEvent === 'job_aborted') { pushToast('Aborted job.', 'error'); return; }
             if (systemEvent === 'job_removed') {
-              pendingJobUpdatesRef.current = pendingJobUpdatesRef.current.filter((u) => u.id !== payload.data?.job_id);
-              setJobs((prev) => removeJobById(prev, payload.data?.job_id));
+              pendingJobUpdatesRef.current = pendingJobUpdatesRef.current.filter((update) => update.data?.id !== payload.data?.job_id);
+              setQueueState((previous) => reconcileQueueState(previous, {
+                type: 'job_remove',
+                id: payload.data?.job_id,
+                revision: payload.revision,
+              }));
               scheduleQueueSnapshotRefresh();
               return;
             }
             if (systemEvent === 'download_job_removed') {
-              pendingDownloadUpdatesRef.current = pendingDownloadUpdatesRef.current.filter((u) => u.id !== payload.data?.download_job_id);
-              setDownloadJobs((prev) => prev.filter((dj) => dj.id !== payload.data?.download_job_id));
+              pendingDownloadUpdatesRef.current = pendingDownloadUpdatesRef.current.filter((update) => update.data?.id !== payload.data?.download_job_id);
+              setQueueState((previous) => reconcileQueueState(previous, {
+                type: 'download_remove',
+                id: payload.data?.download_job_id,
+                revision: payload.revision,
+              }));
               scheduleQueueSnapshotRefresh();
               return;
             }
@@ -1297,7 +1288,10 @@ export default function App() {
       else if (action === 'start') mergeJobUpdate(await startJob(jobId));
       else if (action === 'abort') mergeJobUpdate(await abortJob(jobId));
       else if (action === 'discard') mergeJobUpdate(await discardJobProgress(jobId));
-      else if (action === 'remove') { await deleteJob(jobId); setJobs((prev) => removeJobById(prev, jobId)); }
+      else if (action === 'remove') {
+        await deleteJob(jobId);
+        setQueueState((previous) => reconcileQueueState(previous, { type: 'job_remove', id: jobId }));
+      }
       await refreshLogs();
     } catch (actionError) {
       pushToast(actionError.message || 'Job action failed.', 'error');
@@ -1351,7 +1345,6 @@ export default function App() {
       const result = await purgeHistory();
       // Remove terminal download jobs from local state immediately — the server
       // endpoint now clears both encode history and terminal download jobs.
-      setDownloadJobs((prev) => prev.filter((dj) => !TERMINAL_DL_STATUSES.has(String(dj.status ?? '').toLowerCase())));
       const removedEncodeCount = result?.removed_job_ids?.length ?? 0;
       const removedDownloadCount = result?.removed_download_job_ids?.length ?? 0;
       pushToast(`Purged ${removedEncodeCount + removedDownloadCount} history item(s).`, 'success');
@@ -1572,9 +1565,7 @@ export default function App() {
     setPendingDownloadActions((prev) => ({ ...prev, [jobId]: 'remove_reset' }));
     try {
       await removeAndResetDownloadJob(jobId);
-      const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
-      setJobs(nextJobs ?? []);
-      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      await refreshQueueSnapshot();
       await refreshLogs();
       pushToast('Download removed from client and reset for a fresh search attempt.', 'success');
     } catch (err) {
@@ -1593,9 +1584,7 @@ export default function App() {
     setPendingDownloadActions((prev) => ({ ...prev, [jobId]: 'retry' }));
     try {
       await retryDownloadJob(jobId);
-      const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
-      setJobs(nextJobs ?? []);
-      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      await refreshQueueSnapshot();
       await refreshLogs();
       pushToast('Download job re-queued for another search attempt.', 'success');
     } catch (err) {
@@ -1617,9 +1606,7 @@ export default function App() {
       else if (action === 'retry') await retryReviewedDownload(jobId);
       else if (action === 'fallback') await fallbackReviewedDownload(jobId);
       else throw new Error('Unknown review action');
-      const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
-      setJobs(nextJobs ?? []);
-      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      await refreshQueueSnapshot();
       await refreshLogs();
       pushToast(
         action === 'import' ? 'Reviewed file imported.' :
@@ -1643,9 +1630,7 @@ export default function App() {
     setPendingDownloadActions((prev) => ({ ...prev, [jobId]: 'delete' }));
     try {
       await deleteDownloadJob(jobId);
-      const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
-      setJobs(nextJobs ?? []);
-      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      await refreshQueueSnapshot();
       await refreshLogs();
       pushToast('Download job removed.', 'success');
     } catch (err) {
@@ -1670,9 +1655,7 @@ export default function App() {
     setPendingDownloadActions((prev) => ({ ...prev, [jobId]: retry ? 'delete_retry' : 'delete_file' }));
     try {
       await deleteDownloadedFile(jobId, retry);
-      const [nextJobs, nextDownloadJobs] = await Promise.all([fetchJobs(), fetchDownloadJobs()]);
-      setJobs(nextJobs ?? []);
-      setDownloadJobs((nextDownloadJobs ?? []).map(normalizeDownloadJob));
+      await refreshQueueSnapshot();
       await refreshLogs();
       pushToast(
         retry ? 'Library file deleted and a new search was queued.' :

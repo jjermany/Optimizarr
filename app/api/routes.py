@@ -1026,6 +1026,7 @@ class DownloadJobResponse(BaseModel):
     client_type: str | None = None
     status: str
     progress_percent: int
+    progress_observed: bool = False
     eta_seconds: int | None = None
     download_speed_bps: int | None = None
     client_queue_position: int | None = None
@@ -1072,6 +1073,7 @@ class DownloadJobResponse(BaseModel):
             client_type=dj.client_type,
             status=response_status,
             progress_percent=dj.progress_percent,
+            progress_observed=bool(dj.progress_observed),
             eta_seconds=response_eta_seconds,
             download_speed_bps=response_download_speed_bps,
             client_queue_position=client_queue_position,
@@ -1919,6 +1921,7 @@ def _promote_encode_to_download(db: Session, job, *, cancel_job_first: bool = Fa
         reusable_download_job.download_hash = None
         reusable_download_job.client_type = None
         reusable_download_job.progress_percent = 0
+        reusable_download_job.progress_observed = False
         reusable_download_job.eta_seconds = None
         reusable_download_job.download_speed_bps = None
         reusable_download_job.downloaded_file_path = None
@@ -2436,6 +2439,33 @@ def run_duplicate_optimized_cleanup_endpoint(
 def queue_status_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
     return {'status': 'paused' if worker_queue.is_queue_paused() else 'running'}
 
+
+@router.get('/queue/snapshot')
+def queue_snapshot_endpoint(_: None = Depends(require_ui_auth), db: Session = Depends(get_db)) -> dict:
+    """Return both queue record types behind one realtime ordering watermark.
+
+    The watermark is captured before querying. Any event published while the
+    snapshot is being built therefore has a higher revision, allowing clients
+    to retain that newer row instead of replacing it with this response.
+    """
+    revision = broker.current_revision()
+    jobs = [JobResponse.from_orm_job(job).model_dump() for job in list_jobs(db)]
+    download_jobs = db.query(DownloadJob).order_by(DownloadJob.created_at.desc()).all()
+    sab_positions = _sab_queue_positions_by_nzo(db)
+    downloads = [
+        DownloadJobResponse.from_orm(
+            dj,
+            client_queue_position=_download_job_client_queue_position(dj, sab_positions),
+        ).model_dump()
+        for dj in download_jobs
+    ]
+    return {
+        'revision': revision,
+        'jobs': jobs,
+        'download_jobs': downloads,
+        'queue_status': 'paused' if worker_queue.is_queue_paused() else 'running',
+    }
+
 @router.post('/queue/pause')
 def pause_queue_endpoint(_: None = Depends(require_ui_auth)) -> dict[str, str]:
     worker_queue.pause_queue(reason='manual')
@@ -2653,6 +2683,7 @@ def retry_reviewed_download(
     dj.download_hash = None
     dj.client_type = None
     dj.progress_percent = 0
+    dj.progress_observed = False
     dj.eta_seconds = None
     dj.download_speed_bps = None
     dj.downloaded_file_path = None
@@ -2739,6 +2770,7 @@ def cancel_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Ses
     dj.download_hash = None
     dj.client_type = None
     dj.progress_percent = 0
+    dj.progress_observed = False
     dj.eta_seconds = None
     dj.download_speed_bps = None
     dj.downloaded_file_path = None
@@ -2818,6 +2850,7 @@ def retry_download_job(job_id: int, _: None = Depends(require_ui_auth), db: Sess
     dj.download_hash = None
     dj.client_type = None
     dj.progress_percent = 0
+    dj.progress_observed = False
     dj.eta_seconds = None
     dj.download_speed_bps = None
     dj.review_data = None
@@ -2916,6 +2949,7 @@ def delete_downloaded_file(
         dj.download_hash = None
         dj.client_type = None
         dj.progress_percent = 0
+        dj.progress_observed = False
         dj.eta_seconds = None
         dj.download_speed_bps = None
         dj.downloaded_file_path = None

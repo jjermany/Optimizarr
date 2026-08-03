@@ -180,17 +180,35 @@ export function isActiveEncodeStatus(status) {
   return ACTIVE_STATUSES.has(status?.toLowerCase());
 }
 
-export function mergeJobsWithUpdate(previousJobs, nextJob) {
+const QUEUE_REVISION_FIELD = '_queueRevision';
+
+function queueRevision(item) {
+  const revision = Number(item?.[QUEUE_REVISION_FIELD]);
+  return Number.isFinite(revision) ? revision : -1;
+}
+
+function stampedQueueItem(item, revision) {
+  const numericRevision = Number(revision);
+  return Number.isFinite(numericRevision)
+    ? { ...item, [QUEUE_REVISION_FIELD]: numericRevision }
+    : item;
+}
+
+export function mergeJobsWithUpdate(previousJobs, nextJob, revision) {
   const existingIndex = previousJobs.findIndex((job) => job.id === nextJob.id);
+  const incoming = stampedQueueItem(nextJob, revision);
   if (existingIndex === -1) {
     return {
-      jobs: [nextJob, ...previousJobs],
-      resetToFirstPage: isActiveEncodeStatus(nextJob.status),
+      jobs: [incoming, ...previousJobs],
+      resetToFirstPage: isActiveEncodeStatus(incoming.status),
     };
   }
 
   const previousJob = previousJobs[existingIndex];
-  const updatedJob = { ...previousJob, ...nextJob };
+  if (Number.isFinite(Number(revision)) && queueRevision(previousJob) > Number(revision)) {
+    return { jobs: previousJobs, resetToFirstPage: false };
+  }
+  const updatedJob = { ...previousJob, ...incoming };
   const jobs = [...previousJobs];
   jobs[existingIndex] = updatedJob;
 
@@ -200,14 +218,16 @@ export function mergeJobsWithUpdate(previousJobs, nextJob) {
   };
 }
 
-export function mergeDownloadJobsWithUpdate(previousJobs, nextDownloadJob) {
-  const nextStatus = String(nextDownloadJob?.status ?? '').toLowerCase();
-  const existingIndex = previousJobs.findIndex((job) => job.id === nextDownloadJob?.id);
+export function mergeDownloadJobsWithUpdate(previousJobs, nextDownloadJob, revision) {
+  const incoming = stampedQueueItem(normalizeDownloadJob(nextDownloadJob), revision);
+  const nextStatus = String(incoming?.status ?? '').toLowerCase();
+  const existingIndex = previousJobs.findIndex((job) => job.id === incoming?.id);
   if (existingIndex === -1) {
-    return [...previousJobs, normalizeDownloadJob(nextDownloadJob)];
+    return [...previousJobs, incoming];
   }
 
   const previousJob = previousJobs[existingIndex];
+  if (Number.isFinite(Number(revision)) && queueRevision(previousJob) > Number(revision)) return previousJobs;
   const previousStatus = String(previousJob?.status ?? '').toLowerCase();
 
   // Websocket events can arrive out of order around import completion.
@@ -216,11 +236,11 @@ export function mergeDownloadJobsWithUpdate(previousJobs, nextDownloadJob) {
     return previousJobs;
   }
 
-  const mergedJob = { ...previousJob, ...nextDownloadJob };
+  const mergedJob = { ...previousJob, ...incoming };
   if (
     String(previousJob?.client_type ?? '').toLowerCase() === 'sabnzbd'
     && previousJob?.client_queue_position != null
-    && nextDownloadJob?.client_queue_position == null
+    && incoming?.client_queue_position == null
   ) {
     mergedJob.client_queue_position = previousJob.client_queue_position;
   }
@@ -228,6 +248,83 @@ export function mergeDownloadJobsWithUpdate(previousJobs, nextDownloadJob) {
   const updated = [...previousJobs];
   updated[existingIndex] = normalizeDownloadJob(mergedJob);
   return updated;
+}
+
+function reconcileCollectionSnapshot(previousItems, snapshotItems, revision, normalizeItem = (item) => item) {
+  const previousById = new Map(previousItems.map((item) => [item.id, item]));
+  const snapshotIds = new Set(snapshotItems.map((item) => item.id));
+  const resolvedSnapshot = snapshotItems.map((item) => {
+    const previous = previousById.get(item.id);
+    if (previous && queueRevision(previous) > revision) return previous;
+    return stampedQueueItem(normalizeItem(item), revision);
+  });
+  const newerItemsMissingFromSnapshot = previousItems.filter(
+    (item) => !snapshotIds.has(item.id) && queueRevision(item) > revision,
+  );
+  return [...resolvedSnapshot, ...newerItemsMissingFromSnapshot];
+}
+
+export function reconcileQueueState(previousState, action) {
+  const previous = previousState ?? { jobs: [], downloadJobs: [], jobTombstones: {}, downloadTombstones: {} };
+  if (action.type === 'snapshot') {
+    const revision = Number.isFinite(Number(action.revision)) ? Number(action.revision) : -1;
+    const jobTombstones = previous.jobTombstones ?? {};
+    const downloadTombstones = previous.downloadTombstones ?? {};
+    const snapshotJobs = (action.jobs ?? []).filter((item) => Number(jobTombstones[item.id] ?? -1) <= revision);
+    const snapshotDownloads = (action.downloadJobs ?? []).filter((item) => Number(downloadTombstones[item.id] ?? -1) <= revision);
+    return {
+      jobs: reconcileCollectionSnapshot(previous.jobs, snapshotJobs, revision),
+      downloadJobs: reconcileCollectionSnapshot(
+        previous.downloadJobs,
+        snapshotDownloads,
+        revision,
+        normalizeDownloadJob,
+      ),
+      jobTombstones: Object.fromEntries(Object.entries(jobTombstones).filter(([, value]) => Number(value) > revision)),
+      downloadTombstones: Object.fromEntries(Object.entries(downloadTombstones).filter(([, value]) => Number(value) > revision)),
+    };
+  }
+  if (action.type === 'job_update') {
+    const tombstoneRevision = Number(previous.jobTombstones?.[action.job.id] ?? -1);
+    if (Number.isFinite(Number(action.revision)) && tombstoneRevision > Number(action.revision)) return previous;
+    return {
+      ...previous,
+      jobs: mergeJobsWithUpdate(previous.jobs, action.job, action.revision).jobs,
+    };
+  }
+  if (action.type === 'download_update') {
+    const tombstoneRevision = Number(previous.downloadTombstones?.[action.downloadJob.id] ?? -1);
+    if (Number.isFinite(Number(action.revision)) && tombstoneRevision > Number(action.revision)) return previous;
+    return {
+      ...previous,
+      downloadJobs: mergeDownloadJobsWithUpdate(
+        previous.downloadJobs,
+        action.downloadJob,
+        action.revision,
+      ),
+    };
+  }
+  if (action.type === 'job_remove') {
+    const revision = Number(action.revision);
+    return {
+      ...previous,
+      jobs: previous.jobs.filter((job) => job.id !== action.id),
+      jobTombstones: Number.isFinite(revision)
+        ? { ...(previous.jobTombstones ?? {}), [action.id]: revision }
+        : previous.jobTombstones,
+    };
+  }
+  if (action.type === 'download_remove') {
+    const revision = Number(action.revision);
+    return {
+      ...previous,
+      downloadJobs: previous.downloadJobs.filter((job) => job.id !== action.id),
+      downloadTombstones: Number.isFinite(revision)
+        ? { ...(previous.downloadTombstones ?? {}), [action.id]: revision }
+        : previous.downloadTombstones,
+    };
+  }
+  return previous;
 }
 
 export function removeJobById(previousJobs, jobId) {
@@ -677,6 +774,10 @@ export function normalizeDownloadJob(job) {
     normalized.status = 'downloading';
   }
   return normalized;
+}
+
+export function hasObservedDownloadProgress(job) {
+  return Boolean(job?.progress_observed) || Number(job?.progress_percent) > 0;
 }
 
 export function normalizeTitleSegment(value) {

@@ -265,6 +265,31 @@ def test_set_sab_category_uses_change_cat_first(monkeypatch):
     assert calls[0].get('value2') == 'optimizarr'
 
 
+def test_get_sab_completed_history_items_includes_ownership_category(monkeypatch):
+    monkeypatch.setattr(
+        download_client_service,
+        '_sab_api',
+        lambda *_args, **_params: {
+            'history': {
+                'slots': [{
+                    'status': 'Completed',
+                    'nzo_id': 'NZO123',
+                    'name': 'Example.Release',
+                    'storage': '/downloads/complete/Example.Release',
+                    'category': 'optimizarr',
+                }]
+            }
+        },
+    )
+
+    assert download_client_service.get_sab_completed_history_items(SimpleNamespace()) == [{
+        'nzo_id': 'NZO123',
+        'name': 'Example.Release',
+        'save_path': '/downloads/complete/Example.Release',
+        'category': 'optimizarr',
+    }]
+
+
 def test_set_sab_priority_pins_normal_priority_by_default(monkeypatch):
     calls = []
 

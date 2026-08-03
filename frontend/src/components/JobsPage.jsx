@@ -27,6 +27,7 @@ import {
   getDisplayTitle,
   getDownloadEtaSeconds,
   getElapsedSeconds,
+  hasObservedDownloadProgress,
   loadJobsUiPrefs,
   progressFromJob,
   shouldShowDownloadElapsed,
@@ -90,6 +91,31 @@ function DownloadReviewActions({ dj, actionPending, onReview }) {
   );
 }
 
+function DownloadProgress({ job, compact = false }) {
+  const progress = Math.max(0, Math.min(100, Number(job.progress_percent) || 0));
+  const known = hasObservedDownloadProgress(job);
+  return (
+    <div className={compact ? 'min-h-[2.5rem]' : 'min-h-[2.25rem]'}>
+      <div
+        role="progressbar"
+        aria-label="Download progress"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={known ? progress : undefined}
+        aria-valuetext={known ? `${progress}%` : 'Connecting to download client'}
+        className={`${compact ? 'w-24 md:w-32' : 'w-full'} h-1.5 overflow-hidden rounded-full bg-slate-700`}
+      >
+        {known ? (
+          <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-[width] duration-300" style={{ width: `${progress}%` }} />
+        ) : (
+          <div className="progress-indeterminate h-full w-1/3 rounded-full bg-gradient-to-r from-violet-500/40 via-violet-300 to-violet-500/40" />
+        )}
+      </div>
+      <div className="mt-1.5 text-xs text-slate-500">{known ? `${progress}%` : 'Connecting…'}</div>
+    </div>
+  );
+}
+
 const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionPending, nowMs, onCancel, onRetry, onDelete, onReview }) {
   const { year } = extractTitleYear(dj.source_file_path);
   const title = getDisplayTitle(dj.source_file_path);
@@ -120,7 +146,7 @@ const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionP
         <span>{year ?? '—'}</span>
         <span>{libName}</span>
       </div>
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+      <div className="mt-2.5 flex min-h-[2.75rem] flex-wrap content-start items-center gap-x-3 gap-y-1 text-xs text-slate-500">
         {showEta && <span>ETA: {etaLabel}</span>}
         {dj.status === 'queued' && <span>Elapsed: waiting</span>}
         {dj.status === 'paused' && <span>Elapsed: paused</span>}
@@ -132,10 +158,7 @@ const QueueDownloadCard = memo(function QueueDownloadCard({ dj, libName, actionP
       </div>
       {['paused', 'downloading', 'repairing', 'unpacking', 'moving'].includes(dj.status) && (
         <div className="mt-2">
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-700">
-            <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
-          </div>
-          <div className="mt-1 text-xs text-slate-500">{dj.progress_percent}%</div>
+          <DownloadProgress job={dj} />
         </div>
       )}
       {dj.error_message && <p className="mt-2.5 text-xs text-red-400">{dj.error_message}</p>}
@@ -168,6 +191,7 @@ const QueueEncodeCard = memo(function QueueEncodeCard({ job, libName, actionPend
   const { year } = extractTitleYear(job.source_path);
   const title = getDisplayTitle(job.source_path);
   const djIsActive = activeDj && ['checking', 'searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'importing'].includes(activeDj.status);
+  const activeDownloadProgress = hasObservedDownloadProgress(activeDj) ? `${activeDj.progress_percent}%` : 'Connecting…';
   const queueWaitingForRoute = downloadEnabled
     && !djIsActive
     && (
@@ -203,7 +227,7 @@ const QueueEncodeCard = memo(function QueueEncodeCard({ job, libName, actionPend
       {djIsActive && activeDj.status === 'paused' && <p className="mt-2.5 text-xs text-amber-300">Paused in client</p>}
       {djIsActive && activeDj.status === 'downloading' && (
         <p className="mt-2.5 text-xs text-violet-400">
-          Downloading {activeDj.progress_percent}%
+          Downloading {activeDownloadProgress}
           {formatDownloadSpeed(activeDj.download_speed_bps) ? ` • ${formatDownloadSpeed(activeDj.download_speed_bps)}` : ''}
           {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
           {activeDj.indexer_name ? ` • ${activeDj.indexer_name}` : ''}
@@ -211,19 +235,19 @@ const QueueEncodeCard = memo(function QueueEncodeCard({ job, libName, actionPend
       )}
       {djIsActive && activeDj.status === 'moving' && (
         <p className="mt-2.5 text-xs text-indigo-400">
-          Moving {activeDj.progress_percent}%
+          Moving {activeDownloadProgress}
           {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
         </p>
       )}
       {djIsActive && activeDj.status === 'repairing' && (
         <p className="mt-2.5 text-xs text-emerald-400">
-          Repairing {activeDj.progress_percent}%
+          Repairing {activeDownloadProgress}
           {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
         </p>
       )}
       {djIsActive && activeDj.status === 'unpacking' && (
         <p className="mt-2.5 text-xs text-teal-400">
-          Unpacking {activeDj.progress_percent}%
+          Unpacking {activeDownloadProgress}
           {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
         </p>
       )}
@@ -289,12 +313,13 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
     dj.status === 'paused' ? 'Paused in client' : null,
   ].filter(Boolean);
   return (
-    <tr className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
+    <tr className="h-28 transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
       <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 2xl:table-cell">{dj.id}</td>
       <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={dj.source_file_path}>{title}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{libName}</td>
       <td className="px-4 py-2.5 align-top text-sm">
+        <div className="min-h-[4.5rem]">
         <div className="flex items-center gap-1.5">
           {['checking', 'searching'].includes(dj.status) && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />}
           {dj.status === 'repairing' && <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />}
@@ -312,6 +337,7 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
           </p>
         )}
         {dj.error_message && <p className="mt-0.5 text-xs text-red-400">{dj.error_message}</p>}
+        </div>
       </td>
       <td className="hidden max-w-[180px] truncate px-4 py-2.5 align-top text-xs text-slate-400 2xl:table-cell" title={dj.search_query}>
         {dj.status === 'searching' && !dj.search_query ? <span className="italic text-slate-500">Building query…</span> : (dj.search_query ?? '—')}
@@ -319,12 +345,7 @@ const QueueDownloadRow = memo(function QueueDownloadRow({ dj, libName, actionPen
       <td className="hidden px-4 py-2.5 align-top text-xs text-slate-600 2xl:table-cell">—</td>
       <td className="px-4 py-2.5 align-top">
         {['paused', 'downloading', 'repairing', 'unpacking', 'moving'].includes(dj.status) ? (
-          <div>
-            <div className="h-1.5 w-24 overflow-hidden rounded-full bg-slate-700 md:w-32">
-              <div className="h-full rounded-full bg-gradient-to-r from-violet-500 to-violet-400 transition-all duration-300" style={{ width: `${dj.progress_percent}%` }} />
-            </div>
-            <div className="mt-1.5 text-xs text-slate-500">{dj.progress_percent}%</div>
-          </div>
+          <DownloadProgress job={dj} compact />
         ) : <span className="text-xs text-slate-600">—</span>}
       </td>
       <td className="px-4 py-2.5 align-top">
@@ -372,6 +393,7 @@ const QueueEncodeRow = memo(function QueueEncodeRow({ job, libName, actionPendin
   const { year } = extractTitleYear(job.source_path);
   const title = getDisplayTitle(job.source_path);
   const djIsActive = activeDj && ['checking', 'searching', 'queued', 'paused', 'downloading', 'repairing', 'unpacking', 'moving', 'importing'].includes(activeDj.status);
+  const activeDownloadProgress = hasObservedDownloadProgress(activeDj) ? `${activeDj.progress_percent}%` : 'Connecting…';
   const queueWaitingForRoute = downloadEnabled
     && !djIsActive
     && (
@@ -380,7 +402,7 @@ const QueueEncodeRow = memo(function QueueEncodeRow({ job, libName, actionPendin
     );
   const jobStatusLabel = queueWaitingForRoute ? 'awaiting download route' : job.status;
   return (
-    <tr className="transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
+    <tr className="h-28 transition-colors duration-100 odd:bg-slate-900/20 hover:bg-slate-800/30">
       <td className="hidden px-4 py-2.5 align-top text-xs text-slate-500 2xl:table-cell">{job.id}</td>
       <td className="max-w-[180px] truncate px-4 py-2.5 align-top text-sm text-slate-200" title={job.source_path}>{title}</td>
       <td className="hidden px-4 py-2.5 align-top text-sm text-slate-400 lg:table-cell">{year ?? '—'}</td>
@@ -413,7 +435,7 @@ const QueueEncodeRow = memo(function QueueEncodeRow({ job, libName, actionPendin
         )}
         {djIsActive && activeDj.status === 'downloading' && (
           <p className="mt-0.5 text-xs text-violet-400">
-            ↓ Downloading {activeDj.progress_percent}%
+            ↓ Downloading {activeDownloadProgress}
             {formatDownloadSpeed(activeDj.download_speed_bps) ? ` • ${formatDownloadSpeed(activeDj.download_speed_bps)}` : ''}
             {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
             {activeDj.indexer_name ? ` • ${activeDj.indexer_name}` : ''}
@@ -422,21 +444,21 @@ const QueueEncodeRow = memo(function QueueEncodeRow({ job, libName, actionPendin
         {djIsActive && activeDj.status === 'moving' && (
           <p className="mt-0.5 flex items-center gap-1 text-xs text-indigo-400">
             <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-indigo-400" />
-            Moving {activeDj.progress_percent}%
+            Moving {activeDownloadProgress}
             {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
           </p>
         )}
         {djIsActive && activeDj.status === 'repairing' && (
           <p className="mt-0.5 flex items-center gap-1 text-xs text-emerald-400">
             <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" />
-            Repairing {activeDj.progress_percent}%
+            Repairing {activeDownloadProgress}
             {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
           </p>
         )}
         {djIsActive && activeDj.status === 'unpacking' && (
           <p className="mt-0.5 flex items-center gap-1 text-xs text-teal-400">
             <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-teal-400" />
-            Unpacking {activeDj.progress_percent}%
+            Unpacking {activeDownloadProgress}
             {formatDownloadClient(activeDj.client_type) ? ` • ${formatDownloadClient(activeDj.client_type)}` : ''}
           </p>
         )}
@@ -784,15 +806,6 @@ function JobsPage({
       }),
     );
   }, [queueSearch, historySearch, queueSort, historySort, historyTypeFilter, jobsView]);
-
-  // Build a lookup map: source_file_path → most-recent active download job
-  const downloadJobBySource = useMemo(() => {
-    const map = {};
-    for (const dj of downloadJobs) {
-      map[dj.source_file_path] = dj;
-    }
-    return map;
-  }, [downloadJobs]);
 
   const activeJobs = useMemo(
     () => jobs.filter((job) => !TERMINAL_STATUSES.has(job.status?.toLowerCase())),
@@ -1142,7 +1155,7 @@ function JobsPage({
               {pagedJobs.map((item) => (
                 item._itemType === 'download' ? (
                   <QueueDownloadCard
-                    key={`dl-mobile-${item.id}`}
+                    key={item._logicalKey}
                     dj={item}
                     libName={libNameFor(item.library_id)}
                     actionPending={pendingDownloadActions[item.id]}
@@ -1154,11 +1167,11 @@ function JobsPage({
                   />
                 ) : (
                   <QueueEncodeCard
-                    key={`job-mobile-${item.id}`}
+                    key={item._logicalKey}
                     job={item}
                     libName={libNameFor(item.library_id)}
                     actionPending={pendingJobActions[item.id]}
-                    activeDj={downloadJobBySource[item.source_path]}
+                    activeDj={item._downloadJob}
                     downloadEnabled={!!libraryProfiles[item.library_id]?.download_enabled}
                     onJobAction={onJobAction}
                   />
@@ -1191,7 +1204,7 @@ function JobsPage({
                   {pagedJobs.map((item) => (
                     item._itemType === 'download' ? (
                       <QueueDownloadRow
-                        key={`dl-${item.id}`}
+                        key={item._logicalKey}
                         dj={item}
                         libName={libNameFor(item.library_id)}
                         actionPending={pendingDownloadActions[item.id]}
@@ -1203,11 +1216,11 @@ function JobsPage({
                       />
                     ) : (
                       <QueueEncodeRow
-                        key={item.id}
+                        key={item._logicalKey}
                         job={item}
                         libName={libNameFor(item.library_id)}
                         actionPending={pendingJobActions[item.id]}
-                        activeDj={downloadJobBySource[item.source_path]}
+                        activeDj={item._downloadJob}
                         downloadEnabled={!!libraryProfiles[item.library_id]?.download_enabled}
                         onJobAction={onJobAction}
                       />

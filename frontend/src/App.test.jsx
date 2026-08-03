@@ -12,6 +12,7 @@ import {
   extractTitleYear,
   getDisplayTitle,
   getDownloadEtaSeconds,
+  hasObservedDownloadProgress,
   libraryQueueCount,
   libraryDetailsHaveChanges,
   libraryProfileHasChanges,
@@ -23,10 +24,51 @@ import {
   mergeJobsWithUpdate,
   mergeLibraryScanProgress,
   normalizeDownloadJob,
+  reconcileQueueState,
   removeJobById,
   shouldShowDownloadElapsed,
   validateLibraryDraft,
 } from './App';
+
+describe('queue reconciliation ordering', () => {
+  it('does not let a stale snapshot overwrite a newer realtime row', () => {
+    const realtime = reconcileQueueState(
+      { jobs: [], downloadJobs: [] },
+      { type: 'download_update', revision: 12, downloadJob: { id: 7, status: 'downloading', progress_percent: 48, progress_observed: true } },
+    );
+    const reconciled = reconcileQueueState(realtime, {
+      type: 'snapshot',
+      revision: 11,
+      jobs: [],
+      downloadJobs: [{ id: 7, status: 'downloading', progress_percent: 0, progress_observed: false }],
+    });
+
+    expect(reconciled.downloadJobs[0]).toMatchObject({ progress_percent: 48, progress_observed: true });
+  });
+
+  it('keeps a revisioned removal deleted across an older snapshot', () => {
+    const initial = reconcileQueueState(
+      { jobs: [{ id: 4, status: 'queued' }], downloadJobs: [] },
+      { type: 'job_remove', id: 4, revision: 20 },
+    );
+    const reconciled = reconcileQueueState(initial, {
+      type: 'snapshot',
+      revision: 19,
+      jobs: [{ id: 4, status: 'queued' }],
+      downloadJobs: [],
+    });
+
+    expect(reconciled.jobs).toEqual([]);
+  });
+});
+
+describe('download progress readiness', () => {
+  it('treats initial client linkage as unknown rather than zero percent', () => {
+    expect(hasObservedDownloadProgress({ progress_percent: 0, progress_observed: false })).toBe(false);
+    expect(hasObservedDownloadProgress({ progress_percent: 0, progress_observed: true })).toBe(true);
+    expect(hasObservedDownloadProgress({ progress_percent: 12 })).toBe(true);
+  });
+});
 
 describe('library unsaved change detection', () => {
   it('tracks editable details but ignores server-managed library fields', () => {

@@ -93,6 +93,8 @@ _CLIENT_TRACKED_DOWNLOAD_STATUSES = {
 }
 _qbt_strike_state: dict[str, dict[str, object]] = {}
 _last_qbt_strike_cleanup_monotonic = 0.0
+_SAB_ORPHAN_CLEANUP_INTERVAL_SECONDS = 300
+_last_sab_orphan_cleanup_monotonic = 0.0
 _UNWANTED_RELEASE_VARIANT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r'\bsing[\s._-]*along\b', re.IGNORECASE),
     re.compile(r"\bdirector'?s[\s._-]*cut\b", re.IGNORECASE),
@@ -232,7 +234,7 @@ def _search_loop() -> None:
 
 
 def _monitor_loop() -> None:
-    global _last_idle_recovery_monotonic
+    global _last_idle_recovery_monotonic, _last_sab_orphan_cleanup_monotonic
     while not _stop_event.is_set():
         db = SessionLocal()
         sleep_seconds = _POLL_IDLE_SECONDS
@@ -267,6 +269,9 @@ def _monitor_loop() -> None:
                     run_scan_recovery(db)
                     _link_completed_downloads_to_waiting_jobs(db)
                     _last_idle_recovery_monotonic = now_monotonic
+                if now_monotonic - _last_sab_orphan_cleanup_monotonic >= _SAB_ORPHAN_CLEANUP_INTERVAL_SECONDS:
+                    _cleanup_orphaned_sab_completed_downloads(db)
+                    _last_sab_orphan_cleanup_monotonic = now_monotonic
 
             if has_downloading:
                 sleep_seconds = _POLL_DOWNLOADING_SECONDS
@@ -670,7 +675,13 @@ def _record_qbt_strike(torrent_hash: str, reason: str) -> int:
     return strikes
 
 
-def _retry_qbt_download_job_after_strikes(db: Session, dj: DownloadJob, reason: str) -> None:
+def _retry_qbt_download_job_after_strikes(
+    db: Session,
+    dj: DownloadJob,
+    reason: str,
+    *,
+    client_cleanup_done: bool = False,
+) -> None:
     library = db.query(Library).filter(Library.id == dj.library_id).first()
     if library is None or library.profile is None:
         _mark_failed(db, dj, f'{reason}; library or profile not found')
@@ -682,6 +693,7 @@ def _retry_qbt_download_job_after_strikes(db: Session, dj: DownloadJob, reason: 
         library.profile,
         reason=reason,
         failed_release_key=_release_selection_key_from_job(dj),
+        client_cleanup_done=client_cleanup_done,
     )
 
 
@@ -742,7 +754,7 @@ def _cleanup_stale_qbt_torrents(db: Session, qbt, *, force: bool = False) -> int
             )
             tracked_job = active_jobs_by_hash.get(torrent_hash)
             if tracked_job is not None:
-                _retry_qbt_download_job_after_strikes(db, tracked_job, reason)
+                _retry_qbt_download_job_after_strikes(db, tracked_job, reason, client_cleanup_done=True)
 
     for stale_hash in set(_qbt_strike_state) - seen_hashes:
         _reset_qbt_strike(stale_hash)
@@ -1296,6 +1308,7 @@ def download_job_to_dict(dj: DownloadJob, *, client_queue_position: int | None =
         'client_type': dj.client_type,
         'status': dj.status,
         'progress_percent': dj.progress_percent,
+        'progress_observed': bool(dj.progress_observed),
         'eta_seconds': dj.eta_seconds,
         'download_speed_bps': dj.download_speed_bps,
         'client_queue_position': client_queue_position,
@@ -1364,11 +1377,13 @@ def _sync_sab_download_job_state_from_client(db: Session, dj: DownloadJob, sab) 
         or int(dj.progress_percent or 0) != progress
         or dj.eta_seconds != eta_seconds
         or dj.download_speed_bps != speed_bps
+        or not dj.progress_observed
     ):
         dj.status = expected_status
         dj.progress_percent = progress
         dj.eta_seconds = eta_seconds
         dj.download_speed_bps = speed_bps
+        dj.progress_observed = True
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj, client_queue_position=status.get('client_queue_position'))
@@ -2987,6 +3002,32 @@ def _store_failed_release_keys(dj: DownloadJob, keys: set[str]) -> None:
     dj.failed_release_keys = json.dumps(sorted(keys))
 
 
+def _cleanup_download_attempt_before_reset(db: Session, dj: DownloadJob) -> None:
+    """Discard an abandoned client attempt without disrupting completed seeds."""
+    client_type = str(dj.client_type or '').strip().lower()
+    download_hash = str(dj.download_hash or '').strip()
+    if not client_type or not download_hash:
+        return
+
+    if client_type == 'sabnzbd':
+        sab = download_client_service.get_or_create_sab_settings(db)
+        if not getattr(sab, 'enabled', False):
+            return
+        save_path = None
+        status = download_client_service.get_sab_status(sab, download_hash)
+        if not status.get('status_unavailable'):
+            save_path = status.get('save_path')
+        _cleanup_download_client(dj, None, sab, save_path=save_path, delete_files=True)
+        return
+
+    if client_type == 'qbittorrent':
+        qbt = download_client_service.get_or_create_qbt_settings(db)
+        if getattr(qbt, 'enabled', False):
+            # remove_qbt_torrent deliberately refuses completed payloads. That
+            # leaves all seeding policy, including private trackers, to qBit.
+            _cleanup_download_client(dj, qbt, None, delete_files=True)
+
+
 def _retry_failed_download(
     db: Session,
     dj: DownloadJob,
@@ -2996,8 +3037,11 @@ def _retry_failed_download(
     reason: str,
     failed_release_key: str = '',
     attempted_client_type: str | None = None,
+    client_cleanup_done: bool = False,
 ) -> bool:
     client_type = str(attempted_client_type or dj.client_type or '').strip().lower()
+    if not client_cleanup_done:
+        _cleanup_download_attempt_before_reset(db, dj)
     configured_max = int(getattr(dj, 'max_retries', _DEFAULT_DOWNLOAD_MAX_RETRIES) or _DEFAULT_DOWNLOAD_MAX_RETRIES)
     if client_type == 'sabnzbd':
         sab_settings = download_client_service.get_or_create_sab_settings(db)
@@ -3026,6 +3070,7 @@ def _retry_failed_download(
         dj.download_hash = None
         dj.client_type = None
         dj.progress_percent = 0
+        dj.progress_observed = False
         dj.eta_seconds = None
         dj.download_speed_bps = None
         dj.download_started_at = None
@@ -3055,6 +3100,7 @@ def _retry_failed_download(
             dj.download_hash = None
             dj.client_type = None
             dj.progress_percent = 0
+            dj.progress_observed = False
             dj.eta_seconds = None
             dj.download_speed_bps = None
             dj.download_started_at = None
@@ -3428,6 +3474,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
                 dj.error_message = None
                 dj.download_started_at = dj.download_started_at or datetime.now(timezone.utc)
                 dj.progress_percent = 0
+                dj.progress_observed = False
                 dj.eta_seconds = None
                 dj.download_speed_bps = None
                 db.commit()
@@ -3456,6 +3503,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
             dj.error_message = None
             dj.download_started_at = dj.download_started_at or datetime.now(timezone.utc)
             dj.progress_percent = 0
+            dj.progress_observed = False
             dj.eta_seconds = None
             dj.download_speed_bps = None
             db.commit()
@@ -3536,6 +3584,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
         dj.error_message = None
         dj.download_started_at = datetime.now(timezone.utc)
         dj.progress_percent = 0
+        dj.progress_observed = False
         dj.eta_seconds = None
         dj.download_speed_bps = None
         db.commit()
@@ -3578,6 +3627,7 @@ def _do_search(db: Session, dj: DownloadJob, prowlarr, qbt, sab) -> None:
     dj.error_message = None
     dj.download_started_at = datetime.now(timezone.utc)
     dj.progress_percent = 0
+    dj.progress_observed = False
     dj.eta_seconds = None
     dj.download_speed_bps = None
     db.commit()
@@ -3806,6 +3856,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
         dj.download_hash = None
         dj.status = DownloadJobStatus.searching.value
         dj.progress_percent = 0
+        dj.progress_observed = False
         dj.eta_seconds = None
         dj.download_speed_bps = None
         dj.error_message = 'qBittorrent item belongs to a different episode; retrying search'
@@ -3823,6 +3874,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
         dj.download_hash = None
         dj.status = DownloadJobStatus.searching.value
         dj.progress_percent = 0
+        dj.progress_observed = False
         dj.eta_seconds = None
         dj.download_speed_bps = None
         dj.error_message = 'SABnzbd item belongs to a different episode; retrying search'
@@ -4025,12 +4077,14 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
         or eta_seconds != dj.eta_seconds
         or speed_bps != dj.download_speed_bps
         or dj.status != expected_status
+        or not dj.progress_observed
     )
     if should_update:
         dj.status = expected_status
         dj.progress_percent = progress
         dj.eta_seconds = eta_seconds
         dj.download_speed_bps = speed_bps
+        dj.progress_observed = True
         db.commit()
         db.refresh(dj)
         _publish_download_job(dj, client_queue_position=status.get('client_queue_position'))
@@ -4069,6 +4123,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
             profile,
             reason=f'Download failed in {client_type}',
             failed_release_key=_release_selection_key_from_job(dj),
+            client_cleanup_done=True,
         )
         return
 
@@ -4124,6 +4179,7 @@ def _check_download_progress(db: Session, dj: DownloadJob, qbt, sab, *, sab_snap
             profile,
             reason=f'Download timed out after {timeout_minutes} minutes',
             failed_release_key=_release_selection_key_from_job(dj),
+            client_cleanup_done=True,
         )
 
 
@@ -4318,6 +4374,7 @@ def _import_file(
                     profile,
                     reason=f'No video file found in {save_path}',
                     failed_release_key=_release_selection_key_from_job(dj),
+                    client_cleanup_done=True,
                 )
                 return
             client_type = str(dj.client_type or '').strip().lower()
@@ -4332,6 +4389,7 @@ def _import_file(
                     reason=f'Completed SAB payload failed import validation: {reasons}',
                     failed_release_key=_release_selection_key_from_job(dj),
                     attempted_client_type='sabnzbd',
+                    client_cleanup_done=True,
                 )
                 return
             if client_type == 'qbittorrent' and review.get('confidence') == 'low':
@@ -4546,6 +4604,47 @@ def _cleanup_download_client(
 
     if delete_files and dj.client_type == 'sabnzbd' and save_path:
         _purge_sab_completed_path(save_path)
+
+
+def _cleanup_orphaned_sab_completed_downloads(db: Session) -> int:
+    """Remove completed Optimizarr-owned SAB payloads no active job needs.
+
+    This repairs residue from older retry/import paths while keeping cleanup
+    strictly scoped to SAB entries explicitly categorized as ``optimizarr``.
+    """
+    sab = download_client_service.get_or_create_sab_settings(db)
+    if not getattr(sab, 'enabled', False):
+        return 0
+
+    active_nzo_ids = {
+        str(value).strip().lower()
+        for (value,) in (
+            db.query(DownloadJob.download_hash)
+            .filter(
+                DownloadJob.client_type == 'sabnzbd',
+                DownloadJob.download_hash.is_not(None),
+                DownloadJob.status.in_(_CLIENT_TRACKED_DOWNLOAD_STATUSES),
+            )
+            .all()
+        )
+        if str(value or '').strip()
+    }
+
+    cleaned = 0
+    for item in download_client_service.get_sab_completed_history_items(sab):
+        if str(item.get('category') or '').strip().lower() != 'optimizarr':
+            continue
+        nzo_id = str(item.get('nzo_id') or '').strip()
+        if not nzo_id or nzo_id.lower() in active_nzo_ids:
+            continue
+
+        removed = download_client_service.remove_sab_job(sab, nzo_id, delete_files=True)
+        _purge_sab_completed_path(str(item.get('save_path') or ''))
+        if removed:
+            cleaned += 1
+            logger.info('Removed orphaned Optimizarr SAB completion %s', nzo_id)
+
+    return cleaned
 
 
 def _purge_sab_completed_path(save_path: str) -> None:
@@ -4827,6 +4926,7 @@ def _release_title_matches_profile(title: str, profile: LibraryProfile) -> bool:
 
 
 def _reset_download_job_to_searching(db: Session, dj: DownloadJob) -> None:
+    _cleanup_download_attempt_before_reset(db, dj)
     dj.status = DownloadJobStatus.searching.value
     dj.indexer_id = None
     dj.indexer_name = None
@@ -4834,6 +4934,7 @@ def _reset_download_job_to_searching(db: Session, dj: DownloadJob) -> None:
     dj.download_hash = None
     dj.client_type = None
     dj.progress_percent = 0
+    dj.progress_observed = False
     dj.eta_seconds = None
     dj.download_speed_bps = None
     db.commit()
@@ -5059,6 +5160,7 @@ def run_download_startup_recovery(db: Session) -> dict:
     adopted_queue_jobs += _recover_sab_completed_for_waiting_queue_jobs(db, qbt, sab)
 
     if not in_flight_jobs and not qbt_candidate_jobs and adopted_queue_jobs == 0:
+        _cleanup_orphaned_sab_completed_downloads(db)
         logger.info('Download startup recovery: no in-flight or unimported download jobs found')
         return {'imported': 0, 'reset_to_searching': 0, 'linked_jobs': linked_jobs, 'adopted_queue_jobs': 0}
 
@@ -5284,6 +5386,7 @@ def run_download_startup_recovery(db: Session) -> dict:
                     dj.status = DownloadJobStatus.downloading.value
 
                 dj.progress_percent = progress
+                dj.progress_observed = True
                 dj.eta_seconds = eta_seconds
                 dj.download_speed_bps = speed_bps
                 dj.error_message = None
@@ -5312,6 +5415,7 @@ def run_download_startup_recovery(db: Session) -> dict:
     imported += _recover_sab_completed_for_existing_download_jobs(db, qbt, sab, context='startup')
 
     linked_jobs += _link_completed_downloads_to_waiting_jobs(db)
+    _cleanup_orphaned_sab_completed_downloads(db)
 
     logger.info(
         'Download startup recovery complete: imported=%s, reset_to_searching=%s, linked_jobs=%s, adopted_queue_jobs=%s',
