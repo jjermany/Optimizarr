@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.core.database import SessionLocal
 from app.models.download_job import DownloadJob, DownloadJobStatus
 from app.models.job import Job
@@ -973,6 +975,56 @@ def test_download_job_exists_for_source_dedupes_completed_import_by_identity(tmp
             '/media/movies/Example Movie (2026)/Example Movie (2026) [Bluray-2160p Remux].mkv',
             library_id=library.id,
         ) is True
+
+
+@pytest.mark.parametrize('recovery_path', ['source', 'qbit_queue', 'sab_queue'])
+def test_completed_artifact_recovery_does_not_duplicate_renamed_source(monkeypatch, tmp_path, recovery_path):
+    from app.services import download_monitor_service as monitor
+
+    imported_path = tmp_path / 'Example Movie (2026)-1080p.mkv'
+    imported_path.write_text('downloaded')
+    source_path = '/media/Example Movie (2026) [Bluray-2160p Remux].mkv'
+    with SessionLocal() as db:
+        db.query(DownloadJob).delete()
+        db.query(Job).delete()
+        db.query(LibraryProfile).delete()
+        db.query(Library).delete()
+        db.commit()
+        library = _seed_library_with_profile(db)
+        completed = DownloadJob(
+            library_id=library.id,
+            source_file_path='/media/Example Movie (2026) [WEBDL-2160p x265].mkv',
+            status=DownloadJobStatus.complete.value,
+            imported_file_path=str(imported_path),
+        )
+        db.add_all([completed, Job(input_path=source_path, library_id=library.id, status='queued')])
+        db.commit()
+
+        qbt = SimpleNamespace(enabled=True)
+        sab = SimpleNamespace(enabled=True)
+        monkeypatch.setattr(download_client_service, 'get_or_create_qbt_settings', lambda _db: qbt)
+        monkeypatch.setattr(download_client_service, 'get_or_create_sab_settings', lambda _db: sab)
+        monkeypatch.setattr(download_client_service, 'get_qbt_default_save_path', lambda _q: '/downloads')
+        monkeypatch.setattr(download_client_service, 'get_sab_completed_history_items', lambda _s: [{
+            'name': 'Example Movie (2026) 1080p WEB-DL x265',
+            'save_path': '/downloads/Example Movie (2026)',
+            'nzo_id': 'duplicate-nzo',
+        }])
+        monkeypatch.setattr(monitor, '_find_completed_download_match', lambda *_args: '/downloads/Example Movie (2026)')
+        monkeypatch.setattr(monitor, '_release_title_matches_profile', lambda *_args: True)
+        imports = []
+        monkeypatch.setattr(monitor, '_import_file', lambda *_args: imports.append(True))
+
+        if recovery_path == 'source':
+            result = monitor.recover_completed_artifact_for_source(db, source_path, library, library.profile)
+        elif recovery_path == 'qbit_queue':
+            result = monitor._recover_completed_root_for_waiting_queue_jobs(db, qbt, sab, '/downloads')
+        else:
+            result = monitor._recover_sab_completed_for_waiting_queue_jobs(db, qbt, sab)
+
+        assert not result
+        assert imports == []
+        assert db.query(DownloadJob).count() == 1
 
 
 def _seed_library_with_profile(db):

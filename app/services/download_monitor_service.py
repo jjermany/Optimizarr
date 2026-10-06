@@ -1491,7 +1491,7 @@ def _recover_completed_root_for_waiting_queue_jobs(
     for job, library, profile in queue_rows:
         if not job.source_path:
             continue
-        if download_job_exists_for_source(db, job.source_path):
+        if download_job_exists_for_source(db, job.source_path, library_id=library.id):
             logger.info(
                 'Queue adoption: skipping source %r because an active/complete download job already exists',
                 job.source_path,
@@ -1556,7 +1556,7 @@ def recover_completed_artifact_for_source(
         return False
     if not source_path:
         return False
-    if download_job_exists_for_source(db, source_path):
+    if download_job_exists_for_source(db, source_path, library_id=library.id):
         return False
 
     existing_output = _skip_policy_existing_output(source_path, profile)
@@ -1710,7 +1710,7 @@ def _recover_sab_completed_for_waiting_queue_jobs(
     for job, library, profile in queue_rows:
         if not job.source_path:
             continue
-        if download_job_exists_for_source(db, job.source_path):
+        if download_job_exists_for_source(db, job.source_path, library_id=library.id):
             logger.info(
                 'SAB queue adoption: skipping source %r because an active/complete download job already exists',
                 job.source_path,
